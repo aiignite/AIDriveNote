@@ -101,12 +101,14 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   const contentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const contentLoadAtRef = useRef(0);
   const contentDirtyRef = useRef(false);
+  const syncedContentNoteIdRef = useRef(note.id);
   const noteIdRef = useRef(note.id);
   const lastRefreshTriggerRef = useRef(refreshTrigger);
   const mindMapEditorRef = useRef<NoteMindMapEditorHandle>(null);
 
   // 切换笔记：先用列表缓存内容即时渲染，后台拉取最新数据
   useEffect(() => {
+    syncedContentNoteIdRef.current = note.id;
     noteIdRef.current = note.id;
     contentDirtyRef.current = false;
     setTitle(note.title);
@@ -373,6 +375,11 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   }, [handleManualSave]);
 
   const typeMeta = TYPE_META[note.noteType] || TYPE_META.rich_text;
+
+  // content state 在 useEffect 中更新会滞后一帧；切换笔记时先用 prop 缓存
+  const contentForEditor = syncedContentNoteIdRef.current !== note.id
+    ? (note.content ?? null)
+    : content;
 
   return (
     <div className={`h-full flex flex-col ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
@@ -662,10 +669,10 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       <div className="flex-1 min-h-0 overflow-hidden">
         <NoteEditorContainer
           ref={note.noteType === 'mindmap' ? mindMapEditorRef : undefined}
-          key={note.noteType}
+          key={note.id}
           noteId={note.id}
           noteType={note.noteType as 'rich_text' | 'markdown' | 'mindmap' | 'flowchart'}
-          content={content}
+          content={contentForEditor}
           contentResetKey={contentResetKey}
           onChange={handleContentChange}
           isDark={isDark}
