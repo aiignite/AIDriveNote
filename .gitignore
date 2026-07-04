@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Environment & secrets
+.env
+backend/.env
+scripts/deploy.env
+
+# Build & cache
+frontend/dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime logs
+.runtime-logs/
+
+# OS & editor
+.DS_Store
+.~lock.*
+*.swp
+*.swo
+.idea/
+.vscode/
