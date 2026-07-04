@@ -1,0 +1,50 @@
+{
+  "name": "aidrive-note",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@blocknote/core": "^0.47.3",
+    "@blocknote/mantine": "^0.47.3",
+    "@blocknote/react": "^0.47.3",
+    "@emotion/react": "^11.14.0",
+    "@mantine/core": "^8.3.11",
+    "@mantine/hooks": "^8.3.11",
+    "@uiw/react-md-editor": "^4.1.0",
+    "docx": "^9.6.1",
+    "file-saver": "^2.0.5",
+    "html2canvas-pro": "^2.0.2",
+    "jspdf": "^4.2.0",
+    "katex": "^0.16.28",
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-hot-toast": "^2.6.0",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.13.0",
+    "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "simple-mind-map": "^0.14.0-fix.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
+    "@types/file-saver": "^2.0.7",
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.3",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.24",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}

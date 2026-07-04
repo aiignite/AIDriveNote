@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+:root {
+  --color-brand: #f97316;
+  --color-brand-dark: #ea580c;
+  --color-brand-light: #fff7ed;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+::selection {
+  background-color: rgb(254 215 170 / 0.85);
+}
