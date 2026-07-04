@@ -42,8 +42,8 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const prevNoteIdRef = useRef(noteId);
   const contentSigRef = useRef('');
   const suppressChangeRef = useRef(true);
-  /** 本地编辑触发的 onChange 回传 content 时，跳过 replaceBlocks，避免输入时光标/换行异常 */
-  const skipNextContentSyncRef = useRef(false);
+  /** 本地编辑回传 content 时跳过 replaceBlocks；绑定 noteId 避免切换笔记时误跳过 */
+  const skipNextContentSyncRef = useRef<string | null>(null);
 
   const applyContent = useCallback((nextContent?: Record<string, unknown>) => {
     const blocks = parseBlockNoteContent(nextContent) ?? DEFAULT_BLOCKS;
@@ -66,12 +66,13 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
     const sig = JSON.stringify(content ?? null);
     if (prevNoteIdRef.current !== noteId) {
       prevNoteIdRef.current = noteId;
+      skipNextContentSyncRef.current = null;
       contentSigRef.current = sig;
       applyContent(content);
       return;
     }
-    if (skipNextContentSyncRef.current) {
-      skipNextContentSyncRef.current = false;
+    if (skipNextContentSyncRef.current === noteId) {
+      skipNextContentSyncRef.current = null;
       contentSigRef.current = sig;
       return;
     }
@@ -83,9 +84,9 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
 
   const handleChange = useCallback(() => {
     if (suppressChangeRef.current || !onChange || !editor) return;
-    skipNextContentSyncRef.current = true;
+    skipNextContentSyncRef.current = noteId;
     onChange({ blocks: editor.document });
-  }, [onChange, editor]);
+  }, [onChange, editor, noteId]);
 
   const btnCls = `p-1.5 rounded-md transition-colors ${isDark ? 'text-gray-400 hover:text-white hover:bg-gray-600' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-200'}`;
   const sepCls = `w-px h-5 mx-1 ${isDark ? 'bg-gray-600' : 'bg-gray-200'}`;
@@ -148,10 +149,12 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
 };
 
 const NoteRichTextEditor: React.FC<NoteRichTextEditorProps> = (props) => {
-  const { contentResetKey = 0, ...rest } = props;
+  const { contentResetKey = 0, noteId, ...rest } = props;
   return (
     <NoteRichTextEditorCore
-      key={contentResetKey}
+      key={`${noteId}-${contentResetKey}`}
+      noteId={noteId}
+      contentResetKey={contentResetKey}
       {...rest}
     />
   );
