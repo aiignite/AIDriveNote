@@ -42,6 +42,8 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const prevNoteIdRef = useRef(noteId);
   const contentSigRef = useRef('');
   const suppressChangeRef = useRef(true);
+  /** 本地编辑触发的 onChange 回传 content 时，跳过 replaceBlocks，避免输入时光标/换行异常 */
+  const skipNextContentSyncRef = useRef(false);
 
   const applyContent = useCallback((nextContent?: Record<string, unknown>) => {
     const blocks = parseBlockNoteContent(nextContent) ?? DEFAULT_BLOCKS;
@@ -68,6 +70,11 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       applyContent(content);
       return;
     }
+    if (skipNextContentSyncRef.current) {
+      skipNextContentSyncRef.current = false;
+      contentSigRef.current = sig;
+      return;
+    }
     if (contentSigRef.current !== sig) {
       contentSigRef.current = sig;
       applyContent(content);
@@ -76,6 +83,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
 
   const handleChange = useCallback(() => {
     if (suppressChangeRef.current || !onChange || !editor) return;
+    skipNextContentSyncRef.current = true;
     onChange({ blocks: editor.document });
   }, [onChange, editor]);
 
@@ -100,7 +108,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   };
 
   return (
-    <div className="w-full h-full flex flex-col overflow-hidden">
+    <div className="note-rich-text-editor w-full h-full flex flex-col overflow-hidden min-h-0">
       {!readOnly && (
         <div className={`flex items-center gap-0.5 px-3 py-1.5 border-b shrink-0 flex-wrap ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50/50'}`}>
           <button type="button" className={btnCls} onClick={() => editor.undo()} title="撤销 (Ctrl+Z)"><Undo2 size={16} /></button>
@@ -126,12 +134,13 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={() => setAlignment('right')} title="右对齐"><AlignRight size={16} /></button>
         </div>
       )}
-      <div className="flex-1 overflow-auto min-h-0">
+      <div className="flex-1 min-h-0 overflow-auto flex flex-col">
         <BlockNoteView
           editor={editor}
           editable={!readOnly}
           theme={isDark ? 'dark' : 'light'}
           onChange={handleChange}
+          className="h-full min-h-full flex-1"
         />
       </div>
     </div>

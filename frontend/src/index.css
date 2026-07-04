@@ -13,3 +13,10 @@ body {
 ::selection {
   background-color: rgb(254 215 170 / 0.85);
 }
+
+/* BlockNote 富文本：编辑区默认撑满剩余视口高度 */
+.note-rich-text-editor .bn-container,
+.note-rich-text-editor .bn-editor {
+  min-height: 100%;
+  height: 100%;
+}

@@ -435,7 +435,7 @@ const NotesPage: React.FC = () => {
         />
 
         {/* Right: Editor panel */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 h-full min-h-0">
           {selectedNote ? (
             <NoteEditorPanel
               note={selectedNote}

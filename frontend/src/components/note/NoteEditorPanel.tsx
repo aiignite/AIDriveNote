@@ -659,7 +659,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       {/* Editor area was below description - closing duplicate removed */}
 
       {/* Editor */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
         <NoteEditorContainer
           ref={note.noteType === 'mindmap' ? mindMapEditorRef : undefined}
           key={note.noteType}
