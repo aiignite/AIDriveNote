@@ -44,6 +44,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
+        VITE_API_URL: ${VITE_API_URL:-/api/v1}
+        NGINX_SUBPATH: ${NGINX_SUBPATH:-0}
     restart: unless-stopped
     ports:
       - "3270:80"
