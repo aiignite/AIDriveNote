@@ -5,6 +5,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source .env
+  set +a
+fi
+
 if [[ ! -f .env ]]; then
   echo "错误: 缺少 .env 文件，请先复制并配置 .env.example"
   exit 1
@@ -20,9 +27,10 @@ echo "==> 执行数据库迁移..."
 docker compose -f docker-compose.prod.yml exec -T backend alembic upgrade head
 
 echo "==> 健康检查..."
-curl -sf http://127.0.0.1:3270/health
+HEALTH_PATH="${APP_HEALTH_PATH:-/health}"
+curl -sf "http://127.0.0.1:3270${HEALTH_PATH}"
 echo ""
-curl -sf -o /dev/null -w "前端 HTTP %{http_code}\n" http://127.0.0.1:3270/
+curl -sf -o /dev/null -w "前端 HTTP %{http_code}\n" "http://127.0.0.1:3270${VITE_BASE_PATH:-/}"
 
 echo "==> 容器状态:"
 docker compose -f docker-compose.prod.yml ps

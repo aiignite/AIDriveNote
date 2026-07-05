@@ -19,8 +19,10 @@ const withSuspense = (node: React.ReactNode) => (
   <Suspense fallback={<PageLoader />}>{node}</Suspense>
 );
 
+const basename = (import.meta.env.VITE_BASE_PATH || '/').replace(/\/$/, '') || undefined;
+
 const App: React.FC = () => (
-  <BrowserRouter>
+  <BrowserRouter basename={basename}>
     <AuthProvider>
       <AppProvider>
         <Toaster position="top-center" />
