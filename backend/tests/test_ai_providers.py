@@ -120,6 +120,28 @@ async def test_minimax_stream_parses_reasoning_content(monkeypatch):
     ]
 
 
+def test_minimax_build_messages_includes_tool_call_id():
+    provider = MiniMaxProvider(
+        AIProviderConfig(model="MiniMax-M2.5", base_url="https://api.minimax.chat/v1", api_key="test-key")
+    )
+    messages = [
+        ChatMessage(role="user", content="hi"),
+        ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[{
+                "id": "call_abc123",
+                "type": "function",
+                "function": {"name": "get_note", "arguments": {"note_id": "123"}},
+            }],
+        ),
+        ChatMessage(role="tool", content='{"success": true}', tool_call_id="call_abc123"),
+    ]
+    built = provider._build_messages(messages)
+    assert built[2]["role"] == "tool"
+    assert built[2]["tool_call_id"] == "call_abc123"
+
+
 @pytest.mark.asyncio
 async def test_minimax_missing_api_key(monkeypatch):
     monkeypatch.setattr(

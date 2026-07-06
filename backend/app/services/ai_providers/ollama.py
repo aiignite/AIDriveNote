@@ -24,7 +24,14 @@ class OllamaProvider(BaseAIProvider):
         model = opts.model or self.config.model or "qwen2.5"
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [
+                (
+                    {"role": m.role, "content": m.content, "tool_call_id": m.tool_call_id}
+                    if m.role == "tool" and m.tool_call_id
+                    else {"role": m.role, "content": m.content}
+                )
+                for m in messages
+            ],
             "stream": True,
         }
         if opts.temperature is not None:

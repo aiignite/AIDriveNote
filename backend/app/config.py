@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     MINIMAX_API_KEY: str | None = None
 
+    ADMIN_EMAIL: str | None = None
+
+    SSO_ENABLED: bool = False
+    SSO_SECRET_KEY: str | None = None
+    SSO_ISSUER: str = "aidriveall"
+    SSO_COOKIE_NAME: str = "aidrive_token"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

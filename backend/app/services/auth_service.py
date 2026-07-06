@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.user import User
+from app.services.admin_bootstrap import AdminBootstrap
 
 settings = get_settings()
 
@@ -57,6 +58,7 @@ class AuthService:
             email=email,
             password_hash=AuthService.hash_password(password),
             name=name,
+            role="admin" if AdminBootstrap.is_admin_email(email) else "user",
         )
         db.add(user)
         await db.flush()

@@ -10,6 +10,7 @@ class ChatMessage:
     role: str
     content: str
     tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
 
 
 @dataclass

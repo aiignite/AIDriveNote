@@ -1,10 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../services/auth';
-import { isAuthenticated, setAuthTokens } from '../services/client';
+import { isAuthenticated, mayHaveSession, setAuthTokens } from '../services/client';
 
 interface AuthContextValue {
-  user: { id: string; email: string; name: string; status: string } | null;
+  user: { id: string; email: string; name: string; status: string; role: string } | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string) => Promise<void>;
@@ -20,7 +20,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const init = async () => {
-      if (!isAuthenticated()) {
+      if (!isAuthenticated() && !mayHaveSession()) {
         setIsLoading(false);
         return;
       }

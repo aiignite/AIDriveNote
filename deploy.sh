@@ -24,7 +24,11 @@ echo "==> 等待 PostgreSQL 就绪..."
 sleep 5
 
 echo "==> 执行数据库迁移..."
-docker compose -f docker-compose.prod.yml exec -T backend alembic upgrade head
+docker compose -f docker-compose.prod.yml run --rm --no-deps backend alembic upgrade head
+
+echo "==> 确保 backend 已加载最新 schema..."
+docker compose -f docker-compose.prod.yml up -d backend
+sleep 3
 
 echo "==> 健康检查..."
 HEALTH_PATH="${APP_HEALTH_PATH:-/health}"

@@ -146,6 +146,7 @@ class AIService:
 
         db.add(AIMessage(conversation_id=conv.id, role="user", content=message))
         await db.flush()
+        await db.commit()
 
         tool_names = SkillRouter.merge_tool_names(assistant.tools, skill_match.skill if skill_match else None)
         executor = ToolExecutor(db, user_id)
@@ -213,6 +214,7 @@ class AIService:
                 working_messages.append(ChatMessage(
                     role="tool",
                     content=json.dumps(result, ensure_ascii=False),
+                    tool_call_id=tc.get("id"),
                 ))
 
         db.add(AIMessage(

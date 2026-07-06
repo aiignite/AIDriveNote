@@ -4,16 +4,18 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './contexts/AuthContext';
 import { AppProvider } from './contexts/AppContext';
 import ProtectedRoute from './components/ProtectedRoute';
+import AdminRoute from './components/AdminRoute';
 import PageLoader from './components/PageLoader';
 
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const RegisterPage = lazy(() => import('./pages/RegisterPage'));
 const AppLayout = lazy(() => import('./components/AppLayout'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
-const AISettingsLayout = lazy(() => import('./pages/settings/AISettingsLayout'));
+const SettingsLayout = lazy(() => import('./pages/settings/SettingsLayout'));
 const AIModelsPage = lazy(() => import('./pages/settings/AIModelsPage'));
 const AIAssistantsPage = lazy(() => import('./pages/settings/AIAssistantsPage'));
 const AISkillsPage = lazy(() => import('./pages/settings/AISkillsPage'));
+const UsersPage = lazy(() => import('./pages/settings/UsersPage'));
 
 const withSuspense = (node: React.ReactNode) => (
   <Suspense fallback={<PageLoader />}>{node}</Suspense>
@@ -42,12 +44,12 @@ const App: React.FC = () => (
             }
           />
           <Route
-            path="/settings/ai"
+            path="/settings"
             element={
               <ProtectedRoute>
                 {withSuspense(
                   <AppLayout>
-                    <AISettingsLayout />
+                    <SettingsLayout />
                   </AppLayout>,
                 )}
               </ProtectedRoute>
@@ -57,7 +59,21 @@ const App: React.FC = () => (
             <Route path="models" element={withSuspense(<AIModelsPage />)} />
             <Route path="assistants" element={withSuspense(<AIAssistantsPage />)} />
             <Route path="skills" element={withSuspense(<AISkillsPage />)} />
+            <Route
+              path="users"
+              element={
+                <AdminRoute redirectTo="/settings/models">
+                  {withSuspense(<UsersPage />)}
+                </AdminRoute>
+              }
+            />
           </Route>
+          {/* 兼容旧路径 */}
+          <Route path="/settings/ai/models" element={<Navigate to="/settings/models" replace />} />
+          <Route path="/settings/ai/assistants" element={<Navigate to="/settings/assistants" replace />} />
+          <Route path="/settings/ai/skills" element={<Navigate to="/settings/skills" replace />} />
+          <Route path="/settings/ai" element={<Navigate to="/settings/models" replace />} />
+          <Route path="/admin/users" element={<Navigate to="/settings/users" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AppProvider>
