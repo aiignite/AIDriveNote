@@ -1,6 +1,7 @@
 from app.services.ai_providers.base import AIProviderConfig, BaseAIProvider
 from app.services.ai_providers.minimax import MiniMaxProvider
 from app.services.ai_providers.ollama import OllamaProvider
+from app.services.ai_providers.openai_compat import OpenAICompatibleProvider
 
 
 class AIProviderFactory:
@@ -9,9 +10,11 @@ class AIProviderFactory:
         provider = (provider or "OLLAMA").upper()
         if provider == "MINIMAX":
             return MiniMaxProvider(config)
-        if provider != "OLLAMA":
-            # v1: fallback to Ollama for other local OpenAI-compatible gateways
-            return OllamaProvider(config)
+        if provider in ("OPENAI", "LMSTUDIO"):
+            return OpenAICompatibleProvider(config)
+        if provider == "ANTHROPIC":
+            # Anthropic via OpenAI-compatible proxy when endpoint configured
+            return OpenAICompatibleProvider(config)
         return OllamaProvider(config)
 
     @staticmethod

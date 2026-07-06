@@ -1,16 +1,36 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Bot, LogOut, Moon, Settings, Sun } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useApp } from '../contexts/AppContext';
+import { aiApi } from '../services/ai/ai';
 import Logo from './Logo';
 
 const AISidebar = lazy(() => import('../components/ai/AISidebar'));
 
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, logout } = useAuth();
-  const { theme, toggleTheme, openAI, aiOpen } = useApp();
+  const { theme, toggleTheme, openAI, aiOpen, sidebarWidth, setSidebarWidth } = useApp();
   const isDark = theme === 'dark';
+
+  useEffect(() => {
+    void aiApi.getSettings().then(s => {
+      if (s.sidebarWidth) setSidebarWidth(s.sidebarWidth);
+    }).catch(() => {});
+  }, [setSidebarWidth]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        openAI();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [openAI]);
+
+  const aiPadding = aiOpen ? sidebarWidth : 0;
 
   return (
     <div className={`min-h-screen ${isDark ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
@@ -22,7 +42,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           </span>
         </Link>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={openAI} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="AI 助手">
+          <button type="button" onClick={() => openAI()} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="AI 助手 (⌘J)">
             <Bot size={18} className="text-orange-500" />
           </button>
           <Link to="/settings" className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="设置">
@@ -37,7 +57,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           </button>
         </div>
       </header>
-      <div className={`flex min-h-[calc(100vh-3.5rem)] ${aiOpen ? 'pr-0 md:pr-96' : ''}`}>
+      <div className="flex min-h-[calc(100vh-3.5rem)]" style={{ paddingRight: aiPadding }}>
         <main className="flex-1 min-w-0 min-h-0 flex flex-col">{children}</main>
         <Suspense fallback={null}>
           <AISidebar />

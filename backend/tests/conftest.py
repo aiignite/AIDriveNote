@@ -45,6 +45,17 @@ async def db_session():
 
 
 @pytest_asyncio.fixture
+async def test_user(db_session):
+    from app.models.user import User
+
+    user = User(email="tools@test.com", password_hash="hash", name="Tools Tester")
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
 async def client(db_session):
     from app.main import app
 

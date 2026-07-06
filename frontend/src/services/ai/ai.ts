@@ -15,15 +15,20 @@ export interface PageAIContext {
   pageName: 'notes';
   moduleName: 'note';
   recommendedAssistant?: string;
+  noteType?: string;
   contextHint?: string;
+  selectionText?: string;
   quickActions?: QuickAction[];
   selectedEntities?: ChatPageContextEntity[];
+  presetMessage?: string;
 }
 
 export interface ChatPageContext {
   pageName?: string;
   moduleName?: string;
+  noteType?: string;
   contextHint?: string;
+  selectionText?: string;
   quickActions?: QuickAction[];
   selectedEntities?: ChatPageContextEntity[];
 }
@@ -35,7 +40,9 @@ export const buildChatPageContext = (
   return {
     pageName: pageAIContext.pageName,
     moduleName: pageAIContext.moduleName,
+    noteType: pageAIContext.noteType,
     contextHint: pageAIContext.contextHint,
+    selectionText: pageAIContext.selectionText,
     quickActions: pageAIContext.quickActions,
     selectedEntities: pageAIContext.selectedEntities,
   };
@@ -163,11 +170,13 @@ export interface SkillBindingItem {
 }
 
 export interface ChatStreamEvent {
-  type: 'content' | 'tool_result' | 'done' | 'error';
+  type: 'content' | 'tool_result' | 'done' | 'error' | 'skill_match';
   content?: string;
   tool?: string;
   result?: Record<string, unknown>;
   conversationId?: string;
+  skillName?: string;
+  reason?: string;
 }
 
 export const aiApi = {

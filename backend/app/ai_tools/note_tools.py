@@ -12,6 +12,7 @@ from app.services.note.note_service import NoteService
 from app.services.note.rich_text_blocks import (
     content_to_preview_text,
     merge_rich_text_blocks,
+    mindmap_to_preview_text,
     parse_rich_text_content,
 )
 
@@ -20,6 +21,51 @@ CATEGORY = "note"
 # ---------- helpers ----------
 
 _VALID_TYPES = ("rich_text", "markdown", "mindmap", "flowchart")
+_PREVIEW_CONTENT_TYPES = _VALID_TYPES
+_SUMMARY_MAX = 2000
+
+
+def _note_content_summary(note_type: str, content: dict[str, Any] | None) -> str | None:
+    """生成笔记内容摘要（用于 get_note 默认返回）。"""
+    if not content or not isinstance(content, dict):
+        return None
+    preview = content_to_preview_text(note_type, content, max_chars=_SUMMARY_MAX + 1)
+    if not preview:
+        return None
+    if len(preview) > _SUMMARY_MAX:
+        return preview[:_SUMMARY_MAX] + "…"
+    return preview
+
+
+def _validate_mindmap_content(content: dict[str, Any]) -> bool:
+    data = content.get("data")
+    return isinstance(data, dict) and isinstance(data.get("text"), str)
+
+
+def _validate_flowchart_content(content: dict[str, Any]) -> bool:
+    return isinstance(content.get("xml"), str) and bool(str(content.get("xml")).strip())
+
+
+def _find_mindmap_node(node: dict[str, Any], uid: str) -> dict[str, Any] | None:
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    if str(data.get("uid", "")) == uid:
+        return node
+    children = node.get("children")
+    if isinstance(children, list):
+        for child in children:
+            if isinstance(child, dict):
+                found = _find_mindmap_node(child, uid)
+                if found:
+                    return found
+    return None
+
+
+def _normalize_mindmap_nodes(nodes: Any) -> list[dict[str, Any]]:
+    if isinstance(nodes, dict):
+        return [nodes]
+    if isinstance(nodes, list):
+        return [n for n in nodes if isinstance(n, dict)]
+    return []
 
 
 def _parse_uuid(raw: str, label: str = "note_id") -> UUID | dict:
@@ -74,33 +120,38 @@ async def _list_notes(
     }
 
 
-async def _get_note(db: AsyncSession, user_id: UUID, *, note_id: str) -> dict[str, Any]:
+async def _get_note(
+    db: AsyncSession, user_id: UUID, *,
+    note_id: str,
+    include_full_content: bool = False,
+) -> dict[str, Any]:
     parsed = _parse_uuid(note_id)
     if isinstance(parsed, dict):
         return parsed
     note, err = await _check_owner(db, parsed, user_id)
     if err:
         return err
-    # 对 content 做友好展示：markdown 直接返回文本
-    content = note.content
-    content_summary = None
-    if content and isinstance(content, dict):
-        if note.note_type == "markdown" and "text" in content:
-            content_summary = content["text"][:2000] if len(content.get("text", "")) > 2000 else None
-        elif note.note_type == "mindmap" and "data" in content:
-            content_summary = f"思维导图根节点: {content['data'].get('text', '?')}, 子节点数: {len(content.get('children', []))}"
-    return {
-        "success": True,
-        "note": {
-            "id": str(note.id), "note_no": note.note_no, "title": note.title,
-            "note_type": note.note_type, "content": content,
-            "content_summary": content_summary,
-            "description": note.description, "status": note.status,
-            "folder_id": str(note.folder_id) if note.folder_id else None,
-            "created_at": str(note.created_at) if note.created_at else None,
-            "updated_at": str(note.updated_at) if note.updated_at else None,
-        },
+
+    content = note.content if isinstance(note.content, dict) else {}
+    content_summary = _note_content_summary(note.note_type, content)
+    return_content = content if include_full_content else None
+
+    note_payload: dict[str, Any] = {
+        "id": str(note.id), "note_no": note.note_no, "title": note.title,
+        "note_type": note.note_type,
+        "content_summary": content_summary,
+        "description": note.description, "status": note.status,
+        "folder_id": str(note.folder_id) if note.folder_id else None,
+        "created_at": str(note.created_at) if note.created_at else None,
+        "updated_at": str(note.updated_at) if note.updated_at else None,
     }
+    if include_full_content:
+        note_payload["content"] = content
+    elif note.note_type in ("mindmap", "flowchart", "markdown", "rich_text"):
+        note_payload["content"] = None
+        note_payload["hint"] = "完整内容未返回以节省上下文；需要完整内容时请设置 include_full_content=true"
+
+    return {"success": True, "note": note_payload}
 
 
 async def _create_note(
@@ -179,11 +230,15 @@ async def _update_note(
     if err:
         return err
 
-    # Markdown / 富文本内容变更：仅生成预览，由用户在对话框确认后再写入
-    if content is not None and note.note_type in ("markdown", "rich_text"):
+    # 内容变更：生成预览，由用户在对话框确认后再写入
+    if content is not None and note.note_type in _PREVIEW_CONTENT_TYPES:
         proposed_content = _wrap_content(note.note_type, content)
         if not proposed_content:
             return {"success": False, "error": "内容格式无效"}
+        if note.note_type == "mindmap" and not _validate_mindmap_content(proposed_content):
+            return {"success": False, "error": "思维导图 content 需包含 data.text 字段"}
+        if note.note_type == "flowchart" and not _validate_flowchart_content(proposed_content):
+            return {"success": False, "error": "流程图 content 需包含非空 xml 字段"}
         return _build_content_preview_result(
             note,
             change_type="update",
@@ -240,13 +295,75 @@ async def _append_to_note(
     )
 
 
-async def _delete_note(db: AsyncSession, user_id: UUID, *, note_id: str) -> dict[str, Any]:
+async def _append_to_mindmap(
+    db: AsyncSession, user_id: UUID, *,
+    note_id: str,
+    nodes: list | dict,
+    parent_uid: str | None = None,
+) -> dict[str, Any]:
+    """向思维导图指定节点下追加子节点（默认根节点）。"""
     parsed = _parse_uuid(note_id)
     if isinstance(parsed, dict):
         return parsed
-    _note, err = await _check_owner(db, parsed, user_id)
+    note, err = await _check_owner(db, parsed, user_id)
     if err:
         return err
+    if note.note_type != "mindmap":
+        return {"success": False, "error": f"append_to_mindmap 仅支持 mindmap 类型，当前: {note.note_type}"}
+
+    base = dict(note.content) if isinstance(note.content, dict) else {"data": {"text": "中心主题"}, "children": []}
+    new_nodes = _normalize_mindmap_nodes(nodes)
+    if not new_nodes:
+        return {"success": False, "error": "nodes 不能为空"}
+
+    import copy
+    merged = copy.deepcopy(base)
+    target = merged
+    if parent_uid:
+        found = _find_mindmap_node(merged, parent_uid)
+        if not found:
+            return {"success": False, "error": f"未找到 parent_uid={parent_uid} 的节点"}
+        if not isinstance(found.get("children"), list):
+            found["children"] = []
+        target = found
+
+    if not isinstance(target.get("children"), list):
+        target["children"] = []
+    target["children"].extend(new_nodes)
+
+    added_preview = "\n".join(
+        mindmap_to_preview_text(n, max_chars=500) for n in new_nodes
+    )
+    return _build_content_preview_result(
+        note,
+        change_type="append",
+        proposed_content=merged,
+        added_preview_text=added_preview,
+    )
+
+
+async def _delete_note(
+    db: AsyncSession, user_id: UUID, *,
+    note_id: str,
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    parsed = _parse_uuid(note_id)
+    if isinstance(parsed, dict):
+        return parsed
+    note, err = await _check_owner(db, parsed, user_id)
+    if err:
+        return err
+    if not confirmed:
+        return {
+            "success": True,
+            "preview": True,
+            "requires_confirmation": True,
+            "change_type": "delete",
+            "note_id": str(note.id),
+            "note_title": note.title,
+            "note_type": note.note_type,
+            "message": f"确认删除笔记「{note.title}」？请在对话框确认后才会执行删除。",
+        }
     ok = await NoteService.delete_note(db, parsed)
     if not ok:
         return {"success": False, "error": f"未找到笔记 (id={note_id})"}
@@ -389,6 +506,60 @@ async def _add_tags_to_note(
     return {"success": True, "message": f"已添加标签: {', '.join(added) if added else '无'}"}
 
 
+async def _batch_summarize_notes(
+    db: AsyncSession, user_id: UUID, *,
+    note_ids: list[str] | None = None,
+    folder_id: str | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """批量获取笔记摘要，供 AI 生成汇总报告。"""
+    items: list[dict[str, Any]] = []
+    if note_ids:
+        for raw_id in note_ids[:limit]:
+            result = await _get_note(db, user_id, note_id=raw_id, include_full_content=False)
+            if result.get("success") and result.get("note"):
+                n = result["note"]
+                items.append({
+                    "id": n["id"], "title": n["title"], "note_type": n["note_type"],
+                    "summary": n.get("content_summary") or n.get("description") or "",
+                })
+    else:
+        fid: UUID | None = None
+        if folder_id:
+            parsed = _parse_uuid(folder_id, "folder_id")
+            if isinstance(parsed, dict):
+                return parsed
+            fid = parsed
+        notes, _total = await NoteService.list_notes(
+            db, skip=0, limit=limit, user_id=user_id, folder_id=fid,
+        )
+        for note in notes:
+            content = note.content if isinstance(note.content, dict) else {}
+            items.append({
+                "id": str(note.id), "title": note.title, "note_type": note.note_type,
+                "summary": _note_content_summary(note.note_type, content) or note.description or "",
+            })
+    return {"success": True, "count": len(items), "items": items}
+
+
+async def _batch_add_tags(
+    db: AsyncSession, user_id: UUID, *,
+    note_ids: list[str],
+    tag_names: list[str],
+) -> dict[str, Any]:
+    """为多篇笔记批量添加标签。"""
+    results: list[dict[str, Any]] = []
+    for raw_id in note_ids:
+        result = await _add_tags_to_note(db, user_id, note_id=raw_id, tag_names=tag_names)
+        results.append({"note_id": raw_id, **result})
+    ok_count = sum(1 for r in results if r.get("success"))
+    return {
+        "success": ok_count > 0,
+        "message": f"已为 {ok_count}/{len(note_ids)} 篇笔记添加标签",
+        "results": results,
+    }
+
+
 # ---------- content format helpers ----------
 
 def _wrap_content(note_type: str, content: dict | str | list | None) -> dict | None:
@@ -398,6 +569,14 @@ def _wrap_content(note_type: str, content: dict | str | list | None) -> dict | N
     if note_type == "rich_text":
         return parse_rich_text_content(content)
     if isinstance(content, dict):
+        if note_type == "mindmap":
+            if _validate_mindmap_content(content):
+                return content
+            return None
+        if note_type == "flowchart":
+            if _validate_flowchart_content(content):
+                return content
+            return None
         return content
     text = str(content)
     if note_type == "markdown":
@@ -424,9 +603,13 @@ def _register_all() -> None:
 
     ToolRegistry.register("get_note", {
         "name": "get_note",
-        "description": "获取笔记详情，包括完整内容。Markdown 笔记内容在 content.text 中；思维导图在 content.data/children 中；富文本在 content.blocks 中；流程图在 content.xml 中。",
+        "description": (
+            "获取笔记详情。默认返回 content_summary 摘要以节省上下文；"
+            "需要完整 content 时设置 include_full_content=true。"
+        ),
         "parameters": {"type": "object", "properties": {
             "note_id": {"type": "string", "description": "笔记 UUID"},
+            "include_full_content": {"type": "boolean", "description": "是否返回完整 content，默认 false"},
         }, "required": ["note_id"]},
     }, _get_note, CATEGORY, "获取笔记详情")
 
@@ -449,10 +632,9 @@ def _register_all() -> None:
     ToolRegistry.register("update_note", {
         "name": "update_note",
         "description": (
-            "更新笔记内容或元数据。Markdown/富文本的 content 变更不会立即写入，"
-            "会返回 preview 供用户在对话框确认。\n"
-            "富文本 content 应传 {\"blocks\": [...]}（保留 heading/list 类型）或 Markdown 字符串。\n"
-            "仅改标题/描述/状态时不触发预览，立即生效。末尾追加请用 append_to_note。"
+            "更新笔记内容或元数据。所有类型的 content 变更均返回 preview 供用户确认。\n"
+            "markdown/rich_text: 字符串或 blocks；mindmap: {data, children} 树；flowchart: {xml}。\n"
+            "仅改标题/描述/状态时不触发预览，立即生效。末尾追加请用 append_to_note 或 append_to_mindmap。"
         ),
         "parameters": {"type": "object", "properties": {
             "note_id": {"type": "string", "description": "笔记 UUID"},
@@ -475,11 +657,25 @@ def _register_all() -> None:
         }, "required": ["note_id", "text"]},
     }, _append_to_note, CATEGORY, "追加笔记内容")
 
+    ToolRegistry.register("append_to_mindmap", {
+        "name": "append_to_mindmap",
+        "description": (
+            "向思维导图追加子节点。nodes 为 {data:{text:...}, children:[]} 或数组；"
+            "parent_uid 指定父节点 uid，省略则追加到根节点下。返回 preview 供确认。"
+        ),
+        "parameters": {"type": "object", "properties": {
+            "note_id": {"type": "string", "description": "笔记 UUID"},
+            "nodes": {"description": "要追加的节点或节点数组"},
+            "parent_uid": {"type": "string", "description": "父节点 uid（可选）"},
+        }, "required": ["note_id", "nodes"]},
+    }, _append_to_mindmap, CATEGORY, "追加导图节点")
+
     ToolRegistry.register("delete_note", {
         "name": "delete_note",
-        "description": "删除一个笔记（逻辑删除）。",
+        "description": "删除笔记（逻辑删除）。首次调用返回确认预览，用户确认后需再次调用并设 confirmed=true。",
         "parameters": {"type": "object", "properties": {
             "note_id": {"type": "string", "description": "要删除的笔记 UUID"},
+            "confirmed": {"type": "boolean", "description": "用户已确认删除时为 true"},
         }, "required": ["note_id"]},
     }, _delete_note, CATEGORY, "删除笔记")
 
@@ -535,6 +731,28 @@ def _register_all() -> None:
             },
         }, "required": ["note_id", "tag_names"]},
     }, _add_tags_to_note, CATEGORY, "为笔记添加标签")
+
+    ToolRegistry.register("batch_summarize_notes", {
+        "name": "batch_summarize_notes",
+        "description": "批量获取多篇笔记的摘要，用于生成汇总报告或对比分析。",
+        "parameters": {"type": "object", "properties": {
+            "note_ids": {
+                "type": "array", "items": {"type": "string"},
+                "description": "笔记 UUID 列表（与 folder_id 二选一）",
+            },
+            "folder_id": {"type": "string", "description": "文件夹 UUID，获取该文件夹下笔记摘要"},
+            "limit": {"type": "integer", "description": "最多返回篇数，默认 10"},
+        }},
+    }, _batch_summarize_notes, CATEGORY, "批量笔记摘要")
+
+    ToolRegistry.register("batch_add_tags", {
+        "name": "batch_add_tags",
+        "description": "为多篇笔记批量添加相同标签。",
+        "parameters": {"type": "object", "properties": {
+            "note_ids": {"type": "array", "items": {"type": "string"}, "description": "笔记 UUID 列表"},
+            "tag_names": {"type": "array", "items": {"type": "string"}, "description": "标签名称列表"},
+        }, "required": ["note_ids", "tag_names"]},
+    }, _batch_add_tags, CATEGORY, "批量添加标签")
 
 
 _register_all()

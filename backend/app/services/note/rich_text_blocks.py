@@ -13,6 +13,7 @@ VALID_BLOCK_TYPES = frozenset({
     "checkListItem",
     "codeBlock",
     "quote",
+    "image",
 })
 
 BASE_PROPS: dict[str, Any] = {
@@ -67,6 +68,20 @@ def _default_props_for_type(block_type: str, props: dict[str, Any]) -> dict[str,
     return merged
 
 
+def _normalize_image_props(props: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {
+        **BASE_PROPS,
+        "name": str(props.get("name", "")),
+        "url": str(props.get("url", "")),
+        "caption": str(props.get("caption", "")),
+        "showPreview": props.get("showPreview", True),
+    }
+    preview_width = props.get("previewWidth")
+    if isinstance(preview_width, (int, float)):
+        normalized["previewWidth"] = preview_width
+    return normalized
+
+
 def normalize_block(raw: Any) -> dict[str, Any]:
     """将单条 block 转为 BlockNote 兼容结构（剥离自定义 id，补全 props）。"""
     if not isinstance(raw, dict):
@@ -75,6 +90,13 @@ def normalize_block(raw: Any) -> dict[str, Any]:
     block_type = raw.get("type")
     if block_type not in VALID_BLOCK_TYPES:
         block_type = "paragraph"
+
+    if block_type == "image":
+        props = raw.get("props") if isinstance(raw.get("props"), dict) else {}
+        return {
+            "type": "image",
+            "props": _normalize_image_props(props),
+        }
 
     props = raw.get("props") if isinstance(raw.get("props"), dict) else {}
     normalized: dict[str, Any] = {
@@ -210,11 +232,55 @@ def blocks_to_preview_text(blocks: list[dict[str, Any]], *, max_chars: int = 800
             lines.append(f"```\n{text}\n```")
         elif block_type == "quote":
             lines.append(f"> {text}")
+        elif block_type == "image":
+            caption = str(props.get("caption") or props.get("name") or "图片")
+            lines.append(f"![{caption}]")
         elif text:
             lines.append(text)
         else:
             lines.append("")
     preview = "\n".join(lines).strip()
+    if len(preview) > max_chars:
+        return preview[:max_chars] + "\n\n…（预览已截断）"
+    return preview
+
+
+def _mindmap_node_lines(node: dict[str, Any], depth: int = 0) -> list[str]:
+    """将思维导图节点转为缩进大纲行。"""
+    lines: list[str] = []
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    text = str(data.get("text", "")).strip() or "（空节点）"
+    prefix = "  " * depth + ("- " if depth else "# ")
+    lines.append(f"{prefix}{text}")
+    children = node.get("children")
+    if isinstance(children, list):
+        for child in children:
+            if isinstance(child, dict):
+                lines.extend(_mindmap_node_lines(child, depth + 1))
+    return lines
+
+
+def mindmap_to_preview_text(content: dict[str, Any], *, max_chars: int = 8000) -> str:
+    """思维导图 content → 缩进树形大纲。"""
+    if not isinstance(content, dict):
+        return ""
+    preview = "\n".join(_mindmap_node_lines(content)).strip()
+    if len(preview) > max_chars:
+        return preview[:max_chars] + "\n\n…（预览已截断）"
+    return preview or "（空导图）"
+
+
+def flowchart_to_preview_text(content: dict[str, Any], *, max_chars: int = 8000) -> str:
+    """流程图 content → mxCell 标签列表。"""
+    xml = str(content.get("xml", "")) if isinstance(content, dict) else ""
+    if not xml.strip():
+        return "（空流程图）"
+    labels = re.findall(r'value="([^"]*)"', xml)
+    cleaned = [lbl.strip() for lbl in labels if lbl.strip()]
+    if not cleaned:
+        return "（流程图无文本节点）"
+    lines = [f"{i + 1}. {label}" for i, label in enumerate(cleaned)]
+    preview = "\n".join(lines)
     if len(preview) > max_chars:
         return preview[:max_chars] + "\n\n…（预览已截断）"
     return preview
@@ -231,5 +297,9 @@ def content_to_preview_text(note_type: str, content: dict[str, Any], *, max_char
         blocks = content.get("blocks")
         if isinstance(blocks, list):
             return blocks_to_preview_text(blocks, max_chars=max_chars)
+    if note_type == "mindmap":
+        return mindmap_to_preview_text(content, max_chars=max_chars)
+    if note_type == "flowchart":
+        return flowchart_to_preview_text(content, max_chars=max_chars)
     raw = json.dumps(content, ensure_ascii=False)
     return raw[:max_chars] + ("…" if len(raw) > max_chars else "")

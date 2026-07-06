@@ -4,11 +4,12 @@
  * 特性：文件夹树 + 简洁笔记列表 + 右键菜单 + 搜索筛选
  */
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import toast from 'react-hot-toast';
 import {
   Search, Plus, FileText, Code2, Brain, GitFork,
   MoreHorizontal, Trash2, ArrowUpDown, Folder, FolderOpen,
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
-  BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2,
+  BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, Download,
 } from 'lucide-react';
 import type { Note, NoteFolder, NoteTag } from '../../services/note';
 
@@ -189,6 +190,8 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     onSelectedTagIdsChange?.(next);
   }, [selectedTagIds, selectedTagIdsProp, onSelectedTagIdsChange]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [bulkExporting, setBulkExporting] = useState(false);
+  const [bulkExportProgress, setBulkExportProgress] = useState<{ done: number; total: number } | null>(null);
   // Context menu
   const [contextMenu, setContextMenu] = useState<{
     x: number; y: number; type: 'note' | 'folder'; id: string;
@@ -363,6 +366,39 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
   const sortLabels: Record<SortMode, string> = { updatedAt: '修改时间', createdAt: '创建时间', title: '标题' };
 
+  const handleBulkExport = useCallback(async () => {
+    if (bulkExporting) return;
+    setBulkExporting(true);
+    setBulkExportProgress({ done: 0, total: 0 });
+    try {
+      const { exportAllNotesNative } = await import('../../utils/noteBulkExport');
+      const result = await exportAllNotesNative((done, total) => {
+        setBulkExportProgress({ done, total });
+      });
+
+      if (result.count === 0) {
+        toast.error(result.skippedEmpty > 0 ? '没有可导出的笔记（内容均为空）' : '没有可导出的笔记');
+        return;
+      }
+
+      let message =
+        result.method === 'folder'
+          ? `已导出 ${result.count} 篇笔记到所选文件夹`
+          : `已下载 AIDriveNote-export 压缩包（浏览器默认下载目录）`;
+      if (result.skippedEmpty > 0) {
+        message += `，跳过 ${result.skippedEmpty} 篇空笔记`;
+      }
+      toast.success(message);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      console.error('Bulk export failed:', err);
+      toast.error('导出失败，请重试');
+    } finally {
+      setBulkExporting(false);
+      setBulkExportProgress(null);
+    }
+  }, [bulkExporting]);
+
   /* ── Render a single note item ─────────────────── */
   const renderNoteItem = (note: Note, level: number) => {
     const isSelected = note.id === selectedNoteId;
@@ -442,10 +478,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     return (
       <div key={folder.id}>
         <div
-          onClick={() => {
-            toggleFolder(folder.id);
-            setSelectedCategory({ type: 'folder', folderId: folder.id });
-          }}
+          onClick={() => toggleFolder(folder.id)}
           onContextMenu={(e) => handleContextMenu(e, 'folder', folder.id)}
           className={`group flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg cursor-pointer transition-all ${
             isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50'
@@ -573,6 +606,20 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
           笔记 <span className="text-xs font-normal text-gray-400">({notes.length})</span>
         </h3>
         <div className="flex items-center gap-1">
+          {!isTrashView ? (
+            <button
+              onClick={() => void handleBulkExport()}
+              disabled={bulkExporting}
+              className={`p-1.5 rounded-md transition-colors ${
+                isDark
+                  ? 'text-gray-400 hover:text-white hover:bg-gray-700'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+              } ${bulkExporting ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title="按原格式导出全部笔记"
+            >
+              <Download size={15} />
+            </button>
+          ) : null}
           {onRefresh ? (
             <button
               onClick={() => onRefresh()}
@@ -835,6 +882,25 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
       <div className={`px-4 py-2 border-t text-xs shrink-0 ${isDark ? 'border-gray-700 text-gray-500' : 'border-gray-200 text-gray-400'}`}>
         共 {displayCount} 篇
       </div>
+
+      {/* Bulk export progress overlay */}
+      {bulkExporting && bulkExportProgress ? (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/40">
+          <div className={`rounded-xl shadow-2xl border px-6 py-5 min-w-[240px] text-center ${
+            isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+          }`}>
+            <Download size={24} className={`mx-auto mb-3 ${isDark ? 'text-orange-400' : 'text-orange-600'}`} />
+            <p className={`text-sm font-medium mb-1 ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+              正在导出全部笔记…
+            </p>
+            <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+              {bulkExportProgress.total > 0
+                ? `${bulkExportProgress.done} / ${bulkExportProgress.total}`
+                : '正在拉取笔记…'}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {/* Right-click context menu */}
       {contextMenu && (

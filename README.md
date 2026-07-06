@@ -8,13 +8,13 @@
 
 | 类别 | 能力 |
 |------|------|
-| 笔记类型 | 富文本（BlockNote）、Markdown（GFM / 数学公式 / 代码高亮）、思维导图、流程图（Draw.io） |
+| 笔记类型 | 富文本（BlockNote，支持粘贴图片 base64 内嵌）、Markdown（GFM / 数学公式 / 代码高亮）、思维导图、流程图（Draw.io，图片内嵌 XML） |
 | 组织 | 文件夹树、标签、置顶 / 收藏、模板库、回收站 |
 | 知识链接 | `[[Wiki 链接]]`、反向引用面板 |
 | 搜索 | PostgreSQL 全文检索（TSVECTOR） |
 | 协作 | 笔记分享（view / edit 权限）、用户搜索 |
 | 版本 | 自动保存修订、历史列表、一键恢复 |
-| 导出 | 富文本/Markdown → PDF / DOCX / HTML / MD；导图 → PDF / PNG / JSON；流程图 → PDF / PNG / SVG |
+| 导出 | 富文本/Markdown → PDF / DOCX / HTML / MD；导图 → PDF / PNG / JSON；流程图 → PDF / PNG / SVG；**全部笔记原格式批量导出**（.md / .json / .drawio，保留文件夹层级，优先写入本地目录，否则 ZIP 下载） |
 | AI | 侧栏对话（SSE 流式）、笔记页快捷操作（总结 / 续写 / 优化）、RAG 检索、12 个笔记工具、写入需确认 |
 | 界面 | 深色 / 浅色主题、全屏编辑、`Ctrl/Cmd+N` 新建、`Ctrl/Cmd+Shift+F` 聚焦搜索 |
 

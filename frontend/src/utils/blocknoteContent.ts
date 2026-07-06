@@ -17,6 +17,7 @@ const VALID_BLOCK_TYPES = new Set([
   'checkListItem',
   'codeBlock',
   'quote',
+  'image',
 ]);
 
 type RawBlock = Record<string, unknown>;
@@ -48,6 +49,20 @@ function defaultPropsForType(type: string, props: Record<string, unknown>): Reco
   return merged;
 }
 
+function normalizeImageProps(props: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {
+    ...BASE_PROPS,
+    name: String(props.name ?? ''),
+    url: String(props.url ?? ''),
+    caption: String(props.caption ?? ''),
+    showPreview: props.showPreview !== false,
+  };
+  if (typeof props.previewWidth === 'number' && Number.isFinite(props.previewWidth)) {
+    normalized.previewWidth = props.previewWidth;
+  }
+  return normalized;
+}
+
 /** 将 AI/外部 blocks 转为 BlockNote 可识别的 PartialBlock 列表（剥离自定义 id，补全 props）。 */
 export function normalizeBlocksForBlockNote(raw: unknown): PartialBlock[] {
   let blocks: RawBlock[] = [];
@@ -62,16 +77,22 @@ export function normalizeBlocksForBlockNote(raw: unknown): PartialBlock[] {
   }
 
   return blocks.map(block => {
-    const type = typeof block.type === 'string' && VALID_BLOCK_TYPES.has(block.type)
-      ? block.type
-      : 'paragraph';
-    const props = defaultPropsForType(
-      type,
-      block.props && typeof block.props === 'object' ? (block.props as Record<string, unknown>) : {},
-    );
+    const rawType = typeof block.type === 'string' ? block.type : 'paragraph';
+    const type = VALID_BLOCK_TYPES.has(rawType) ? rawType : 'paragraph';
+    const props = block.props && typeof block.props === 'object'
+      ? (block.props as Record<string, unknown>)
+      : {};
+
+    if (type === 'image') {
+      return {
+        type: 'image',
+        props: normalizeImageProps(props),
+      } as PartialBlock;
+    }
+
     const normalized = {
       type: type as PartialBlock['type'],
-      props: props as PartialBlock['props'],
+      props: defaultPropsForType(type, props) as PartialBlock['props'],
       content: normalizeInlineContent(block.content),
     } as PartialBlock;
     // 不保留 AI 自定义 id / 空 children，避免 BlockNote 解析异常

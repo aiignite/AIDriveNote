@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../contexts/AppContext';
+import { buildNoteQuickActions } from '../utils/noteAIActions';
 import {
   noteApi, noteFolderApi, noteTemplateApi, noteTagApi,
   type Note, type NoteCreate, type NoteUpdate, type NoteFolder, type NoteTag,
@@ -156,14 +157,11 @@ const NotesPage: React.FC = () => {
       pageName: 'notes',
       moduleName: 'note',
       recommendedAssistant: '笔记助手',
+      noteType: selectedNote?.noteType,
       contextHint,
-      quickActions: selectedNote ? [
-        { label: '总结', prompt: `请总结当前笔记「${selectedNote.title}」` },
-        { label: '续写', prompt: `请续写当前笔记「${selectedNote.title}」` },
-        { label: '优化', prompt: `请优化润色当前笔记「${selectedNote.title}」` },
-      ] : [
-        { label: '创建笔记', prompt: '帮我创建一条新笔记' },
-      ],
+      quickActions: selectedNote
+        ? buildNoteQuickActions(selectedNote.noteType, selectedNote.title)
+        : buildNoteQuickActions(undefined, ''),
       selectedEntities: selectedNote
         ? [{ type: 'note', id: selectedNote.id, name: selectedNote.title }]
         : undefined,
