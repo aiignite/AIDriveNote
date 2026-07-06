@@ -75,8 +75,11 @@ class ToolRegistry:
     def get_label_map(cls) -> dict[str, str]:
         return {name: tool.label_zh for name, tool in cls._tools.items()}
 
-    @classmethod
-    def _filter_handler_kwargs(handler: ToolHandler, kwargs: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _filter_handler_kwargs(
+        handler: ToolHandler,
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
         sig = inspect.signature(handler)
         allowed = {
             name
@@ -102,8 +105,4 @@ class ToolRegistry:
             return await tool.handler(db, user_id, **handler_kwargs)
         except Exception as exc:
             logger.exception("Tool execution failed: %s", tool_name)
-            try:
-                await db.rollback()
-            except Exception:
-                pass
             return {"success": False, "error": str(exc)}

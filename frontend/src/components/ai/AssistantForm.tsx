@@ -282,7 +282,7 @@ export const AssistantForm: React.FC<AssistantFormProps> = ({ assistant, onSave,
                   ) : models.length === 0 ? (
                     <div className={`${INPUT} text-slate-500`}>
                       暂无可用模型，请先到
-                      <a href="/settings/ai/models" className="mx-1 text-emerald-600 underline">
+                      <a href="/settings/models" className="mx-1 text-emerald-600 underline">
                         模型管理
                       </a>
                       添加。

@@ -25,7 +25,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           <button type="button" onClick={openAI} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="AI 助手">
             <Bot size={18} className="text-orange-500" />
           </button>
-          <Link to="/settings/ai" className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="AI 设置">
+          <Link to="/settings" className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="设置">
             <Settings size={18} className={isDark ? 'text-gray-300' : 'text-gray-600'} />
           </Link>
           <button type="button" onClick={toggleTheme} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}>

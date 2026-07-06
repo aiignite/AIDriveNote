@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 import time
@@ -20,6 +21,8 @@ import app.ai_tools  # noqa: F401
 from app.auth import get_current_user
 from app.database import get_db
 from app.exceptions import BadRequestException, NotFoundException
+
+logger = logging.getLogger(__name__)
 from app.models.ai import (
     AIAssistant,
     AIAssistantSkillBinding,
@@ -911,15 +914,28 @@ async def chat_stream(
     user: User = Depends(get_current_user),
 ):
     async def event_generator():
-        async for chunk in AIService.chat_stream(
-            db,
-            user.id,
-            body.message,
-            assistant_name=body.assistant_name,
-            conversation_id=body.conversation_id,
-            page_context=body.page_context,
-            model_id=body.model_id,
-        ):
-            yield chunk
+        try:
+            async for chunk in AIService.chat_stream(
+                db,
+                user.id,
+                body.message,
+                assistant_name=body.assistant_name,
+                conversation_id=body.conversation_id,
+                page_context=body.page_context,
+                model_id=body.model_id,
+            ):
+                yield chunk
+        except Exception as exc:
+            logger.exception("AI chat stream failed")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

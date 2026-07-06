@@ -49,6 +49,11 @@ class MiniMaxProvider(BaseAIProvider):
         out: list[dict[str, Any]] = []
         for m in messages:
             item: dict[str, Any] = {"role": m.role, "content": m.content or ""}
+            if m.role == "tool":
+                tc_id = (m.tool_call_id or "").strip()
+                if not tc_id:
+                    tc_id = f"call_{uuid.uuid4().hex[:8]}"
+                item["tool_call_id"] = tc_id
             if m.tool_calls:
                 item["tool_calls"] = [
                     {

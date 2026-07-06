@@ -42,6 +42,7 @@ class UserOut(BaseModel):
     email: str
     name: str
     status: str
+    role: str
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -53,7 +54,9 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         raise ConflictException("Email already registered")
     await db.commit()
     await db.refresh(user)
-    return UserOut(id=str(user.id), email=user.email, name=user.name, status=user.status)
+    return UserOut(
+        id=str(user.id), email=user.email, name=user.name, status=user.status, role=user.role,
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -85,4 +88,6 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(get_current_user)):
-    return UserOut(id=str(user.id), email=user.email, name=user.name, status=user.status)
+    return UserOut(
+        id=str(user.id), email=user.email, name=user.name, status=user.status, role=user.role,
+    )

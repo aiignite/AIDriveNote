@@ -10,3 +10,4 @@
 | [AIDriveNote AI 配置移植](./AIDriveNote-AI配置移植.md) | completed | 2026-07-04 | AI 模型/助手/技能平台 |
 | [AIDriveNote AI助手配置移植](./AIDriveNote%20AI助手配置移植.md) | completed | 2026-07-04 | DB 驱动 AI 平台 + 设置页 + AISidebar 升级 |
 | [AIDriveNote 前端加载优化](./AIDriveNote前端加载优化.md) | completed | 2026-07-05 | gzip + 路由懒加载 + 编辑器按需加载 |
+| [Admin 账户管理页](./Admin账户管理页.md) | completed | 2026-07-05 | 用户角色体系 + Admin 用户管理页 |

@@ -34,6 +34,11 @@ export function isAuthenticated() {
   return !!accessToken;
 }
 
+/** SSO: portal may authenticate via HttpOnly cookie without localStorage token. */
+export function mayHaveSession() {
+  return true;
+}
+
 export type QueryValue = string | number | boolean | undefined | null;
 
 export function buildQuery(params?: Record<string, QueryValue | unknown>) {
@@ -85,7 +90,7 @@ async function request<T>(
   };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
-  const res = await fetch(resolveUrl(path), { ...options, headers });
+  const res = await fetch(resolveUrl(path), { ...options, headers, credentials: 'include' });
 
   if (res.status === 401 && !retried && !path.includes('/auth/')) {
     const ok = await refreshAccessToken();
