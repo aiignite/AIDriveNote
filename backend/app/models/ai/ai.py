@@ -142,6 +142,7 @@ class AISkill(Base):
     tool_names: Mapped[list] = mapped_column(JSONB, default=list)
     keywords: Mapped[list] = mapped_column(JSONB, default=list)
     priority: Mapped[int] = mapped_column(Integer, default=50)
+    extra_config: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)

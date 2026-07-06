@@ -4,8 +4,11 @@ from __future__ import annotations
 import json
 
 from app.services.note.rich_text_blocks import (
+    content_to_preview_text,
+    flowchart_to_preview_text,
     markdown_to_blocks,
     merge_rich_text_blocks,
+    mindmap_to_preview_text,
     normalize_blocks,
     parse_rich_text_content,
 )
@@ -54,3 +57,48 @@ def test_normalize_strips_custom_id() -> None:
     blocks = normalize_blocks(raw)
     assert "id" not in blocks[0]
     assert blocks[0]["props"]["textColor"] == "default"
+
+
+def test_normalize_preserves_image_block() -> None:
+    raw = [{
+        "type": "image",
+        "props": {
+            "url": "data:image/png;base64,abc",
+            "name": "shot.png",
+            "caption": "截图",
+            "previewWidth": 320,
+        },
+    }]
+    blocks = normalize_blocks(raw)
+    assert blocks[0]["type"] == "image"
+    assert blocks[0]["props"]["url"] == "data:image/png;base64,abc"
+    assert blocks[0]["props"]["previewWidth"] == 320
+    assert "content" not in blocks[0]
+
+
+def test_mindmap_to_preview_text() -> None:
+    tree = {
+        "data": {"text": "Root"},
+        "children": [
+            {"data": {"text": "Child A"}, "children": []},
+            {"data": {"text": "Child B"}, "children": [
+                {"data": {"text": "Grandchild"}, "children": []},
+            ]},
+        ],
+    }
+    preview = mindmap_to_preview_text(tree)
+    assert "# Root" in preview
+    assert "Child A" in preview
+    assert "Grandchild" in preview
+
+
+def test_flowchart_to_preview_text() -> None:
+    xml = '<mxCell id="1" value="开始"/><mxCell id="2" value="处理"/>'
+    preview = flowchart_to_preview_text({"xml": xml})
+    assert "1. 开始" in preview
+    assert "2. 处理" in preview
+
+
+def test_content_to_preview_text_mindmap() -> None:
+    tree = {"data": {"text": "中心"}, "children": []}
+    assert "中心" in content_to_preview_text("mindmap", tree)

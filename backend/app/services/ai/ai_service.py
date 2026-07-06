@@ -8,7 +8,6 @@ from typing import Any, AsyncIterator
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.ai_tools.registry import ToolRegistry
 from app.models.ai import AIAssistant, AIConversation, AIMessage
@@ -20,17 +19,21 @@ from app.services.ai_providers.factory import AIProviderFactory
 from app.services.ai_skills.skill_router import SkillRouter
 
 logger = logging.getLogger(__name__)
-MAX_TOOL_ROUNDS = 3
+MAX_TOOL_ROUNDS = 5
 
 
 def _build_page_context_prompt(page_context: dict[str, Any] | None) -> str:
     if not page_context:
         return ""
     parts = []
+    if page_context.get("noteType"):
+        parts.append(f"当前笔记类型: {page_context['noteType']}")
     if page_context.get("contextHint"):
         parts.append(str(page_context["contextHint"]))
     if page_context.get("selectedEntities"):
         parts.append(f"选中实体：{json.dumps(page_context['selectedEntities'], ensure_ascii=False)}")
+    if page_context.get("selectionText"):
+        parts.append(f"编辑器选区：\n```\n{page_context['selectionText']}\n```")
     return "\n".join(parts)
 
 
@@ -87,10 +90,21 @@ class AIService:
             .order_by(AIMessage.created_at)
             .limit(20)
         )
-        messages = []
+        messages: list[ChatMessage] = []
         for m in result.scalars().all():
             if m.role in {"user", "assistant", "system"}:
-                messages.append(ChatMessage(role=m.role, content=m.content or ""))
+                msg = ChatMessage(role=m.role, content=m.content or "")
+                if m.role == "assistant" and m.tool_calls:
+                    msg.tool_calls = m.tool_calls
+                messages.append(msg)
+            if m.role == "assistant" and m.tool_results:
+                for tr in m.tool_results or []:
+                    if not isinstance(tr, dict):
+                        continue
+                    messages.append(ChatMessage(
+                        role="tool",
+                        content=json.dumps(tr.get("result") or {}, ensure_ascii=False),
+                    ))
         return messages
 
     @staticmethod
@@ -128,14 +142,18 @@ class AIService:
             page_name=(page_context or {}).get("pageName"),
             message=message,
             assistant=assistant,
+            page_context=page_context,
         )
+        if skill_match:
+            yield f"data: {json.dumps({'type': 'skill_match', 'skillName': skill_match.skill.name, 'reason': skill_match.reason}, ensure_ascii=False)}\n\n"
+
         system_parts = [assistant.system_prompt]
         if skill_match:
             system_parts.append(f"## 激活技能：{skill_match.skill.name}\n{skill_match.skill.prompt_template}")
         page_hint = _build_page_context_prompt(page_context)
         if page_hint:
             system_parts.append(f"## 页面上下文\n{page_hint}")
-        rag = await RagService.build_context(db, user_id, message, top_k=5)
+        rag = await RagService.build_context(db, user_id, message, top_k=5, page_context=page_context)
         if rag:
             system_parts.append(rag)
 
@@ -151,11 +169,6 @@ class AIService:
         tool_names = SkillRouter.merge_tool_names(assistant.tools, skill_match.skill if skill_match else None)
         executor = ToolExecutor(db, user_id)
         tool_defs = executor.get_tools_for_assistant(tool_names)
-        for td in tool_defs:
-            if "type" not in td:
-                td_wrapped = {"type": "function", "function": td}
-            else:
-                td_wrapped = td
         openai_tools = [
             {"type": "function", "function": t.get("function", t)} for t in tool_defs
         ]
@@ -172,6 +185,7 @@ class AIService:
         options = ChatOptions(
             model=resolution.model_id,
             temperature=resolution.temperature,
+            max_tokens=assistant.max_tokens,
             tools=openai_tools or None,
             base_url=resolution.endpoint,
             api_key=resolution.api_key,
@@ -179,6 +193,7 @@ class AIService:
 
         full_content = ""
         all_tool_results: list[dict[str, Any]] = []
+        all_tool_calls: list[dict[str, Any]] = []
         working_messages = list(messages)
 
         for _round in range(MAX_TOOL_ROUNDS):
@@ -197,6 +212,7 @@ class AIService:
             if not round_tool_calls:
                 break
 
+            all_tool_calls.extend(round_tool_calls)
             working_messages.append(ChatMessage(
                 role="assistant",
                 content=round_content,
@@ -221,6 +237,7 @@ class AIService:
             conversation_id=conv.id,
             role="assistant",
             content=full_content,
+            tool_calls=all_tool_calls or None,
             tool_results=all_tool_results,
         ))
         if conv.title == "新对话" and message:

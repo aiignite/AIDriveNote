@@ -3,12 +3,19 @@ import type { PageAIContext } from '../services/ai/ai';
 
 type Theme = 'light' | 'dark';
 
+export interface OpenAIOptions {
+  presetMessage?: string;
+  selectionText?: string;
+}
+
 interface AppContextValue {
   theme: Theme;
   toggleTheme: () => void;
   aiOpen: boolean;
-  openAI: () => void;
+  openAI: (opts?: OpenAIOptions) => void;
   closeAI: () => void;
+  aiPreset: OpenAIOptions | null;
+  clearAIPreset: () => void;
   /** @deprecated use pageAIContext */
   aiContextHint: string;
   setAiContextHint: (hint: string) => void;
@@ -16,6 +23,8 @@ interface AppContextValue {
   setPageAIContext: (ctx: PageAIContext | null) => void;
   notesRefreshToken: number;
   bumpNotesRefresh: () => void;
+  sidebarWidth: number;
+  setSidebarWidth: (w: number) => void;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -25,9 +34,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (localStorage.getItem('aidrivenote.theme') as Theme) || 'light',
   );
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiPreset, setAiPreset] = useState<OpenAIOptions | null>(null);
   const [aiContextHint, setAiContextHint] = useState('');
   const [pageAIContext, setPageAIContext] = useState<PageAIContext | null>(null);
   const [notesRefreshToken, setNotesRefreshToken] = useState(0);
+  const [sidebarWidth, setSidebarWidth] = useState(400);
+
+  const openAI = useCallback((opts?: OpenAIOptions) => {
+    if (opts) setAiPreset(opts);
+    setAiOpen(true);
+  }, []);
+
+  const clearAIPreset = useCallback(() => setAiPreset(null), []);
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
@@ -43,16 +61,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       theme,
       toggleTheme,
       aiOpen,
-      openAI: () => setAiOpen(true),
+      openAI,
       closeAI: () => setAiOpen(false),
+      aiPreset,
+      clearAIPreset,
       aiContextHint,
       setAiContextHint,
       pageAIContext,
       setPageAIContext,
       notesRefreshToken,
       bumpNotesRefresh: () => setNotesRefreshToken(t => t + 1),
+      sidebarWidth,
+      setSidebarWidth,
     }),
-    [theme, toggleTheme, aiOpen, aiContextHint, pageAIContext, notesRefreshToken],
+    [theme, toggleTheme, aiOpen, openAI, clearAIPreset, aiContextHint, pageAIContext, notesRefreshToken, sidebarWidth],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

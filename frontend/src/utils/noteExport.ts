@@ -6,7 +6,7 @@ import jsPDF from 'jspdf';
 import { saveAs } from 'file-saver';
 import {
   Document, Packer, Paragraph, TextRun, HeadingLevel,
-  AlignmentType,
+  AlignmentType, ImageRun,
 } from 'docx';
 import type { ExportFormat } from './noteExportOptions';
 
@@ -55,10 +55,42 @@ function md2html(md: string): string {
 
 /* ────── 辅助：BlockNote blocks → 纯文本 / HTML ────── */
 
+type DocxImageType = 'png' | 'jpg' | 'gif';
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function parseDataUrlImage(url: string): { type: DocxImageType; data: Uint8Array } | null {
+  const match = url.match(/^data:image\/(png|jpe?g|gif);base64,(.+)$/i);
+  if (!match) return null;
+  const mime = match[1].toLowerCase();
+  const type: DocxImageType = mime === 'png' ? 'png' : mime === 'gif' ? 'gif' : 'jpg';
+  try {
+    const binary = atob(match[2]);
+    const data = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) data[i] = binary.charCodeAt(i);
+    return { type, data };
+  } catch {
+    return null;
+  }
+}
+
 function blocksToText(blocks: any[]): string {
   if (!blocks?.length) return '';
   const lines: string[] = [];
   for (const b of blocks) {
+    if (b.type === 'image') {
+      const alt = b.props?.caption || b.props?.name || '图片';
+      const url = b.props?.url ?? '';
+      lines.push(url ? `![${alt}](${url})` : `[${alt}]`);
+      if (b.children?.length) lines.push(blocksToText(b.children));
+      continue;
+    }
     let text = '';
     if (Array.isArray(b.content)) {
       text = b.content.map((c: any) => c.text ?? '').join('');
@@ -74,6 +106,22 @@ function blocksToHtml(blocks: any[]): string {
   if (!blocks?.length) return '';
   const parts: string[] = [];
   for (const b of blocks) {
+    if (b.type === 'image') {
+      const url = b.props?.url;
+      const alt = escapeHtml(b.props?.caption || b.props?.name || 'image');
+      if (url) {
+        const width = b.props?.previewWidth;
+        const style = width
+          ? ` style="width:${Number(width)}px;max-width:100%;"`
+          : ' style="max-width:100%;"';
+        const caption = b.props?.caption
+          ? `<figcaption>${escapeHtml(b.props.caption)}</figcaption>`
+          : '';
+        parts.push(`<figure><img src="${url}" alt="${alt}"${style} />${caption}</figure>`);
+      }
+      if (b.children?.length) parts.push(blocksToHtml(b.children));
+      continue;
+    }
     let text = '';
     if (Array.isArray(b.content)) {
       text = b.content.map((c: any) => {
@@ -234,6 +282,35 @@ function parseBlocksToParagraphs(blocks: any[]): Paragraph[] {
   if (!blocks?.length) return paragraphs;
 
   for (const b of blocks) {
+    if (b.type === 'image') {
+      const url = b.props?.url;
+      const parsed = typeof url === 'string' ? parseDataUrlImage(url) : null;
+      const previewWidth = typeof b.props?.previewWidth === 'number' ? b.props.previewWidth : 480;
+      if (parsed) {
+        paragraphs.push(new Paragraph({
+          children: [
+            new ImageRun({
+              type: parsed.type,
+              data: parsed.data,
+              transformation: { width: previewWidth, height: Math.round(previewWidth * 0.75) },
+            }),
+          ],
+          spacing: { after: 120 },
+        }));
+      } else if (b.props?.caption || b.props?.name) {
+        paragraphs.push(new Paragraph({
+          children: [new TextRun({
+            text: String(b.props.caption || b.props.name),
+            font: 'Microsoft YaHei',
+            size: 22,
+          })],
+          spacing: { after: 120 },
+        }));
+      }
+      if (b.children?.length) paragraphs.push(...parseBlocksToParagraphs(b.children));
+      continue;
+    }
+
     const runs: TextRun[] = [];
     if (Array.isArray(b.content)) {
       for (const c of b.content) {

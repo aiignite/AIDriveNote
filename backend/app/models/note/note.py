@@ -74,6 +74,7 @@ class Note(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     search_text: Mapped[str | None] = mapped_column(Text)
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR)
+    content_embedding: Mapped[list | None] = mapped_column(JSONB)
 
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),

@@ -52,6 +52,16 @@ const NoteChangeConfirmCard: React.FC<NoteChangeConfirmCardProps> = ({
     ? pending.addedPreviewText
     : pending.previewText;
   const showDiff = pending.changeType === 'update' && pending.currentPreviewText && previewBody;
+  const isStructured = pending.noteType === 'mindmap' || pending.noteType === 'flowchart';
+
+  const renderPreviewBody = (text: string) => {
+    if (isStructured) {
+      return (
+        <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{text}</pre>
+      );
+    }
+    return <AIChatMarkdown content={text} />;
+  };
 
   return (
     <div
@@ -67,6 +77,7 @@ const NoteChangeConfirmCard: React.FC<NoteChangeConfirmCardProps> = ({
           </p>
           <p className="text-[11px] text-orange-800/80 dark:text-orange-300/80 mt-0.5">
             以下内容尚未写入笔记，请确认后再应用。
+            {isStructured && ' （结构预览）'}
           </p>
           <button
             type="button"
@@ -81,19 +92,19 @@ const NoteChangeConfirmCard: React.FC<NoteChangeConfirmCardProps> = ({
                 <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-900/40 p-2">
                   <p className="text-[10px] font-semibold text-gray-500 mb-1">当前内容</p>
                   <div className="text-xs">
-                    <AIChatMarkdown content={pending.currentPreviewText!} />
+                    {renderPreviewBody(pending.currentPreviewText!)}
                   </div>
                 </div>
                 <div className="rounded-lg border border-orange-200 dark:border-orange-800 bg-white/80 dark:bg-gray-900/40 p-2">
                   <p className="text-[10px] font-semibold text-orange-600 mb-1">变更后</p>
                   <div className="text-xs">
-                    <AIChatMarkdown content={previewBody} />
+                    {renderPreviewBody(previewBody)}
                   </div>
                 </div>
               </div>
             ) : (
               <div className="mt-2 max-h-64 overflow-y-auto rounded-lg border border-orange-100 dark:border-orange-900/50 bg-white/80 dark:bg-gray-900/40 p-3 text-xs">
-                <AIChatMarkdown content={previewBody} />
+                {renderPreviewBody(previewBody)}
               </div>
             )
           )}

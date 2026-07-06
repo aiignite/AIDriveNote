@@ -17,6 +17,7 @@ class ChatMessage:
 class ChatOptions:
     model: str | None = None
     temperature: float | None = None
+    max_tokens: int | None = None
     tools: list[dict[str, Any]] | None = None
     base_url: str | None = None
     api_key: str | None = None

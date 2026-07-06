@@ -1,225 +1,152 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, History, Loader2, Plus, Send, X } from 'lucide-react';
+import { Bot, History, Loader2, Plus, Send, Sparkles, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   aiApi,
-  buildChatPageContext,
   type AIAssistant,
   type AIConversation,
+  type AIModel,
 } from '../../services/ai/ai';
-import { noteApi } from '../../services/note';
 import { useApp } from '../../contexts/AppContext';
-import NoteChangeConfirmCard, { type NotePendingChange } from './NoteChangeConfirmCard';
+import { useAIChat } from '../../hooks/useAIChat';
+import NoteChangeConfirmCard from './NoteChangeConfirmCard';
 import AIChatMarkdown from './AIChatMarkdown';
 
-interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-  notePendingChange?: NotePendingChange;
-  applied?: boolean;
-  dismissed?: boolean;
-}
-
-function parseNotePendingChange(result: Record<string, unknown>): NotePendingChange | null {
-  if (!result?.requires_confirmation || !result?.note_id) return null;
-  if (!result.proposed_content || typeof result.proposed_content !== 'object') return null;
-  return {
-    noteId: String(result.note_id),
-    noteTitle: String(result.note_title || '笔记'),
-    noteType: String(result.note_type || 'markdown'),
-    changeType: result.change_type === 'append' ? 'append' : 'update',
-    proposedContent: result.proposed_content as Record<string, unknown>,
-    proposedTitle: result.proposed_title != null ? String(result.proposed_title) : null,
-    previewText: String(result.preview_text || ''),
-    addedPreviewText: result.added_preview_text != null ? String(result.added_preview_text) : null,
-    currentPreviewText: result.current_preview_text != null ? String(result.current_preview_text) : null,
-  };
-}
-
 const AISidebar: React.FC = () => {
-  const { aiOpen, closeAI, pageAIContext, bumpNotesRefresh, theme } = useApp();
+  const {
+    aiOpen, closeAI, pageAIContext, bumpNotesRefresh, theme,
+    aiPreset, clearAIPreset, sidebarWidth, setSidebarWidth,
+  } = useApp();
   const isDark = theme === 'dark';
 
   const [assistants, setAssistants] = useState<AIAssistant[]>([]);
+  const [models, setModels] = useState<AIModel[]>([]);
   const [selectedAssistant, setSelectedAssistant] = useState('笔记助手');
+  const [selectedModelId, setSelectedModelId] = useState<string | undefined>();
   const [conversations, setConversations] = useState<AIConversation[]>([]);
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [showHistory, setShowHistory] = useState(false);
-
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [streamingContent, setStreamingContent] = useState('');
-  const [applyingIndex, setApplyingIndex] = useState<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const {
+    messages, loading, streamingContent, activeSkill, applyingIndex,
+    sendMessage, handleApply, handleConfirmDelete, handleDismiss,
+    loadMessagesFromHistory, setMessages,
+  } = useAIChat({
+    pageAIContext,
+    bumpNotesRefresh,
+    selectedAssistant,
+    conversationId,
+    modelId: selectedModelId,
+    onConversationId: setConversationId,
+  });
 
   useEffect(() => {
     if (!aiOpen) return;
     void (async () => {
       try {
-        const [asst, convs] = await Promise.all([
+        const [asst, convs, modelList, settings] = await Promise.all([
           aiApi.listAssistants(),
           aiApi.listConversations(),
+          aiApi.listModels().catch(() => [] as AIModel[]),
+          aiApi.getSettings().catch(() => null),
         ]);
         setAssistants(asst);
         setConversations(convs);
-        if (asst.length && !asst.find(a => a.name === selectedAssistant)) {
+        setModels(modelList);
+        if (settings?.sidebarWidth) setSidebarWidth(settings.sidebarWidth);
+
+        const recommended = pageAIContext?.recommendedAssistant;
+        if (recommended && asst.find(a => a.name === recommended)) {
+          setSelectedAssistant(recommended);
+        } else if (asst.length && !asst.find(a => a.name === selectedAssistant)) {
           setSelectedAssistant(asst.find(a => a.isDefault)?.name ?? asst[0].name);
         }
       } catch {
         /* ignore load errors */
       }
     })();
-  }, [aiOpen, selectedAssistant]);
+  }, [aiOpen, pageAIContext?.recommendedAssistant, selectedAssistant, setSidebarWidth]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading, streamingContent]);
 
+  useEffect(() => {
+    if (!aiOpen || !aiPreset) return;
+    const { presetMessage, selectionText } = aiPreset;
+    clearAIPreset();
+    if (presetMessage) {
+      void sendMessage(presetMessage, selectionText);
+    }
+    inputRef.current?.focus();
+  }, [aiOpen, aiPreset, clearAIPreset, sendMessage]);
+
   const loadConversation = useCallback(async (id: string) => {
     try {
       const msgs = await aiApi.listMessages(id);
       setConversationId(id);
-      setMessages(msgs.map(m => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      })));
+      loadMessagesFromHistory(msgs);
       setShowHistory(false);
     } catch {
       toast.error('加载会话失败');
     }
-  }, []);
+  }, [loadMessagesFromHistory]);
 
   const startNewConversation = useCallback(() => {
     setConversationId(undefined);
     setMessages([]);
     setShowHistory(false);
-  }, []);
+  }, [setMessages]);
 
-  const sendMessage = useCallback(async (textOverride?: string) => {
-    const text = (textOverride ?? input).trim();
-    if (!text || loading) return;
-    if (!textOverride) setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: text }]);
-    setLoading(true);
-    setStreamingContent('');
-
-    let assistantContent = '';
-    let pending: NotePendingChange | null = null;
-    let newConversationId = conversationId;
-
-    try {
-      const stream = aiApi.chatStream({
-        message: text,
-        assistantName: selectedAssistant,
-        conversationId,
-        pageContext: buildChatPageContext(pageAIContext),
-      });
-
-      for await (const event of stream) {
-        if (event.type === 'content' && event.content) {
-          assistantContent += event.content;
-          setStreamingContent(assistantContent);
-        } else if (event.type === 'tool_result' && event.result) {
-          const result = event.result;
-          if (result.success === false && result.error) {
-            assistantContent += `\n\n⚠️ ${result.error}`;
-            setStreamingContent(assistantContent);
-          }
-          const preview = parseNotePendingChange(result);
-          if (preview) pending = preview;
-          if (result.message && typeof result.message === 'string') {
-            assistantContent += `\n\n${result.message}`;
-            setStreamingContent(assistantContent);
-          }
-        } else if (event.type === 'done' && event.conversationId) {
-          newConversationId = event.conversationId;
-        } else if (event.type === 'error' && event.content) {
-          assistantContent += event.content;
-          setStreamingContent(assistantContent);
-        }
-      }
-
-      setConversationId(newConversationId);
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: assistantContent.trim() || '已完成操作。',
-        notePendingChange: pending ?? undefined,
-      }]);
-      setStreamingContent('');
-
-      if (newConversationId) {
-        const convs = await aiApi.listConversations();
-        setConversations(convs);
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'AI 请求失败');
-      setMessages(prev => prev.slice(0, -1));
-    } finally {
-      setLoading(false);
-      setStreamingContent('');
-    }
-  }, [input, loading, selectedAssistant, conversationId, pageAIContext]);
-
-  const handleApply = useCallback(async (index: number) => {
-    const msg = messages[index];
-    const pending = msg?.notePendingChange;
-    if (!pending || pending.applied) return;
-    setApplyingIndex(index);
-    try {
-      await noteApi.update(pending.noteId, {
-        content: pending.proposedContent,
-        title: pending.proposedTitle ?? undefined,
-      });
-      setMessages(prev => prev.map((m, i) =>
-        i === index && m.notePendingChange
-          ? { ...m, notePendingChange: { ...m.notePendingChange, applied: true } }
-          : m,
-      ));
-      bumpNotesRefresh();
-      toast.success('已应用到笔记');
-    } catch {
-      toast.error('应用失败');
-    } finally {
-      setApplyingIndex(null);
-    }
-  }, [messages, bumpNotesRefresh]);
-
-  const handleDismiss = useCallback((index: number) => {
-    setMessages(prev => prev.map((m, i) =>
-      i === index && m.notePendingChange
-        ? { ...m, notePendingChange: { ...m.notePendingChange, dismissed: true } }
-        : m,
-    ));
-  }, []);
+  const onSend = useCallback(() => {
+    const text = input.trim();
+    if (!text) return;
+    setInput('');
+    void sendMessage(text);
+  }, [input, sendMessage]);
 
   const quickActions = pageAIContext?.quickActions ?? [];
 
   if (!aiOpen) return null;
 
   const currentAssistant = assistants.find(a => a.name === selectedAssistant);
+  const panelWidth = Math.min(Math.max(sidebarWidth, 320), 600);
 
   return (
-    <div className={`fixed inset-y-0 right-0 z-40 w-full max-w-md flex flex-col border-l shadow-xl ${isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}>
+    <div
+      className={`fixed inset-y-0 right-0 z-40 flex flex-col border-l shadow-xl ${isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}
+      style={{ width: panelWidth, maxWidth: '100vw' }}
+    >
       <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <Bot size={18} className="text-orange-500 shrink-0" />
           <select
             value={selectedAssistant}
             onChange={e => setSelectedAssistant(e.target.value)}
-            className={`text-sm font-semibold bg-transparent outline-none truncate max-w-[140px] ${isDark ? 'text-white' : 'text-gray-900'}`}
+            className={`text-sm font-semibold bg-transparent outline-none truncate max-w-[120px] ${isDark ? 'text-white' : 'text-gray-900'}`}
           >
             {(assistants.length ? assistants : [{ name: '笔记助手' } as AIAssistant]).map(a => (
               <option key={a.name} value={a.name}>{a.name}</option>
             ))}
           </select>
-          {currentAssistant?.model && (
-            <span className={`text-xs truncate hidden sm:inline ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-              {currentAssistant.model}
-            </span>
+          {models.length > 0 && (
+            <select
+              value={selectedModelId ?? ''}
+              onChange={e => setSelectedModelId(e.target.value || undefined)}
+              className={`text-xs bg-transparent outline-none truncate max-w-[100px] ${isDark ? 'text-gray-400' : 'text-gray-500'}`}
+              title="会话模型"
+            >
+              <option value="">默认模型</option>
+              {models.map(m => (
+                <option key={m.id} value={m.modelId}>{m.name}</option>
+              ))}
+            </select>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           <button type="button" onClick={startNewConversation} title="新对话" className={`p-1 rounded ${isDark ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}>
             <Plus size={16} />
           </button>
@@ -231,6 +158,16 @@ const AISidebar: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {activeSkill && (
+        <div className={`px-3 py-1.5 border-b flex items-center gap-1.5 text-xs ${isDark ? 'border-gray-700 bg-orange-950/20 text-orange-300' : 'border-orange-100 bg-orange-50 text-orange-700'}`}>
+          <Sparkles size={12} />
+          <span>{activeSkill.name}</span>
+          {activeSkill.reason && (
+            <span className={`truncate ${isDark ? 'text-orange-400/70' : 'text-orange-600/70'}`}>· {activeSkill.reason}</span>
+          )}
+        </div>
+      )}
 
       {showHistory && (
         <div className={`max-h-40 overflow-y-auto border-b ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50'}`}>
@@ -290,6 +227,17 @@ const AISidebar: React.FC = () => {
                 onDismiss={() => handleDismiss(idx)}
               />
             )}
+            {msg.role === 'assistant' && msg.deletePending && (
+              <div className="mt-3 rounded-xl border border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-950/20 p-3">
+                <p className="text-xs text-red-800 dark:text-red-200 mb-2">
+                  确认删除笔记「{msg.deletePending.noteTitle}」？
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button type="button" onClick={() => setMessages(prev => prev.map((m, i) => i === idx ? { ...m, deletePending: undefined } : m))} className="px-3 py-1.5 text-xs rounded-lg">取消</button>
+                  <button type="button" disabled={applyingIndex === idx} onClick={() => void handleConfirmDelete(idx)} className="px-3 py-1.5 text-xs rounded-lg bg-red-600 text-white">确认删除</button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
         {streamingContent && (
@@ -308,23 +256,27 @@ const AISidebar: React.FC = () => {
       <div className={`p-3 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
         <div className="flex gap-2">
           <input
+            ref={inputRef}
             value={input}
             onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), void sendMessage())}
-            placeholder="输入消息…"
+            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), onSend())}
+            placeholder="输入消息… (⌘J 聚焦)"
             className={`flex-1 rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-500 ${
               isDark ? 'bg-gray-800 border-gray-600 text-white' : 'bg-white border-gray-300'
             }`}
           />
           <button
             type="button"
-            onClick={() => void sendMessage()}
+            onClick={onSend}
             disabled={loading || !input.trim()}
             className="rounded-lg bg-orange-600 text-white p-2 disabled:opacity-50"
           >
             <Send size={18} />
           </button>
         </div>
+        {currentAssistant?.model && !selectedModelId && (
+          <p className={`text-[10px] mt-1 ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>模型: {currentAssistant.model}</p>
+        )}
       </div>
     </div>
   );

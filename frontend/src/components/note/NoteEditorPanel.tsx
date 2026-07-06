@@ -4,6 +4,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Save, FileText, Code2, Brain, GitFork, Download, ChevronDown, Star, History, Link2, Share2, X, Plus, BookTemplate, Tag } from 'lucide-react';
 import toast from 'react-hot-toast';
+import EditorAIButton from '../ai/EditorAIButton';
 import NoteEditorContainer from './NoteEditorContainer';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
 import {
@@ -430,6 +431,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           >
             <Share2 size={14} />
           </button>
+          <EditorAIButton noteType={note.noteType} title={title} isDark={isDark} />
           {saving && (
             <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>保存中...</span>
           )}
@@ -671,6 +673,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           ref={note.noteType === 'mindmap' ? mindMapEditorRef : undefined}
           key={note.id}
           noteId={note.id}
+          noteTitle={title}
           noteType={note.noteType as 'rich_text' | 'markdown' | 'mindmap' | 'flowchart'}
           content={contentForEditor}
           contentResetKey={contentResetKey}

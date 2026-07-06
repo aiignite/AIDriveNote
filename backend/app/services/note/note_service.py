@@ -290,6 +290,12 @@ class NoteService:
                 user_id = refreshed.created_by or data.get("updated_by")
                 if user_id and content_changed:
                     await NoteLinkService.sync_links(db, refreshed, user_id)
+                try:
+                    from app.services.ai.embedding_service import EmbeddingService
+                    await EmbeddingService.update_note_embedding(db, refreshed)
+                    await db.commit()
+                except Exception:
+                    pass
         return await NoteService.get_note(db, note_id)
 
     @staticmethod

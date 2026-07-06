@@ -3,6 +3,7 @@
  * 单实例 + replaceBlocks 切换笔记；contentResetKey 变化时整实例重建（AI 刷新）。
  */
 import React, { useCallback, useEffect, useRef } from 'react';
+import toast from 'react-hot-toast';
 import { BlockNoteEditor, PartialBlock } from '@blocknote/core';
 import { useCreateBlockNote } from '@blocknote/react';
 import { BlockNoteView } from '@blocknote/mantine';
@@ -14,6 +15,8 @@ import {
   AlignLeft, AlignCenter, AlignRight,
 } from 'lucide-react';
 import { parseBlockNoteContent } from '../../utils/blocknoteContent';
+import { uploadImageAsDataUrl } from '../../utils/blocknoteImageUpload';
+import EditorAIButton from '../ai/EditorAIButton';
 import '@blocknote/core/fonts/inter.css';
 import '@blocknote/mantine/style.css';
 
@@ -21,6 +24,7 @@ const DEFAULT_BLOCKS: PartialBlock[] = [{ type: 'paragraph', props: { textAlignm
 
 interface NoteRichTextEditorProps {
   noteId: string;
+  noteTitle?: string;
   content?: Record<string, unknown>;
   contentResetKey?: number;
   onChange?: (content: Record<string, unknown>) => void;
@@ -30,6 +34,7 @@ interface NoteRichTextEditorProps {
 
 const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   noteId,
+  noteTitle = '笔记',
   content,
   onChange,
   readOnly = false,
@@ -37,6 +42,14 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
 }) => {
   const editor: BlockNoteEditor = useCreateBlockNote({
     initialContent: parseBlockNoteContent(content) ?? DEFAULT_BLOCKS,
+    uploadFile: async (file) => {
+      try {
+        return await uploadImageAsDataUrl(file);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : '图片粘贴失败');
+        throw err;
+      }
+    },
   });
 
   const prevNoteIdRef = useRef(noteId);
@@ -133,6 +146,8 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={() => setAlignment('left')} title="左对齐"><AlignLeft size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('center')} title="居中"><AlignCenter size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('right')} title="右对齐"><AlignRight size={16} /></button>
+          <div className={sepCls} />
+          <EditorAIButton noteType="rich_text" title={noteTitle} isDark={isDark} />
         </div>
       )}
       <div className="flex-1 min-h-0 overflow-auto flex flex-col">
