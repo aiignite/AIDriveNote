@@ -41,7 +41,11 @@ export function buildFolderPath(
   return parts.join('/');
 }
 
-function isEmptyContent(noteType: string, content: Record<string, unknown> | undefined): boolean {
+/**
+ * 判断笔记内容是否为空（空内容笔记不产生本地文件）。
+ * 导出给同步引擎共用同一套判定规则，避免两处逻辑漂移。
+ */
+export function isEmptyContent(noteType: string, content: Record<string, unknown> | undefined): boolean {
   if (!content || typeof content !== 'object') return true;
   switch (noteType) {
     case 'markdown':
