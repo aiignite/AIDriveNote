@@ -35,6 +35,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const prefetch = () => {
       void import('../pages/settings/SettingsLayout');
       void import('../pages/settings/AIModelsPage');
+      void import('../pages/settings/SyncSettingsPage');
     };
     if (typeof window.requestIdleCallback === 'function') {
       const id = window.requestIdleCallback(prefetch, { timeout: 3000 });
