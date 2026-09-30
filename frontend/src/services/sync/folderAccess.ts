@@ -265,6 +265,17 @@ function splitPath(relPath: string): { dirs: string[]; name: string } {
 }
 
 /**
+ * 拆分「目录」相对路径为逐级目录名数组。
+ * 与 `splitPath` 的关键区别：目录路径的每一段都是目录，不能把最后一段当文件名丢掉，
+ * 否则 `ensureDir(root, 'AI')` 会退化成根目录、子目录永远建不出来。
+ * @param relDir 形如 `工作/周报` 的相对目录路径
+ * @returns 逐级目录名数组
+ */
+function splitDirPath(relDir: string): string[] {
+  return relDir.replace(/\\/g, '/').split('/').filter(Boolean);
+}
+
+/**
  * 逐级取得（可选创建）子目录句柄。
  * @param root 根目录句柄
  * @param dirs 逐级目录名
@@ -298,8 +309,7 @@ export async function ensureDir(
   root: SyncDirectoryHandle,
   relDir: string,
 ): Promise<SyncDirectoryHandle> {
-  const { dirs } = splitPath(relDir);
-  const resolved = await resolveDir(root, dirs, true);
+  const resolved = await resolveDir(root, splitDirPath(relDir), true);
   return resolved ?? root;
 }
 
@@ -376,8 +386,7 @@ export async function listDir(
   root: SyncDirectoryHandle,
   relDir = '',
 ): Promise<DirEntry[]> {
-  const { dirs } = splitPath(relDir);
-  const dir = await resolveDir(root, dirs, false);
+  const dir = await resolveDir(root, splitDirPath(relDir), false);
   if (!dir) return [];
   const entries: DirEntry[] = [];
   for await (const [name, handle] of dir.entries()) {
@@ -419,7 +428,7 @@ export async function listAllFiles(
     }
   };
 
-  const start = await resolveDir(root, splitPath(baseRel).dirs, false);
+  const start = await resolveDir(root, splitDirPath(baseRel), false);
   if (!start) return out;
   await walk(start, '');
   return out;
