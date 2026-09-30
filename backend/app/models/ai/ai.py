@@ -107,12 +107,35 @@ class AIMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(50))
     content: Mapped[str] = mapped_column(Text, default="")
+    attachment_ids: Mapped[list] = mapped_column(JSONB, default=list)
     tool_calls: Mapped[list | None] = mapped_column(JSONB, default=list)
     tool_results: Mapped[list | None] = mapped_column(JSONB, default=list)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped[AIConversation] = relationship("AIConversation", back_populates="messages")
+
+
+class AIAttachment(Base):
+    __tablename__ = "ai_attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True,
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ai_conversations.id", ondelete="SET NULL"), index=True, nullable=True,
+    )
+    file_name: Mapped[str] = mapped_column(String(255))
+    original_name: Mapped[str] = mapped_column(String(255))
+    file_size: Mapped[int] = mapped_column(Integer)
+    mime_type: Mapped[str] = mapped_column(String(100))
+    file_path: Mapped[str] = mapped_column(String(512))
+    purpose: Mapped[str] = mapped_column(String(20), default="chat")
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class UserAISettings(Base):

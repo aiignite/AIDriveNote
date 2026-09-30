@@ -15,15 +15,18 @@ class NoteFolderService:
     @staticmethod
     def _base_query():
         return select(NoteFolder).options(
-            selectinload(NoteFolder.notes),
             selectinload(NoteFolder.children),
         ).where(NoteFolder.is_deleted == False)  # noqa: E712
 
     @staticmethod
     async def list_folders(db: AsyncSession, user_id: UUID) -> list[NoteFolder]:
+        # 仅返回文件夹元数据；前端自行用 parent_id 组树，无需预加载笔记
         result = await db.execute(
-            NoteFolderService._base_query()
-            .where(NoteFolder.user_id == user_id)
+            select(NoteFolder)
+            .where(
+                NoteFolder.is_deleted == False,  # noqa: E712
+                NoteFolder.user_id == user_id,
+            )
             .order_by(NoteFolder.sort_order, NoteFolder.created_at)
         )
         return list(result.scalars().all())

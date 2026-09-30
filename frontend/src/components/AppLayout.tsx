@@ -19,6 +19,31 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     }).catch(() => {});
   }, [setSidebarWidth]);
 
+  // 空闲时预取设置页 chunk：设置页是高频入口，提前把代码拉进本地缓存，
+  // 点击「设置」时可直接渲染，省去一次跨机房往返（约 0.7s）。
+  // 慢速网络（2g/3g/saveData）跳过，避免抢占首屏接口带宽。
+  useEffect(() => {
+    const isSlowNetwork = () => {
+      const nav = navigator as Navigator & {
+        connection?: { effectiveType?: string; saveData?: boolean };
+      };
+      if (nav.connection?.saveData) return true;
+      const et = nav.connection?.effectiveType;
+      return et === '2g' || et === '3g' || et === 'slow-2g';
+    };
+    if (isSlowNetwork()) return;
+    const prefetch = () => {
+      void import('../pages/settings/SettingsLayout');
+      void import('../pages/settings/AIModelsPage');
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(prefetch, { timeout: 3000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const timer = setTimeout(prefetch, 800);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {

@@ -1,4 +1,4 @@
-import { api, API_BASE, getToken } from '../client';
+import { api, API_BASE, fetchWithAuth, getToken } from '../client';
 
 export interface ChatPageContextEntity {
   type: string;
@@ -135,6 +135,8 @@ export interface AIMessage {
   role: string;
   content: string;
   toolResults?: Array<{ tool: string; result: Record<string, unknown> }>;
+  attachmentIds?: string[];
+  attachments?: Array<{ id?: string; name: string; mimeType?: string }>;
   createdAt?: string;
 }
 
@@ -251,6 +253,8 @@ export const aiApi = {
     conversationId?: string;
     pageContext?: ChatPageContext;
     modelId?: string;
+    attachmentIds?: string[];
+    signal?: AbortSignal;
   }): AsyncGenerator<ChatStreamEvent> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const token = getToken();
@@ -259,12 +263,14 @@ export const aiApi = {
     const res = await fetch(`${API_BASE}/ai/chat/stream`, {
       method: 'POST',
       headers,
+      signal: params.signal,
       body: JSON.stringify({
         message: params.message,
         assistant_name: params.assistantName ?? '笔记助手',
         conversation_id: params.conversationId,
         model_id: params.modelId,
         page_context: params.pageContext,
+        attachment_ids: params.attachmentIds,
       }),
     });
     if (!res.ok || !res.body) throw new Error('AI stream failed');
@@ -273,20 +279,46 @@ export const aiApi = {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6).trim();
-        if (payload === '[DONE]') return;
-        try {
-          yield JSON.parse(payload) as ChatStreamEvent;
-        } catch { /* ignore */ }
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') return;
+          try {
+            yield JSON.parse(payload) as ChatStreamEvent;
+          } catch { /* ignore */ }
+        }
       }
+    } finally {
+      try {
+        await reader.cancel();
+      } catch { /* ignore */ }
     }
+  },
+
+  uploadAttachment: async (
+    file: File,
+    opts?: { conversationId?: string; purpose?: 'chat' | 'system' | 'generated' },
+  ): Promise<{ success: boolean; data?: { id: string; name: string; url: string } }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const params = new URLSearchParams();
+    if (opts?.conversationId) params.set('conversationId', opts.conversationId);
+    if (opts?.purpose) params.set('purpose', opts.purpose);
+    const qs = params.toString();
+    const response = await fetchWithAuth(`/ai/attachments/upload${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error('附件上传失败');
+    }
+    return response.json();
   },
 };

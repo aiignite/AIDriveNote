@@ -13,6 +13,8 @@ export interface TokenResponse {
   refreshToken: string;
   tokenType: string;
   accessTokenExpiresIn: number;
+  /** 登录接口一并返回用户信息，省去一次 /auth/me 往返；refresh 无此字段 */
+  user: AuthUser;
 }
 
 export const authApi = {

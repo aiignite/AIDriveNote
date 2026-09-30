@@ -1,7 +1,8 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --prefer-offline
 COPY . .
 ARG VITE_BASE_PATH=/
 ARG VITE_API_URL=/api/v1

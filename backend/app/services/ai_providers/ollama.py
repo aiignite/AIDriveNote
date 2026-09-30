@@ -14,6 +14,40 @@ logger = logging.getLogger(__name__)
 
 
 class OllamaProvider(BaseAIProvider):
+    @staticmethod
+    def _serialize_message(m: ChatMessage) -> dict[str, Any]:
+        content = m.content
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            images: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text = part.get("text", "")
+                    if text:
+                        text_parts.append(str(text))
+                elif part.get("type") == "image":
+                    data = part.get("data") or ""
+                    if data.startswith("data:"):
+                        data = data.split(",", 1)[-1]
+                    if data:
+                        images.append(data)
+            item: dict[str, Any] = {
+                "role": m.role,
+                "content": "\n".join(text_parts) or "请分析图片内容。",
+            }
+            if images:
+                item["images"] = images
+            if m.role == "tool" and m.tool_call_id:
+                item["tool_call_id"] = m.tool_call_id
+            return item
+
+        item = {"role": m.role, "content": content or ""}
+        if m.role == "tool" and m.tool_call_id:
+            item["tool_call_id"] = m.tool_call_id
+        return item
+
     async def stream_chat_with_tools(
         self,
         messages: list[ChatMessage],
@@ -24,14 +58,7 @@ class OllamaProvider(BaseAIProvider):
         model = opts.model or self.config.model or "qwen2.5"
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [
-                (
-                    {"role": m.role, "content": m.content, "tool_call_id": m.tool_call_id}
-                    if m.role == "tool" and m.tool_call_id
-                    else {"role": m.role, "content": m.content}
-                )
-                for m in messages
-            ],
+            "messages": [self._serialize_message(m) for m in messages],
             "stream": True,
         }
         if opts.temperature is not None:

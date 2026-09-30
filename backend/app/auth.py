@@ -53,8 +53,9 @@ async def get_current_user(
     if is_sso and settings.SSO_ENABLED:
         try:
             claims = SSOService.decode_portal_token(token)
-            user = await SSOService.sync_user_from_claims(db, claims)
-            await db.commit()
+            user, changed = await SSOService.sync_user_from_claims(db, claims)
+            if changed:
+                await db.commit()
             return user
         except JWTError as exc:
             logger.warning("SSO JWT decode failed: %s", exc)

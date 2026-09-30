@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, History, Loader2, Plus, Send, Sparkles, X } from 'lucide-react';
+import { Bot, History, Loader2, Plus, Sparkles, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   aiApi,
@@ -11,6 +11,9 @@ import { useApp } from '../../contexts/AppContext';
 import { useAIChat } from '../../hooks/useAIChat';
 import NoteChangeConfirmCard from './NoteChangeConfirmCard';
 import AIChatMarkdown from './AIChatMarkdown';
+import AIChatInput, { createPendingAttachment, type PendingAttachment } from './AIChatInput';
+import MessageAttachmentGallery from './MessageAttachmentGallery';
+import { stripAttachmentMarkers } from '../../utils/aiAttachmentDisplay';
 
 const AISidebar: React.FC = () => {
   const {
@@ -27,13 +30,14 @@ const AISidebar: React.FC = () => {
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState('');
+  const [pendingFiles, setPendingFiles] = useState<PendingAttachment[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const {
     messages, loading, streamingContent, activeSkill, applyingIndex,
-    sendMessage, handleApply, handleConfirmDelete, handleDismiss,
-    loadMessagesFromHistory, setMessages,
+    sendMessage, handleApply, handleApplyStreaming, handleConfirmDelete, handleDismiss,
+    loadMessagesFromHistory, setMessages, streamingPending, setStreamingPending, stopGeneration,
   } = useAIChat({
     pageAIContext,
     bumpNotesRefresh,
@@ -72,17 +76,76 @@ const AISidebar: React.FC = () => {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading, streamingContent]);
+  }, [messages, loading, streamingContent, pendingFiles]);
 
   useEffect(() => {
     if (!aiOpen || !aiPreset) return;
     const { presetMessage, selectionText } = aiPreset;
     clearAIPreset();
     if (presetMessage) {
-      void sendMessage(presetMessage, selectionText);
+      void sendMessage(presetMessage, { selectionText });
     }
     inputRef.current?.focus();
   }, [aiOpen, aiPreset, clearAIPreset, sendMessage]);
+
+  const revokePendingPreview = useCallback((entry: PendingAttachment) => {
+    if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+  }, []);
+
+  const uploadPendingFiles = useCallback((fileList: File[]) => {
+    if (fileList.length === 0) return;
+
+    const newEntries = fileList.map(createPendingAttachment);
+    setPendingFiles(prev => [...prev, ...newEntries]);
+
+    const attemptUpload = async (entry: PendingAttachment, retriesLeft = 1) => {
+      try {
+        const result = await aiApi.uploadAttachment(
+          entry.file,
+          conversationId ? { conversationId } : undefined,
+        );
+        const attachmentId = result.data?.id;
+        if (result.success !== false && attachmentId) {
+          setPendingFiles(prev => prev.map(p =>
+            p.localId === entry.localId
+              ? { ...p, uploading: false, serverId: attachmentId, error: undefined }
+              : p,
+          ));
+          return;
+        }
+        throw new Error('upload rejected');
+      } catch {
+        if (retriesLeft > 0) {
+          await attemptUpload(entry, retriesLeft - 1);
+          return;
+        }
+        setPendingFiles(prev => prev.map(p =>
+          p.localId === entry.localId
+            ? { ...p, uploading: false, error: '预上传未完成' }
+            : p,
+        ));
+      }
+    };
+
+    for (const entry of newEntries) {
+      void attemptUpload(entry);
+    }
+  }, [conversationId]);
+
+  const handleRemoveFile = useCallback((localId: string) => {
+    setPendingFiles(prev => {
+      const target = prev.find(p => p.localId === localId);
+      if (target) revokePendingPreview(target);
+      return prev.filter(p => p.localId !== localId);
+    });
+  }, [revokePendingPreview]);
+
+  const pendingFilesRef = useRef(pendingFiles);
+  pendingFilesRef.current = pendingFiles;
+
+  useEffect(() => () => {
+    pendingFilesRef.current.forEach(revokePendingPreview);
+  }, [revokePendingPreview]);
 
   const loadConversation = useCallback(async (id: string) => {
     try {
@@ -90,23 +153,65 @@ const AISidebar: React.FC = () => {
       setConversationId(id);
       loadMessagesFromHistory(msgs);
       setShowHistory(false);
+      setPendingFiles(prev => {
+        prev.forEach(revokePendingPreview);
+        return [];
+      });
     } catch {
       toast.error('加载会话失败');
     }
-  }, [loadMessagesFromHistory]);
+  }, [loadMessagesFromHistory, revokePendingPreview]);
 
   const startNewConversation = useCallback(() => {
     setConversationId(undefined);
     setMessages([]);
     setShowHistory(false);
-  }, [setMessages]);
+    setPendingFiles(prev => {
+      prev.forEach(revokePendingPreview);
+      return [];
+    });
+  }, [setMessages, revokePendingPreview]);
 
-  const onSend = useCallback(() => {
+  const onSend = useCallback(async () => {
     const text = input.trim();
-    if (!text) return;
+    const filesToProcess = [...pendingFiles];
+    if (!text && filesToProcess.length === 0) return;
+
+    const messageAttachments = filesToProcess.map(p => ({
+      id: p.serverId,
+      name: p.file.name,
+      mimeType: p.file.type,
+      previewUrl: p.previewUrl,
+    }));
+
     setInput('');
-    void sendMessage(text);
-  }, [input, sendMessage]);
+    setPendingFiles([]);
+
+    const attachmentIds = await Promise.all(filesToProcess.map(async (p) => {
+      if (p.serverId) return p.serverId;
+      try {
+        const result = await aiApi.uploadAttachment(
+          p.file,
+          conversationId ? { conversationId } : undefined,
+        );
+        return result.success !== false && result.data?.id ? result.data.id : null;
+      } catch {
+        return null;
+      }
+    }));
+
+    const validIds = attachmentIds.filter((id): id is string => Boolean(id));
+    if (filesToProcess.length > 0 && validIds.length === 0) {
+      toast.error('附件上传失败，请重试');
+      setPendingFiles(filesToProcess);
+      return;
+    }
+
+    void sendMessage(text, {
+      attachmentIds: validIds,
+      attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
+    });
+  }, [input, pendingFiles, sendMessage, conversationId]);
 
   const quickActions = pageAIContext?.quickActions ?? [];
 
@@ -205,20 +310,29 @@ const AISidebar: React.FC = () => {
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && !streamingContent && (
           <p className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-            问我关于笔记的任何问题：搜索、总结、续写、创建笔记等。
+            问我关于笔记的任何问题：搜索、总结、续写、创建笔记等。支持粘贴或上传图片。
           </p>
         )}
         {messages.map((msg, idx) => (
           <div key={idx} className={msg.role === 'user' ? 'text-right' : 'text-left'}>
-            {msg.role === 'user' ? (
-              <div className="inline-block max-w-[95%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap bg-orange-600 text-white">
-                {msg.content}
-              </div>
-            ) : (
-              <div className={`inline-block max-w-[95%] rounded-xl px-3 py-2 text-sm ${isDark ? 'bg-gray-800 text-gray-100' : 'bg-gray-100 text-gray-800'}`}>
+            <div className={`inline-block max-w-[95%] rounded-xl px-3 py-2 text-sm ${
+              msg.role === 'user'
+                ? 'bg-orange-600 text-white text-left'
+                : isDark ? 'bg-gray-800 text-gray-100' : 'bg-gray-100 text-gray-800'
+            }`}>
+              <MessageAttachmentGallery
+                attachments={msg.attachments}
+                variant={msg.role === 'user' ? 'inverted' : 'default'}
+                className={msg.attachments?.length ? 'mb-2' : ''}
+              />
+              {msg.role === 'user' ? (
+                msg.content ? (
+                  <p className="whitespace-pre-wrap">{stripAttachmentMarkers(msg.content)}</p>
+                ) : null
+              ) : (
                 <AIChatMarkdown content={msg.content} />
-              </div>
-            )}
+              )}
+            </div>
             {msg.role === 'assistant' && msg.notePendingChange && !msg.notePendingChange.dismissed && (
               <NoteChangeConfirmCard
                 pending={msg.notePendingChange}
@@ -245,6 +359,14 @@ const AISidebar: React.FC = () => {
             <AIChatMarkdown content={streamingContent} />
           </div>
         )}
+        {streamingPending && !streamingPending.applied && !streamingPending.dismissed && (
+          <NoteChangeConfirmCard
+            pending={streamingPending}
+            applying={applyingIndex != null}
+            onApply={() => void handleApplyStreaming()}
+            onDismiss={() => setStreamingPending(prev => prev ? { ...prev, dismissed: true } : null)}
+          />
+        )}
         {loading && !streamingContent && (
           <div className="flex items-center gap-2 text-sm text-gray-500">
             <Loader2 size={16} className="animate-spin" /> 思考中…
@@ -253,31 +375,24 @@ const AISidebar: React.FC = () => {
         <div ref={bottomRef} />
       </div>
 
-      <div className={`p-3 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
-        <div className="flex gap-2">
-          <input
-            ref={inputRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), onSend())}
-            placeholder="输入消息… (⌘J 聚焦)"
-            className={`flex-1 rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-500 ${
-              isDark ? 'bg-gray-800 border-gray-600 text-white' : 'bg-white border-gray-300'
-            }`}
-          />
-          <button
-            type="button"
-            onClick={onSend}
-            disabled={loading || !input.trim()}
-            className="rounded-lg bg-orange-600 text-white p-2 disabled:opacity-50"
-          >
-            <Send size={18} />
-          </button>
-        </div>
-        {currentAssistant?.model && !selectedModelId && (
-          <p className={`text-[10px] mt-1 ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>模型: {currentAssistant.model}</p>
-        )}
-      </div>
+      <AIChatInput
+        value={input}
+        onChange={setInput}
+        onSend={() => void onSend()}
+        onStop={stopGeneration}
+        loading={loading}
+        pendingFiles={pendingFiles}
+        onSelectFiles={uploadPendingFiles}
+        onRemoveFile={handleRemoveFile}
+        isDark={isDark}
+        inputRef={inputRef}
+      />
+
+      {currentAssistant?.model && !selectedModelId && (
+        <p className={`text-[10px] px-3 pb-2 ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+          模型: {currentAssistant.model}
+        </p>
+      )}
     </div>
   );
 };

@@ -29,13 +29,6 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    access_token_expires_in: int
-
-
 class UserOut(BaseModel):
     model_config = {"from_attributes": True}
     id: str
@@ -43,6 +36,15 @@ class UserOut(BaseModel):
     name: str
     status: str
     role: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    access_token_expires_in: int
+    # 登录时一并返回用户信息，前端可省去一次 /auth/me 往返（refresh 无用户上下文，为 None）
+    user: UserOut | None = None
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -70,6 +72,9 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         access_token=access_token,
         refresh_token=refresh_token,
         access_token_expires_in=expires_in,
+        user=UserOut(
+            id=str(user.id), email=user.email, name=user.name, status=user.status, role=user.role,
+        ),
     )
 
 

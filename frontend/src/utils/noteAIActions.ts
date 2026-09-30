@@ -35,19 +35,3 @@ export function buildNoteQuickActions(
       ];
   }
 }
-
-export function buildInlineAIPrompt(action: 'polish' | 'translate' | 'continue' | 'summarize', selection: string, title: string): string {
-  const quoted = selection.length > 200 ? `${selection.slice(0, 200)}…` : selection;
-  switch (action) {
-    case 'polish':
-      return `请润色笔记「${title}」中的以下选区，并用 update_note 提交预览：\n${quoted}`;
-    case 'translate':
-      return `请将笔记「${title}」中选区翻译为英文，并用 update_note 提交预览：\n${quoted}`;
-    case 'continue':
-      return `请续写笔记「${title}」中选区之后的内容，使用 append_to_note：\n${quoted}`;
-    case 'summarize':
-      return `请总结以下选区内容：\n${quoted}`;
-    default:
-      return quoted;
-  }
-}

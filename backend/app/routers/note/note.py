@@ -158,6 +158,7 @@ async def _enrich_note_out(
     *,
     tags: list | None = None,
     is_favorite: bool | None = None,
+    include_content: bool = True,
 ) -> NoteOut:
     if tags is None:
         tags = await NoteTagService.get_note_tags(db, note.id)
@@ -168,7 +169,7 @@ async def _enrich_note_out(
         note_no=note.note_no,
         title=note.title,
         note_type=note.note_type,
-        content=note.content,
+        content=note.content if include_content else None,
         folder_id=note.folder_id,
         description=note.description,
         status=note.status,
@@ -185,7 +186,9 @@ async def _enrich_note_out(
     )
 
 
-async def _enrich_notes_batch(db: AsyncSession, notes: list[Note], user: User) -> list[NoteOut]:
+async def _enrich_notes_batch(
+    db: AsyncSession, notes: list[Note], user: User, *, include_content: bool = True,
+) -> list[NoteOut]:
     if not notes:
         return []
     note_ids = [n.id for n in notes]
@@ -196,6 +199,7 @@ async def _enrich_notes_batch(db: AsyncSession, notes: list[Note], user: User) -
             db, note, user,
             tags=tags_map.get(note.id, []),
             is_favorite=note.id in fav_ids,
+            include_content=include_content,
         )
         for note in notes
     ]
@@ -285,6 +289,7 @@ async def list_notes(
     is_favorite: Optional[bool] = None,
     tag_ids: Optional[str] = None,
     include_shared: bool = False,
+    include_content: bool = False,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -303,7 +308,7 @@ async def list_notes(
         tag_ids=parsed_tag_ids,
         include_shared=include_shared,
     )
-    enriched = await _enrich_notes_batch(db, items, user)
+    enriched = await _enrich_notes_batch(db, items, user, include_content=include_content)
     return NoteListOut(items=enriched, total=total)
 
 
@@ -312,6 +317,7 @@ async def list_trash_notes(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
+    include_content: bool = False,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -322,7 +328,7 @@ async def list_trash_notes(
         limit=limit,
         search=search,
     )
-    enriched = await _enrich_notes_batch(db, items, user)
+    enriched = await _enrich_notes_batch(db, items, user, include_content=include_content)
     return NoteListOut(items=enriched, total=total)
 
 
@@ -331,13 +337,14 @@ async def search_notes_fulltext(
     q: str,
     skip: int = 0,
     limit: int = 50,
+    include_content: bool = False,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     items, total = await NoteSearchService.full_text_search(
         db, user_id=user.id, query=q, skip=skip, limit=limit,
     )
-    enriched = await _enrich_notes_batch(db, items, user)
+    enriched = await _enrich_notes_batch(db, items, user, include_content=include_content)
     highlights = {str(n.id): note_preview_text(n, 200) for n in items}
     return SearchResultOut(items=enriched, total=total, highlights=highlights)
 

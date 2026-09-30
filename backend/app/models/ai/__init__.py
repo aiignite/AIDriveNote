@@ -1,6 +1,7 @@
 from app.models.ai.ai import (
     AIAssistant,
     AIAssistantSkillBinding,
+    AIAttachment,
     AIConversation,
     AIMessage,
     AIModel,
@@ -14,6 +15,7 @@ __all__ = [
     "AIAssistant",
     "AIConversation",
     "AIMessage",
+    "AIAttachment",
     "UserAISettings",
     "AISkill",
     "AIAssistantSkillBinding",

@@ -21,10 +21,36 @@ class OpenAICompatibleProvider(BaseAIProvider):
             key = get_settings().OPENAI_API_KEY
         return (key or "").strip() or None
 
+    def _convert_content_part(self, part: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(part, dict):
+            return None
+        part_type = part.get("type")
+        if part_type == "text":
+            text = part.get("text", "")
+            return {"type": "text", "text": text} if text else None
+        if part_type == "image":
+            mime_type = part.get("mimeType") or part.get("mime_type") or "image/jpeg"
+            data = part.get("data") or ""
+            if not data:
+                return None
+            url = data if data.startswith("data:") else f"data:{mime_type};base64,{data}"
+            return {"type": "image_url", "image_url": {"url": url}}
+        return None
+
+    def _serialize_message_content(self, content: str | list[dict[str, Any]] | None) -> str | list[dict[str, Any]]:
+        if isinstance(content, list):
+            converted = [
+                converted
+                for part in content
+                if (converted := self._convert_content_part(part)) is not None
+            ]
+            return converted or ""
+        return content or ""
+
     def _build_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for m in messages:
-            item: dict[str, Any] = {"role": m.role, "content": m.content or ""}
+            item: dict[str, Any] = {"role": m.role, "content": self._serialize_message_content(m.content)}
             if m.role == "tool" and m.tool_call_id:
                 item["tool_call_id"] = m.tool_call_id
             if m.tool_calls:

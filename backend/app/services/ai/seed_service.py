@@ -38,8 +38,9 @@ update_note 和 append_to_note 不会立即写入，需用户在对话框确认�
 ## 内容格式
 - markdown: {"text": "..."} 或 Markdown 字符串
 - rich_text: {"blocks": [...]} BlockNote 结构
-- mindmap: simple-mind-map JSON 树
-- flowchart: {"xml": "..."}
+- mindmap: simple-mind-map JSON 树，格式 {"data":{"text":"中心主题"},"children":[{"data":{"text":"分支"},"children":[]}]}
+  每个分支必须是独立节点对象，禁止将全部大纲文本塞进单个 data.text
+- flowchart: {"xml": "<mxGraphModel>...含 mxCell...</mxGraphModel>"}（draw.io XML，不可用纯文本树）
 
 ## 交互规则
 1. 页面上下文含当前笔记 ID 时直接使用
@@ -96,8 +97,11 @@ BUILTIN_SKILLS = [
         "name": "扩展导图",
         "keywords": ["扩展导图", "补充节点", "思维导图", "扩展节点"],
         "prompt_template": (
-            "用户希望扩展思维导图。get_note(include_full_content=true) 后，"
-            "优先用 append_to_mindmap 追加子节点；大范围改动用 update_note 提交整树预览。"
+            "用户希望扩展思维导图。get_note(include_full_content=true) 获取现有结构后，"
+            "优先用 append_to_mindmap 追加子节点；大范围改动用 update_note 提交整树预览。\n"
+            "要求：nodes 必须为 simple-mind-map JSON，每个节点 {\"data\":{\"text\":\"标签\"},\"children\":[]}；"
+            "可传节点数组；多分支须拆成多个 children 节点，"
+            "禁止将全部设计内容写入单个 data.text 字符串。"
         ),
         "tool_names": ["get_note", "update_note", "append_to_mindmap"],
         "priority": 75,
@@ -108,8 +112,11 @@ BUILTIN_SKILLS = [
         "name": "扩展流程图",
         "keywords": ["流程图", "补充步骤", "drawio", "扩展流程"],
         "prompt_template": (
-            "用户希望扩展流程图。get_note(include_full_content=true) 后，"
-            "用 update_note 提交完整 drawio XML 预览；保持已有 mxCell id 不变。"
+            "用户希望扩展流程图。get_note(include_full_content=true) 获取现有 XML 后，"
+            "用 update_note 提交完整 draw.io mxGraphModel XML 预览。\n"
+            "要求：content 必须为 {\"xml\": \"<mxGraphModel>...</mxGraphModel>\"} 格式，"
+            "每个节点/连线用 mxCell 定义（含 id、value、style、mxGeometry）；"
+            "保持已有 mxCell id 不变；禁止用纯文本树形结构代替 XML。"
         ),
         "tool_names": ["get_note", "update_note"],
         "priority": 74,
@@ -204,6 +211,8 @@ class AISeedService:
             if skill:
                 if item.get("extra_config") and not (skill.extra_config or {}):
                     skill.extra_config = item["extra_config"]
+                if skill.is_builtin and skill.prompt_template != item["prompt_template"]:
+                    skill.prompt_template = item["prompt_template"]
             else:
                 skill = AISkill(
                     code=item["code"],

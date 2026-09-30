@@ -18,7 +18,14 @@ description: >-
 | backend (FastAPI) | 3275 | `127.0.0.1:3275`（仅本机） |
 | postgres | 5432 | 内部网络 |
 
-访问地址：`http://<HOST>:3270`
+访问地址：
+
+| 入口 | 地址 | 协议 | 用途 |
+|------|------|------|------|
+| 线上正式（推荐） | `https://aiignite.com.cn/note/` | HTTP/2 + TLS | 面向用户，多路复用、首屏更快 |
+| 直连调试 | `http://<HOST>:3270` | HTTP/1.1 | 仅用于排查容器/nginx 问题，连接数上限 6，速度明显更慢 |
+
+> 性能提示：直连 `:3270` 走 HTTP/1.1，浏览器单域名并发上限 6，且无 TLS 复用；跨机房 RTT 约 0.7s 时差距会被放大。验收性能请以域名入口为准。
 
 ## Agent 执行清单
 
@@ -90,12 +97,20 @@ ssh "${AIDRIVENOTE_DEPLOY_USER}@${AIDRIVENOTE_DEPLOY_HOST}" \
 HOST="${AIDRIVENOTE_DEPLOY_HOST}"
 PORT="${AIDRIVENOTE_FRONTEND_PORT:-3270}"
 
+# 4.1 调试入口（容器/nginx 是否正常）
 curl -sf "http://${HOST}:${PORT}/health"
 curl -sI -H "Accept-Encoding: gzip" "http://${HOST}:${PORT}/" | grep -i content-encoding
 curl -s -o /dev/null -w "ttfb:%{time_starttransfer}s total:%{time_total}s\n" "http://${HOST}:${PORT}/"
+
+# 4.2 正式入口（性能验收以此为准，HTTP/2）
+curl -sI -H "Accept-Encoding: gzip" "https://aiignite.com.cn/note/" | grep -iE "content-encoding|http/"
+curl -s -o /dev/null -w "ttfb:%{time_starttransfer}s total:%{time_total}s\n" "https://aiignite.com.cn/note/"
 ```
 
-期望：`health` 返回 `{"status":"ok","app":"AIDriveNote"}`；响应头含 `Content-Encoding: gzip`。
+期望：`health` 返回 `{"status":"ok","app":"AIDriveNote"}`；页面与 **普通 JSON API** 响应头含 `Content-Encoding: gzip`。
+
+> 注意：`POST /api/v1/ai/chat/stream`（SSE 流式对话）所在 location 有意关闭了 `proxy_buffering`，
+> 该端点的响应**不会**被压缩，这是预期行为，流式输出必须逐条下发。
 
 ## 首次部署（服务器尚无项目）
 

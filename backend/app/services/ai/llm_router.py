@@ -20,6 +20,7 @@ class ProviderResolution:
     endpoint: str | None = None
     api_key: str | None = None
     temperature: float | None = None
+    supports_image: bool = False
 
 
 class LLMRouter:
@@ -66,6 +67,11 @@ class LLMRouter:
             ai_model = result.scalar_one_or_none()
 
         if ai_model:
+            model_ref_lower = f"{ai_model.name} {ai_model.model_id}".lower()
+            vision_name_hint = any(
+                token in model_ref_lower
+                for token in ("vision", "vl", "llava", "minimax-m", "gpt-4o", "gemini")
+            )
             return ProviderResolution(
                 provider=ai_model.provider,
                 model_id=ai_model.model_id,
@@ -73,6 +79,7 @@ class LLMRouter:
                 endpoint=ai_model.endpoint,
                 api_key=ai_model.api_key,
                 temperature=temperature,
+                supports_image=bool(ai_model.supports_image) or vision_name_hint,
             )
 
         return ProviderResolution(

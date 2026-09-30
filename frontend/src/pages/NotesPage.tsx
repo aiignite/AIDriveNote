@@ -95,8 +95,18 @@ const NotesPage: React.FC = () => {
     fetchNotes();
   }, [fetchNotes]);
 
-  // 空闲时预加载常用编辑器 chunk，减少首次打开延迟
+  // 空闲时预加载常用编辑器 chunk，减少首次打开延迟；
+  // 慢速网络（2g/3g/saveData）跳过，避免抢占文件树接口带宽
   useEffect(() => {
+    const isSlowNetwork = () => {
+      const nav = navigator as Navigator & {
+        connection?: { effectiveType?: string; saveData?: boolean };
+      };
+      if (nav.connection?.saveData) return true;
+      const et = nav.connection?.effectiveType;
+      return et === '2g' || et === '3g' || et === 'slow-2g';
+    };
+    if (isSlowNetwork()) return;
     const prefetch = () => {
       void import('../components/note/NoteRichTextEditor');
       void import('../components/note/NoteMarkdownEditor');

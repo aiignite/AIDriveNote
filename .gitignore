@@ -19,6 +19,12 @@ __pycache__/
 # Runtime logs
 .runtime-logs/
 
+# Runtime uploads (AI attachments at rest)
+backend/uploads/
+
+# Editor workspace
+.trae/
+
 # OS & editor
 .DS_Store
 .~lock.*
