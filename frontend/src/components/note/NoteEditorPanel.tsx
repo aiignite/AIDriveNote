@@ -12,6 +12,11 @@ import {
   type NoteBacklink, type NoteRevision, type NoteShare,
 } from '../../services/note';
 import { getExportOptions, type ExportFormat } from '../../utils/noteExportOptions';
+import { useAuth } from '../../contexts/AuthContext';
+import { isNetworkError } from '../../services/client';
+import { cacheFullNote, readNote } from '../../services/offline/noteCache';
+import { saveOfflineEdit } from '../../services/offline/offlineQueue';
+import type { OutboxPayload } from '../../services/offline/offlineDb';
 
 const TYPE_META: Record<string, { icon: React.ReactNode; label: string; badgeColor: string }> = {
   rich_text: { icon: <FileText size={14} />, label: '富文本', badgeColor: 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400' },
@@ -107,6 +112,22 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   const lastRefreshTriggerRef = useRef(refreshTrigger);
   const mindMapEditorRef = useRef<NoteMindMapEditorHandle>(null);
 
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+
+  /**
+   * 离线保存：把本次修改写入本地缓存与待同步队列。
+   * 仅在网络异常时调用，缓存中不存在该笔记时返回 false（调用方回退为普通失败提示）。
+   * @param payload 本次修改的字段
+   * @returns 是否成功入队
+   */
+  const persistOffline = useCallback(async (payload: OutboxPayload): Promise<boolean> => {
+    const cached = await readNote(note.id);
+    if (!cached) return false;
+    await saveOfflineEdit({ note: cached, payload });
+    return true;
+  }, [note.id]);
+
   // 切换笔记：先用列表缓存内容即时渲染，后台拉取最新数据
   useEffect(() => {
     syncedContentNoteIdRef.current = note.id;
@@ -128,11 +149,18 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
 
     noteApi.get(note.id).then(full => {
       if (noteIdRef.current !== note.id || contentDirtyRef.current) return;
+      if (userId) void cacheFullNote(full, userId);
       setContent(full.content ?? null);
       setContentLoaded(true);
       setNoteTags(full.tags ?? []);
-    }).catch(() => { /* 保留缓存内容 */ });
-  }, [note.id]);
+    }).catch(async () => {
+      // 离线：回退本地缓存正文，保证断网时仍可查看与编辑
+      const cached = await readNote(note.id);
+      if (!cached || noteIdRef.current !== note.id || contentDirtyRef.current) return;
+      setContent(cached.content ?? null);
+      setContentLoaded(true);
+    });
+  }, [note.id, userId]);
 
   // 同笔记元数据更新（保存后列表同步）
   useEffect(() => {
@@ -155,6 +183,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     contentDirtyRef.current = false;
     noteApi.get(note.id).then(full => {
       if (noteIdRef.current !== note.id) return;
+      if (userId) void cacheFullNote(full, userId);
       setContent(full.content ?? null);
       setContentLoaded(true);
       setNoteTags(full.tags ?? []);
@@ -162,8 +191,19 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       setDescription(full.description ?? '');
       setContentResetKey(k => k + 1);
       contentLoadAtRef.current = Date.now();
-    }).catch(() => { /* ignore */ });
-  }, [refreshTrigger, note.id]);
+    }).catch(async () => {
+      // 离线：刷新失败时回退本地缓存，避免编辑器被清空
+      const cached = await readNote(note.id);
+      if (!cached || noteIdRef.current !== note.id) return;
+      setContent(cached.content ?? null);
+      setContentLoaded(true);
+      setNoteTags(cached.tags ?? []);
+      setTitle(cached.title);
+      setDescription(cached.description ?? '');
+      setContentResetKey(k => k + 1);
+      contentLoadAtRef.current = Date.now();
+    });
+  }, [refreshTrigger, note.id, userId]);
 
   useEffect(() => {
     const load = () => {
@@ -273,11 +313,15 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       try {
         const updated = await noteApi.update(note.id, { title: newTitle } as NoteUpdate);
         onNoteUpdated?.(updated);
-      } catch {
-        // silent
+        if (userId) void cacheFullNote(updated, userId);
+      } catch (err) {
+        // 离线：标题变更入队，联网后自动回传
+        if (isNetworkError(err) && await persistOffline({ title: newTitle })) {
+          toast.success('已离线保存，联网后同步', { id: 'offline-save' });
+        }
       }
     }, 1000);
-  }, [note.id, onNoteUpdated]);
+  }, [note.id, onNoteUpdated, persistOffline, userId]);
 
   // Auto-save description (debounce 1s)
   const descTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -287,9 +331,12 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     descTimerRef.current = setTimeout(async () => {
       try {
         await noteApi.update(note.id, { description: newDesc } as NoteUpdate);
-      } catch { /* silent */ }
+      } catch (err) {
+        // 离线：描述变更静默入队（保持原有静默语义，避免频繁打扰）
+        if (isNetworkError(err)) await persistOffline({ description: newDesc });
+      }
     }, 1000);
-  }, [note.id]);
+  }, [note.id, persistOffline]);
 
   // Click outside to close tag menu
   useEffect(() => {
@@ -319,28 +366,40 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         setSaving(true);
         await noteApi.update(note.id, { content: newContent as Record<string, unknown> } as NoteUpdate);
         setSaving(false);
-      } catch {
+      } catch (err) {
         setSaving(false);
+        // 离线：正文变更入队，联网后自动回传（同一提示复用 id，避免连续输入刷屏）
+        if (isNetworkError(err)
+          && await persistOffline({ content: newContent as Record<string, unknown> })) {
+          toast.success('已离线保存，联网后同步', { id: 'offline-save' });
+        }
       }
     }, 2000);
-  }, [note.id]);
+  }, [note.id, persistOffline]);
 
   // Manual save
   const handleManualSave = useCallback(async () => {
+    // data 在 try 外声明：离线分支需要在 catch 中复用同一份待保存载荷
+    const data: NoteUpdate = {};
+    if (title.trim()) data.title = title;
+    if (content !== null) data.content = content as Record<string, unknown>;
     try {
       setSaving(true);
-      const data: NoteUpdate = {};
-      if (title.trim()) data.title = title;
-      if (content !== null) data.content = content as Record<string, unknown>;
       const updated = await noteApi.update(note.id, data);
       onNoteUpdated?.(updated);
+      if (userId) void cacheFullNote(updated, userId);
       toast.success('已保存');
-    } catch {
+    } catch (err) {
+      // 离线：手动保存走队列，明确告知用户数据已落到本机
+      if (isNetworkError(err) && await persistOffline(data)) {
+        toast.success('已离线保存，联网后同步', { id: 'offline-save' });
+        return;
+      }
       toast.error('保存失败');
     } finally {
       setSaving(false);
     }
-  }, [note.id, title, content, onNoteUpdated]);
+  }, [note.id, title, content, onNoteUpdated, persistOffline, userId]);
 
   const handleSaveAsTemplate = useCallback(async () => {
     const name = prompt('模板名称', `${title || '无标题'} 模板`);

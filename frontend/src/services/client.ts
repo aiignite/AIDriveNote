@@ -7,6 +7,48 @@ const TOKEN_KEY = 'aidrivenote.access_token';
 const REFRESH_KEY = 'aidrivenote.refresh_token';
 const USER_KEY = 'aidrivenote.user';
 
+/**
+ * 网络不可达错误。
+ * 用于把「请求根本没发出去 / 没有响应」与「服务端明确答复失败」区分开：
+ * 离线降级逻辑只应针对前者触发，绝不能把 401 鉴权失败也当作离线，
+ * 否则登录态失效会被静默掩盖。
+ */
+export class NetworkError extends Error {
+  constructor(message = '网络不可达') {
+    super(message);
+    this.name = 'NetworkError';
+  }
+}
+
+/**
+ * 判断异常是否属于网络不可达。
+ * @param err 捕获到的异常
+ * @returns 是否为 NetworkError
+ */
+export function isNetworkError(err: unknown): err is NetworkError {
+  return err instanceof NetworkError;
+}
+
+/**
+ * 判断浏览器是否处于离线状态。
+ * 仅作为辅助信号：navigator.onLine 为 true 不代表目标服务一定可达。
+ * @returns 是否离线
+ */
+export function isOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+/**
+ * 清除本地离线缓存（IndexedDB）。
+ * 登出或鉴权失效时必须调用，避免同一浏览器切换账号后读到上一个用户的数据。
+ * 使用动态 import 让 offline 模块不进入首屏关键路径，也避免与 client 形成静态循环依赖。
+ */
+function clearOfflineData(): void {
+  void import('./offline/offlineDb')
+    .then((mod) => mod.clearAll())
+    .catch(() => { /* 离线库不可用（隐私模式等）时忽略 */ });
+}
+
 let accessToken: string | null =
   typeof window !== 'undefined' ? window.localStorage.getItem(TOKEN_KEY) : null;
 
@@ -27,6 +69,8 @@ export function setAuthTokens(tokens: {
     window.localStorage.removeItem(REFRESH_KEY);
     // 登出 / 401 失效：快照必须一并清除，避免下次打开误判为已登录
     writeCachedUser(null);
+    // 离线缓存同样要清，否则换账号登录会读到上一个用户的笔记
+    clearOfflineData();
   }
 }
 
@@ -135,7 +179,14 @@ async function request<T>(
   };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
-  const res = await fetch(resolveUrl(path), { ...options, headers, credentials: 'include' });
+  let res: Response;
+  try {
+    res = await fetch(resolveUrl(path), { ...options, headers, credentials: 'include' });
+  } catch (err) {
+    // fetch 本身抛出（断网、DNS 失败、被拦截）说明请求没有拿到任何响应，
+    // 包装成 NetworkError 交给上层做离线降级，而不是当成业务失败。
+    throw new NetworkError(err instanceof Error ? err.message : undefined);
+  }
 
   if (res.status === 401 && !retried && !path.includes('/auth/')) {
     const ok = await refreshAccessToken();
@@ -177,7 +228,12 @@ export async function fetchWithAuth(path: string, options: RequestInit = {}, ret
   };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
-  const res = await fetch(resolveUrl(path), { ...options, headers, credentials: 'include' });
+  let res: Response;
+  try {
+    res = await fetch(resolveUrl(path), { ...options, headers, credentials: 'include' });
+  } catch (err) {
+    throw new NetworkError(err instanceof Error ? err.message : undefined);
+  }
 
   if (res.status === 401 && !retried && !path.includes('/auth/')) {
     const ok = await refreshAccessToken();

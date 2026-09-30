@@ -3,11 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { authApi } from '../services/auth';
 import {
   isAuthenticated,
+  isNetworkError,
+  isOffline,
   mayHaveSession,
   readCachedUser,
   setAuthTokens,
   writeCachedUser,
 } from '../services/client';
+import { bindUser } from '../services/offline/noteCache';
 
 interface AuthContextValue {
   user: { id: string; email: string; name: string; status: string; role: string } | null;
@@ -26,7 +29,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(() => !readCachedUser());
   const nav = useNavigate();
 
+  // 登录态变化时绑定离线缓存归属用户。
+  // 切换账号会清空上一个用户的缓存，避免同浏览器串数据。
   useEffect(() => {
+    void bindUser(user?.id ?? null);
+  }, [user?.id]);
+
+  useEffect(() => {
+    /**
+     * 静默校验登录态。
+     * 关键区别：网络不可达 ≠ 鉴权失败。
+     * - 断网时保留本地快照与 token，让离线模式继续渲染（否则断网打开会被直接踢回登录页）；
+     * - 只有服务端明确否定鉴权时，才清除 token 与用户快照。
+     */
     const init = async () => {
       if (!isAuthenticated() && !mayHaveSession()) {
         setIsLoading(false);
@@ -36,8 +51,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const me = await authApi.me();
         writeCachedUser(me);
         setUser(me);
-      } catch {
-        // 校验失败：setAuthTokens(null) 会同时清除 token 与本地用户快照
+      } catch (err) {
+        if (isNetworkError(err) || isOffline()) {
+          // 离线：维持快照登录态
+          return;
+        }
+        // 鉴权失败：setAuthTokens(null) 会同时清除 token 与本地用户快照
         setUser(null);
         setAuthTokens({ accessToken: null });
       } finally {
@@ -45,6 +64,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
     void init();
+  }, []);
+
+  // 恢复联网后补一次静默校验，把「离线推断的登录态」升级为服务端确认的登录态；
+  // 校验仍然失败时保持现状，不做登出，避免网络抖动导致误踢。
+  useEffect(() => {
+    const onOnline = () => {
+      if (!isAuthenticated() && !mayHaveSession()) return;
+      void authApi.me()
+        .then((me) => {
+          writeCachedUser(me);
+          setUser(me);
+        })
+        .catch(() => { /* 保持现状 */ });
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
   }, []);
 
   useEffect(() => {
