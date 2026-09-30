@@ -9,13 +9,47 @@ import PageLoader from './components/PageLoader';
 
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const RegisterPage = lazy(() => import('./pages/RegisterPage'));
-const AppLayout = lazy(() => import('./components/AppLayout'));
-const NotesPage = lazy(() => import('./pages/NotesPage'));
-const SettingsLayout = lazy(() => import('./pages/settings/SettingsLayout'));
 const AIModelsPage = lazy(() => import('./pages/settings/AIModelsPage'));
 const AIAssistantsPage = lazy(() => import('./pages/settings/AIAssistantsPage'));
 const AISkillsPage = lazy(() => import('./pages/settings/AISkillsPage'));
 const UsersPage = lazy(() => import('./pages/settings/UsersPage'));
+
+/** 动态 import 的模块类型 */
+type LazyModule<P> = () => Promise<{ default: React.ComponentType<P> }>;
+
+/**
+ * 将「布局 + 页面」合并为单个懒加载边界。
+ * 嵌套 React.lazy 时，React 必须先拿到布局 chunk 才能渲染其子节点，导致两个 chunk 串行下载；
+ * 这里用 Promise.all 并行拉取，减少一次串行网络往返（跨机房约 0.7s）。
+ * @param layout 外层布局组件（需接受 children）
+ * @param page 内层页面组件
+ */
+const lazyComposed = (
+  layout: LazyModule<{ children: React.ReactNode }>,
+  page: LazyModule<Record<string, never>>,
+) =>
+  lazy(() =>
+    Promise.all([layout(), page()]).then(([layoutModule, pageModule]) => {
+      const Layout = layoutModule.default;
+      const Page = pageModule.default;
+      const Composed: React.FC = () => (
+        <Layout>
+          <Page />
+        </Layout>
+      );
+      return { default: Composed };
+    }),
+  );
+
+// 布局与页面并行下载，避免嵌套懒加载造成的 chunk 串行
+const NotesRoute = lazyComposed(
+  () => import('./components/AppLayout'),
+  () => import('./pages/NotesPage'),
+);
+const SettingsRoute = lazyComposed(
+  () => import('./components/AppLayout'),
+  () => import('./pages/settings/SettingsLayout'),
+);
 
 const withSuspense = (node: React.ReactNode) => (
   <Suspense fallback={<PageLoader />}>{node}</Suspense>
@@ -33,27 +67,11 @@ const App: React.FC = () => (
           <Route path="/register" element={withSuspense(<RegisterPage />)} />
           <Route
             path="/"
-            element={
-              <ProtectedRoute>
-                {withSuspense(
-                  <AppLayout>
-                    <NotesPage />
-                  </AppLayout>,
-                )}
-              </ProtectedRoute>
-            }
+            element={<ProtectedRoute>{withSuspense(<NotesRoute />)}</ProtectedRoute>}
           />
           <Route
             path="/settings"
-            element={
-              <ProtectedRoute>
-                {withSuspense(
-                  <AppLayout>
-                    <SettingsLayout />
-                  </AppLayout>,
-                )}
-              </ProtectedRoute>
-            }
+            element={<ProtectedRoute>{withSuspense(<SettingsRoute />)}</ProtectedRoute>}
           >
             <Route index element={<Navigate to="models" replace />} />
             <Route path="models" element={withSuspense(<AIModelsPage />)} />

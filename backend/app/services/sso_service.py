@@ -25,13 +25,23 @@ class SSOService:
             raise JWTError("Invalid token type")
         if not payload.get("email"):
             raise JWTError("Missing email claim")
+        status = payload.get("status", "active")
+        if status != "active":
+            raise JWTError("Portal account is not active")
         return payload
 
     @staticmethod
-    async def sync_user_from_claims(db: AsyncSession, claims: dict) -> User:
+    def _portal_note_status(portal_status: str) -> str:
+        return "Active" if portal_status == "active" else "Inactive"
+
+    @staticmethod
+    async def sync_user_from_claims(db: AsyncSession, claims: dict) -> tuple[User, bool]:
         email = claims["email"]
         name = claims.get("name") or email.split("@")[0]
         portal_role = claims.get("role", "user")
+        portal_status = claims.get("status", "active")
+        note_status = SSOService._portal_note_status(portal_status)
+        target_role = "admin" if portal_role == "admin" else "user"
 
         result = await db.execute(
             select(User).where(User.email == email, User.is_deleted == False)  # noqa: E712
@@ -43,16 +53,24 @@ class SSOService:
                 email=email,
                 name=name,
                 password_hash=AuthService.hash_password(secrets.token_urlsafe(32)),
-                role="admin" if portal_role == "admin" else "user",
-                status="Active",
+                role=target_role,
+                status=note_status,
             )
             db.add(user)
             await db.flush()
-        else:
-            user.name = name
-            if portal_role == "admin":
-                user.role = "admin"
-            user.status = "Active"
-            await db.flush()
+            return user, True
 
-        return user
+        changed = False
+        if user.name != name:
+            user.name = name
+            changed = True
+        if portal_role == "admin" and user.role != "admin":
+            user.role = "admin"
+            changed = True
+        if user.status != note_status:
+            user.status = note_status
+            changed = True
+
+        if changed:
+            await db.flush()
+        return user, changed

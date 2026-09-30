@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 import { parseBlockNoteContent } from '../../utils/blocknoteContent';
 import { uploadImageAsDataUrl } from '../../utils/blocknoteImageUpload';
-import EditorAIButton from '../ai/EditorAIButton';
 import '@blocknote/core/fonts/inter.css';
 import '@blocknote/mantine/style.css';
 
@@ -24,7 +23,6 @@ const DEFAULT_BLOCKS: PartialBlock[] = [{ type: 'paragraph', props: { textAlignm
 
 interface NoteRichTextEditorProps {
   noteId: string;
-  noteTitle?: string;
   content?: Record<string, unknown>;
   contentResetKey?: number;
   onChange?: (content: Record<string, unknown>) => void;
@@ -34,7 +32,6 @@ interface NoteRichTextEditorProps {
 
 const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   noteId,
-  noteTitle = '笔记',
   content,
   onChange,
   readOnly = false,
@@ -146,8 +143,6 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={() => setAlignment('left')} title="左对齐"><AlignLeft size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('center')} title="居中"><AlignCenter size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('right')} title="右对齐"><AlignRight size={16} /></button>
-          <div className={sepCls} />
-          <EditorAIButton noteType="rich_text" title={noteTitle} isDark={isDark} />
         </div>
       )}
       <div className="flex-1 min-h-0 overflow-auto flex flex-col">

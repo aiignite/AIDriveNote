@@ -50,6 +50,26 @@ async def test_update_note_flowchart_preview(db_session, test_user):
 
 
 @pytest.mark.asyncio
+async def test_update_note_flowchart_rejects_text_tree(db_session, test_user):
+    from app.services.note.note_service import NoteService
+
+    note = await NoteService.create_note(db_session, {
+        "title": "流程测试",
+        "note_type": "flowchart",
+        "content": {"xml": '<mxCell value="A"/>'},
+        "created_by": test_user.id,
+        "updated_by": test_user.id,
+    })
+    result = await nt._update_note(
+        db_session, test_user.id,
+        note_id=str(note.id),
+        content={"xml": "AIDriveNote\n├── 笔记管理\n└── 内容管理"},
+    )
+    assert result.get("success") is False
+    assert "mxGraphModel" in result.get("error", "") or "mxCell" in result.get("error", "")
+
+
+@pytest.mark.asyncio
 async def test_append_to_mindmap_preview(db_session, test_user):
     from app.services.note.note_service import NoteService
 
@@ -67,6 +87,52 @@ async def test_append_to_mindmap_preview(db_session, test_user):
     )
     assert result.get("requires_confirmation") is True
     assert "新节点" in result.get("added_preview_text", "")
+
+
+@pytest.mark.asyncio
+async def test_append_to_mindmap_from_outline_string(db_session, test_user):
+    from app.services.note.note_service import NoteService
+
+    note = await NoteService.create_note(db_session, {
+        "title": "导图大纲",
+        "note_type": "mindmap",
+        "content": {"data": {"text": "根", "uid": "root1"}, "children": []},
+        "created_by": test_user.id,
+        "updated_by": test_user.id,
+    })
+    result = await nt._append_to_mindmap(
+        db_session, test_user.id,
+        note_id=str(note.id),
+        nodes="分支A\n├── 子1\n└── 子2\n分支B",
+    )
+    assert result.get("requires_confirmation") is True
+    proposed = result.get("proposed_content") or {}
+    assert len(proposed.get("children") or []) >= 2
+    assert "子1" in result.get("added_preview_text", "")
+
+
+@pytest.mark.asyncio
+async def test_update_note_mindmap_from_multiline_single_node(db_session, test_user):
+    from app.services.note.note_service import NoteService
+
+    note = await NoteService.create_note(db_session, {
+        "title": "导图修复",
+        "note_type": "mindmap",
+        "content": {"data": {"text": "旧根"}, "children": []},
+        "created_by": test_user.id,
+        "updated_by": test_user.id,
+    })
+    result = await nt._update_note(
+        db_session, test_user.id,
+        note_id=str(note.id),
+        content={
+            "data": {"text": "新主题\n├── 模块A\n└── 模块B"},
+            "children": [],
+        },
+    )
+    assert result.get("requires_confirmation") is True
+    proposed = result.get("proposed_content") or {}
+    assert len(proposed.get("children") or []) == 2
 
 
 @pytest.mark.asyncio

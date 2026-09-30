@@ -1,7 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../services/auth';
-import { isAuthenticated, mayHaveSession, setAuthTokens } from '../services/client';
+import {
+  isAuthenticated,
+  mayHaveSession,
+  readCachedUser,
+  setAuthTokens,
+  writeCachedUser,
+} from '../services/client';
 
 interface AuthContextValue {
   user: { id: string; email: string; name: string; status: string; role: string } | null;
@@ -14,8 +20,10 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<AuthContextValue['user']>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // 本地快照用于首屏秒开：有快照时立即视为已登录并渲染，/auth/me 改为后台静默校验，
+  // 避免跨机房一次往返（约 0.7s）造成的整屏白屏等待。
+  const [user, setUser] = useState<AuthContextValue['user']>(() => readCachedUser());
+  const [isLoading, setIsLoading] = useState(() => !readCachedUser());
   const nav = useNavigate();
 
   useEffect(() => {
@@ -25,8 +33,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
       try {
-        setUser(await authApi.me());
+        const me = await authApi.me();
+        writeCachedUser(me);
+        setUser(me);
       } catch {
+        // 校验失败：setAuthTokens(null) 会同时清除 token 与本地用户快照
+        setUser(null);
         setAuthTokens({ accessToken: null });
       } finally {
         setIsLoading(false);
@@ -37,6 +49,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const onUnauthorized = () => {
+      writeCachedUser(null);
       setUser(null);
       nav('/login');
     };
@@ -45,8 +58,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [nav]);
 
   const login = useCallback(async (email: string, password: string) => {
-    await authApi.login(email, password);
-    setUser(await authApi.me());
+    // 登录响应已携带用户信息，直接落库并写入快照，省去一次 /auth/me 往返
+    const { user: loggedInUser } = await authApi.login(email, password);
+    writeCachedUser(loggedInUser);
+    setUser(loggedInUser);
     nav('/');
   }, [nav]);
 
@@ -56,6 +71,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [login]);
 
   const logout = useCallback(() => {
+    // authApi.logout 内部调用 setAuthTokens(null)，会一并清除本地用户快照
     authApi.logout();
     setUser(null);
     nav('/login');

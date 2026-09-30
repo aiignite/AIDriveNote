@@ -13,7 +13,6 @@ type NoteType = 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
 
 interface NoteEditorContainerProps {
   noteId: string;
-  noteTitle?: string;
   noteType: NoteType;
   content?: unknown;
   contentResetKey?: number;
@@ -44,7 +43,6 @@ const EditorFallback: React.FC<{ isDark?: boolean }> = ({ isDark = false }) => (
 
 const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContainerProps>(({
   noteId,
-  noteTitle = '笔记',
   noteType,
   content,
   contentResetKey = 0,
@@ -65,7 +63,6 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
         <Suspense fallback={<EditorFallback isDark={isDark} />}>
           <NoteRichTextEditor
             noteId={noteId}
-            noteTitle={noteTitle}
             content={editorContent as Record<string, unknown>}
             contentResetKey={contentResetKey}
             onChange={handleRichTextChange}

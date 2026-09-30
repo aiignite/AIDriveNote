@@ -9,8 +9,8 @@ import time
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,7 @@ from app.models.ai import (
 )
 from app.models.user import User
 from app.services.ai.ai_service import AIService
+from app.services.ai.attachment_service import AttachmentService
 from app.services.ai.seed_service import AISeedService
 from app.services.ai_providers.factory import AIProviderFactory
 
@@ -171,6 +172,7 @@ class ChatStreamRequest(BaseModel):
     conversation_id: Optional[uuid.UUID] = None
     model_id: Optional[str] = None
     page_context: Optional[dict[str, Any]] = None
+    attachment_ids: Optional[list[str]] = None
 
 
 class SkillOut(BaseModel):
@@ -711,15 +713,31 @@ async def list_messages(
         .where(AIMessage.conversation_id == conversation_id, AIMessage.is_deleted == False)  # noqa: E712
         .order_by(AIMessage.created_at)
     )
+    rows = msg_result.scalars().all()
+    all_attachment_ids: list[str] = []
+    for m in rows:
+        all_attachment_ids.extend(str(aid) for aid in (m.attachment_ids or []) if str(aid).strip())
+    att_map = await AttachmentService.fetch_map(db, user.id, list(dict.fromkeys(all_attachment_ids)))
+
     return [
         {
             "id": m.id,
             "role": m.role,
             "content": m.content,
             "toolResults": m.tool_results or [],
+            "attachmentIds": [str(aid) for aid in (m.attachment_ids or [])],
+            "attachments": [
+                {
+                    "id": str(att_map[aid].id),
+                    "name": att_map[aid].original_name,
+                    "mimeType": att_map[aid].mime_type,
+                }
+                for aid in (m.attachment_ids or [])
+                if str(aid) in att_map
+            ],
             "createdAt": m.created_at,
         }
-        for m in msg_result.scalars().all()
+        for m in rows
     ]
 
 
@@ -905,6 +923,59 @@ async def save_assistant_skills(
     return {"success": True}
 
 
+# ── Attachments ──
+
+@router.post("/attachments/upload")
+async def upload_attachment(
+    file: UploadFile = File(...),
+    conversation_id: uuid.UUID | None = Query(default=None, alias="conversationId"),
+    purpose: str = Query(default="chat", pattern="^(chat|system|generated)$"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        attachment = await AttachmentService.upload(
+            db, user.id, file,
+            conversation_id=conversation_id,
+            purpose=purpose,
+        )
+    except ValueError as exc:
+        raise BadRequestException(str(exc)) from exc
+    return {
+        "success": True,
+        "data": {
+            "id": str(attachment.id),
+            "name": attachment.original_name,
+            "url": f"/api/v1/ai/attachments/{attachment.id}",
+            "conversationId": str(attachment.conversation_id) if attachment.conversation_id else None,
+            "purpose": attachment.purpose,
+            "width": attachment.width,
+            "height": attachment.height,
+            "size": attachment.file_size,
+            "mimeType": attachment.mime_type,
+        },
+    }
+
+
+@router.get("/attachments/{attachment_id}")
+async def download_attachment(
+    attachment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    attachment = await AttachmentService.get(db, user.id, attachment_id)
+    if not attachment:
+        raise NotFoundException("Attachment")
+    file_path = AttachmentService.resolve_file_path(attachment)
+    if not file_path:
+        raise NotFoundException("Attachment file")
+    return FileResponse(
+        file_path,
+        media_type=attachment.mime_type,
+        filename=attachment.original_name,
+    )
+
+
 # ── Chat stream ──
 
 @router.post("/chat/stream")
@@ -923,6 +994,7 @@ async def chat_stream(
                 conversation_id=body.conversation_id,
                 page_context=body.page_context,
                 model_id=body.model_id,
+                attachment_ids=body.attachment_ids,
             ):
                 yield chunk
         except Exception as exc:

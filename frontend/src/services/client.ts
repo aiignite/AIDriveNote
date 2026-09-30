@@ -1,9 +1,11 @@
+import type { AuthUser } from './auth';
 import { keysToCamel, keysToSnake } from '../utils/caseConverter';
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
 
 const TOKEN_KEY = 'aidrivenote.access_token';
 const REFRESH_KEY = 'aidrivenote.refresh_token';
+const USER_KEY = 'aidrivenote.user';
 
 let accessToken: string | null =
   typeof window !== 'undefined' ? window.localStorage.getItem(TOKEN_KEY) : null;
@@ -23,6 +25,49 @@ export function setAuthTokens(tokens: {
     window.localStorage.setItem(REFRESH_KEY, tokens.refreshToken);
   } else if (tokens.accessToken === null) {
     window.localStorage.removeItem(REFRESH_KEY);
+    // 登出 / 401 失效：快照必须一并清除，避免下次打开误判为已登录
+    writeCachedUser(null);
+  }
+}
+
+/**
+ * 读取本地用户快照，用于首屏秒开。
+ * 让应用在等待后台 /auth/me 校验期间就能渲染页面框架与发起数据请求。
+ * 解析失败或缺少关键字段时返回 null，由后台校验兜底。
+ */
+export function readCachedUser(): AuthUser | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AuthUser> | null;
+    if (!parsed?.id || !parsed?.email) return null;
+    return {
+      id: String(parsed.id),
+      email: String(parsed.email),
+      name: String(parsed.name ?? ''),
+      status: String(parsed.status ?? ''),
+      role: String(parsed.role ?? ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 写入或清除用户快照。
+ * @param user 传 null 表示清除（登出、鉴权失效、快照过期）
+ */
+export function writeCachedUser(user: AuthUser | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (user) {
+      window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+    } else {
+      window.localStorage.removeItem(USER_KEY);
+    }
+  } catch {
+    /* localStorage 不可用（隐私模式 / 配额）时忽略，不影响主流程 */
   }
 }
 
@@ -125,3 +170,22 @@ export const api = {
     request<T>(path, { method: 'PUT', body: body ? JSON.stringify(keysToSnake(body)) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 };
+
+export async function fetchWithAuth(path: string, options: RequestInit = {}, retried = false): Promise<Response> {
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> ?? {}),
+  };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+
+  const res = await fetch(resolveUrl(path), { ...options, headers, credentials: 'include' });
+
+  if (res.status === 401 && !retried && !path.includes('/auth/')) {
+    const ok = await refreshAccessToken();
+    if (ok) return fetchWithAuth(path, options, true);
+    setAuthTokens({ accessToken: null });
+    window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+    throw new Error('Unauthorized');
+  }
+
+  return res;
+}

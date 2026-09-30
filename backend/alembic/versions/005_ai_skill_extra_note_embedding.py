@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "005_ai_skill_extra_note_embedding"
+revision = "005_ai_skill_extra"
 down_revision = "004_user_role"
 branch_labels = None
 depends_on = None

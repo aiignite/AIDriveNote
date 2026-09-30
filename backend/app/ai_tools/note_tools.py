@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_tools.registry import ToolRegistry
 from app.services.note.note_service import NoteService
+from app.services.note.flowchart_format import normalize_flowchart_content
+from app.services.note.mindmap_format import normalize_mindmap_content, normalize_mindmap_nodes
 from app.services.note.rich_text_blocks import (
     content_to_preview_text,
     merge_rich_text_blocks,
@@ -43,7 +45,11 @@ def _validate_mindmap_content(content: dict[str, Any]) -> bool:
 
 
 def _validate_flowchart_content(content: dict[str, Any]) -> bool:
-    return isinstance(content.get("xml"), str) and bool(str(content.get("xml")).strip())
+    xml = content.get("xml")
+    if not isinstance(xml, str) or not xml.strip():
+        return False
+    xml_stripped = xml.strip()
+    return "mxCell" in xml_stripped or "mxGraphModel" in xml_stripped
 
 
 def _find_mindmap_node(node: dict[str, Any], uid: str) -> dict[str, Any] | None:
@@ -58,14 +64,6 @@ def _find_mindmap_node(node: dict[str, Any], uid: str) -> dict[str, Any] | None:
                 if found:
                     return found
     return None
-
-
-def _normalize_mindmap_nodes(nodes: Any) -> list[dict[str, Any]]:
-    if isinstance(nodes, dict):
-        return [nodes]
-    if isinstance(nodes, list):
-        return [n for n in nodes if isinstance(n, dict)]
-    return []
 
 
 def _parse_uuid(raw: str, label: str = "note_id") -> UUID | dict:
@@ -238,7 +236,13 @@ async def _update_note(
         if note.note_type == "mindmap" and not _validate_mindmap_content(proposed_content):
             return {"success": False, "error": "思维导图 content 需包含 data.text 字段"}
         if note.note_type == "flowchart" and not _validate_flowchart_content(proposed_content):
-            return {"success": False, "error": "流程图 content 需包含非空 xml 字段"}
+            return {
+                "success": False,
+                "error": (
+                    "流程图 content 需为 draw.io mxGraphModel XML（含 mxCell 节点），"
+                    "不可使用纯文本树形描述"
+                ),
+            }
         return _build_content_preview_result(
             note,
             change_type="update",
@@ -312,7 +316,7 @@ async def _append_to_mindmap(
         return {"success": False, "error": f"append_to_mindmap 仅支持 mindmap 类型，当前: {note.note_type}"}
 
     base = dict(note.content) if isinstance(note.content, dict) else {"data": {"text": "中心主题"}, "children": []}
-    new_nodes = _normalize_mindmap_nodes(nodes)
+    new_nodes = normalize_mindmap_nodes(nodes)
     if not new_nodes:
         return {"success": False, "error": "nodes 不能为空"}
 
@@ -570,21 +574,25 @@ def _wrap_content(note_type: str, content: dict | str | list | None) -> dict | N
         return parse_rich_text_content(content)
     if isinstance(content, dict):
         if note_type == "mindmap":
-            if _validate_mindmap_content(content):
-                return content
+            normalized = normalize_mindmap_content(content)
+            if normalized and _validate_mindmap_content(normalized):
+                return normalized
             return None
         if note_type == "flowchart":
-            if _validate_flowchart_content(content):
-                return content
+            if "xml" in content:
+                return normalize_flowchart_content({"xml": str(content.get("xml") or "")})
             return None
         return content
     text = str(content)
     if note_type == "markdown":
         return {"text": text}
     if note_type == "mindmap":
-        return {"data": {"text": text}, "children": []}
+        normalized = normalize_mindmap_content(text)
+        if normalized and _validate_mindmap_content(normalized):
+            return normalized
+        return None
     if note_type == "flowchart":
-        return {"xml": text}
+        return normalize_flowchart_content({"xml": text})
     return parse_rich_text_content(text)
 
 
@@ -633,7 +641,10 @@ def _register_all() -> None:
         "name": "update_note",
         "description": (
             "更新笔记内容或元数据。所有类型的 content 变更均返回 preview 供用户确认。\n"
-            "markdown/rich_text: 字符串或 blocks；mindmap: {data, children} 树；flowchart: {xml}。\n"
+            "markdown/rich_text: 字符串或 blocks；"
+            "mindmap: simple-mind-map JSON 树 {data:{text}, children:[]}，"
+            "每个分支必须是独立节点，禁止将全部大纲塞进单个 data.text；"
+            "flowchart: {xml} 且 xml 必须是含 mxCell 的 draw.io mxGraphModel XML。\n"
             "仅改标题/描述/状态时不触发预览，立即生效。末尾追加请用 append_to_note 或 append_to_mindmap。"
         ),
         "parameters": {"type": "object", "properties": {
@@ -660,7 +671,8 @@ def _register_all() -> None:
     ToolRegistry.register("append_to_mindmap", {
         "name": "append_to_mindmap",
         "description": (
-            "向思维导图追加子节点。nodes 为 {data:{text:...}, children:[]} 或数组；"
+            "向思维导图追加子节点。nodes 为 simple-mind-map 节点对象、节点数组，"
+            "或树形/Markdown 大纲字符串；每个分支须为独立节点。"
             "parent_uid 指定父节点 uid，省略则追加到根节点下。返回 preview 供确认。"
         ),
         "parameters": {"type": "object", "properties": {

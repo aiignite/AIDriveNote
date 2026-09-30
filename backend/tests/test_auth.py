@@ -56,3 +56,5 @@ async def test_login_success(auth_client: AsyncClient, db_session: AsyncSession)
     data = res.json()
     assert data["access_token"]
     assert data["refresh_token"]
+    # 登录响应直接携带用户信息，前端无需再请求 /auth/me
+    assert data["user"]["email"] == "ok@test.com"

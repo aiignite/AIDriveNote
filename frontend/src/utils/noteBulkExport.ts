@@ -36,7 +36,7 @@ async function fetchAllNotes(): Promise<Note[]> {
   const all: Note[] = [];
 
   while (skip < total) {
-    const res = await noteApi.list({ skip, limit });
+    const res = await noteApi.list({ skip, limit, includeContent: true });
     all.push(...res.items);
     total = res.total;
     skip += limit;

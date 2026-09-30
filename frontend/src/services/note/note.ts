@@ -85,6 +85,8 @@ export interface NoteListParams {
   isFavorite?: boolean;
   tagIds?: string[];
   includeShared?: boolean;
+  /** 默认 false：列表响应不含 content，显著减小文件树加载体积；导出等场景需显式开启 */
+  includeContent?: boolean;
 }
 
 export interface NoteRevision {
@@ -136,6 +138,7 @@ export const noteApi = {
       is_favorite: params.isFavorite,
       tag_ids: params.tagIds?.join(','),
       include_shared: params.includeShared,
+      include_content: params.includeContent,
     } : undefined)}`),
 
   listTrash: (params?: { skip?: number; limit?: number; search?: string }) =>

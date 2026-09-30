@@ -28,8 +28,7 @@ def _extract_text(payload: dict[str, Any]) -> str:
 
 
 def _extract_message_content(message: dict[str, Any]) -> str:
-    content = message.get("content")
-    return content if isinstance(content, str) and content else ""
+    return _extract_text(message)
 
 
 class MiniMaxProvider(BaseAIProvider):
@@ -45,14 +44,41 @@ class MiniMaxProvider(BaseAIProvider):
             return args
         return json.dumps(args or {}, ensure_ascii=False)
 
+    def _convert_content_part(self, part: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(part, dict):
+            return None
+        part_type = part.get("type")
+        if part_type == "text":
+            text = part.get("text", "")
+            return {"type": "text", "text": text} if text else None
+        if part_type == "image":
+            mime_type = part.get("mimeType") or part.get("mime_type") or "image/jpeg"
+            data = part.get("data") or ""
+            if not data:
+                return None
+            url = data if data.startswith("data:") else f"data:{mime_type};base64,{data}"
+            return {"type": "image_url", "image_url": {"url": url}}
+        return None
+
+    def _serialize_message_content(self, content: str | list[dict[str, Any]] | None) -> str | list[dict[str, Any]]:
+        if isinstance(content, list):
+            converted = [
+                converted
+                for part in content
+                if (converted := self._convert_content_part(part)) is not None
+            ]
+            return converted or ""
+        return content or ""
+
     def _build_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for m in messages:
-            item: dict[str, Any] = {"role": m.role, "content": m.content or ""}
+            item: dict[str, Any] = {"role": m.role, "content": self._serialize_message_content(m.content)}
             if m.role == "tool":
                 tc_id = (m.tool_call_id or "").strip()
                 if not tc_id:
-                    tc_id = f"call_{uuid.uuid4().hex[:8]}"
+                    logger.warning("MiniMax: skipping tool message without tool_call_id")
+                    continue
                 item["tool_call_id"] = tc_id
             if m.tool_calls:
                 item["tool_calls"] = [
@@ -241,6 +267,9 @@ class MiniMaxProvider(BaseAIProvider):
 
                     for chunk in emit_pending():
                         yield chunk
+
+                    if not saw_stream_content and accumulated:
+                        yield {"type": "content", "content": accumulated}
 
         except httpx.HTTPError as exc:
             logger.warning("MiniMax HTTP error (%s): %s", base_url, exc)
