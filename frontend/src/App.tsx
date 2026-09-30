@@ -14,6 +14,7 @@ const AIAssistantsPage = lazy(() => import('./pages/settings/AIAssistantsPage'))
 const AISkillsPage = lazy(() => import('./pages/settings/AISkillsPage'));
 const UsersPage = lazy(() => import('./pages/settings/UsersPage'));
 const SyncSettingsPage = lazy(() => import('./pages/settings/SyncSettingsPage'));
+const OfflineSettingsPage = lazy(() => import('./pages/settings/OfflineSettingsPage'));
 
 /** 动态 import 的模块类型 */
 type LazyModule<P> = () => Promise<{ default: React.ComponentType<P> }>;
@@ -79,6 +80,7 @@ const App: React.FC = () => (
             <Route path="assistants" element={withSuspense(<AIAssistantsPage />)} />
             <Route path="skills" element={withSuspense(<AISkillsPage />)} />
             <Route path="sync" element={withSuspense(<SyncSettingsPage />)} />
+            <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
             <Route
               path="users"
               element={

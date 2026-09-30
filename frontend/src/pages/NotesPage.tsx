@@ -11,17 +11,28 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../contexts/AppContext';
+import { useAuth } from '../contexts/AuthContext';
 import { buildNoteQuickActions } from '../utils/noteAIActions';
+import { isNetworkError } from '../services/client';
 import {
   noteApi, noteFolderApi, noteTemplateApi, noteTagApi,
   type Note, type NoteCreate, type NoteUpdate, type NoteFolder, type NoteTag,
 } from '../services/note';
+import {
+  cacheList, cacheNoteMetas, dropCached, readAllNotes, readList, readNote, toNote,
+} from '../services/offline/noteCache';
+import {
+  createOfflineNote, deleteOfflineNote, saveOfflineEdit,
+} from '../services/offline/offlineQueue';
+import type { OutboxPayload } from '../services/offline/offlineDb';
 import NoteListPanel, { type NoteCategory } from '../components/note/NoteListPanel';
 import NoteEditorPanel from '../components/note/NoteEditorPanel';
 import NoteTemplateGallery from '../components/note/NoteTemplateGallery';
 
 const NotesPage: React.FC = () => {
   const { theme, setPageAIContext, bumpNotesRefresh, notesRefreshToken } = useApp();
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const isDark = theme === 'dark';
 
   // Notes data
@@ -57,6 +68,44 @@ const NotesPage: React.FC = () => {
   const activeFolderId =
     selectedCategory.type === 'folder' ? selectedCategory.folderId : undefined;
 
+  /**
+   * 从本地离线缓存构造列表数据。
+   * 断网时列表页不能白屏，必须能读到上次联网时缓存的笔记与文件夹。
+   * @returns 列表数据；本地无任何缓存时返回 null
+   */
+  const buildOfflineList = useCallback(async () => {
+    const snapshot = await readList();
+    const cached = await readAllNotes();
+    if (!snapshot && cached.length === 0) return null;
+
+    let items = cached.map(toNote);
+
+    // 回收站内容不做离线缓存，离线时视为空
+    if (selectedCategory.type === 'trash') items = [];
+
+    if (filterType !== 'all') items = items.filter(n => n.noteType === filterType);
+    if (activeFolderId) items = items.filter(n => n.folderId === activeFolderId);
+    if (selectedCategory.type === 'pinned') items = items.filter(n => n.isPinned);
+    if (selectedCategory.type === 'favorites') items = items.filter(n => n.isFavorite);
+    if (selectedTagIds.length > 0) {
+      items = items.filter(n => n.tags?.some(t => selectedTagIds.includes(t.id)));
+    }
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase();
+      items = items.filter(n =>
+        `${n.title} ${n.previewText ?? ''} ${n.description ?? ''}`.toLowerCase().includes(q),
+      );
+    }
+    items.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+
+    return {
+      notes: items,
+      total: items.length,
+      folders: snapshot?.folders ?? [],
+      tags: snapshot?.tags ?? [],
+    };
+  }, [selectedCategory.type, filterType, activeFolderId, selectedTagIds, debouncedSearch]);
+
   // Fetch notes & folders
   const fetchNotes = useCallback(async () => {
     setLoading(true);
@@ -84,12 +133,25 @@ const NotesPage: React.FC = () => {
       setNotesTotal(notesRes.total);
       setFolders(foldersData);
       setAllTags(tagsData);
-    } catch {
-      toast.error('加载笔记失败');
+      // 旁路写入离线缓存：失败静默，绝不影响在线流程
+      if (userId) void cacheList(notesRes.items, foldersData, tagsData, userId);
+    } catch (err) {
+      // 网络不可达时回退到本地缓存，避免整页空白
+      const fallback = await buildOfflineList();
+      if (fallback) {
+        setNotes(fallback.notes);
+        setNotesTotal(fallback.total);
+        setFolders(fallback.folders);
+        setAllTags(fallback.tags);
+      } else if (isNetworkError(err)) {
+        toast.error('当前处于离线状态，本地暂无可用缓存');
+      } else {
+        toast.error('加载笔记失败');
+      }
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, filterType, selectedTagIds, activeFolderId, selectedCategory.type]);
+  }, [debouncedSearch, filterType, selectedTagIds, activeFolderId, selectedCategory.type, userId, buildOfflineList]);
 
   useEffect(() => {
     fetchNotes();
@@ -179,6 +241,33 @@ const NotesPage: React.FC = () => {
     return () => setPageAIContext(null);
   }, [setPageAIContext, selectedNote, selectedCategory, folders]);
 
+  /**
+   * 把一个字段修改排队到离线队列，联网后自动回传服务端。
+   * @param noteId 笔记 ID
+   * @param payload 修改载荷
+   * @returns 是否成功入队；本地无该笔记缓存时返回 false
+   */
+  const queueOfflineEdit = useCallback(async (noteId: string, payload: OutboxPayload) => {
+    const cached = await readNote(noteId);
+    if (!cached) return false;
+    await saveOfflineEdit({ note: cached, payload });
+    return true;
+  }, []);
+
+  /**
+   * 统一处理「离线且该操作无法排队回传」的场景。
+   * 这类操作（收藏、分享、版本、文件夹变更）没有幂等保证，离线时只提示不执行。
+   * @param err 捕获到的异常
+   * @returns 是否已按离线场景处理（调用方据此提前返回）
+   */
+  const notifyIfOffline = useCallback((err: unknown) => {
+    if (isNetworkError(err)) {
+      toast.error('当前处于离线状态，该操作需联网后使用');
+      return true;
+    }
+    return false;
+  }, []);
+
   // Create note
   const resolveCreateFolderId = useCallback((): string | undefined => {
     if (selectedCategory.type === 'folder') return selectedCategory.folderId;
@@ -186,21 +275,38 @@ const NotesPage: React.FC = () => {
   }, [selectedCategory]);
 
   const handleCreateNote = useCallback(async (noteType: string, folderId?: string) => {
+    const targetFolderId = folderId || resolveCreateFolderId();
     try {
       const data: NoteCreate = {
         title: '无标题笔记',
         noteType: noteType as NoteCreate['noteType'],
-        folderId: folderId || resolveCreateFolderId(),
+        folderId: targetFolderId,
       };
       const newNote = await noteApi.create(data);
       setNotes(prev => [newNote, ...prev]);
       setNotesTotal(t => t + 1);
       setSelectedNote(newNote);
       toast.success('笔记已创建');
-    } catch {
+      if (userId) void cacheNoteMetas([newNote], userId);
+    } catch (err) {
+      // 离线新建：先落本地，联网后由队列自动回传服务端
+      if (isNetworkError(err) && userId) {
+        const local = await createOfflineNote({
+          userId,
+          title: '无标题笔记',
+          noteType: noteType as Note['noteType'],
+          folderId: targetFolderId,
+        });
+        const note = toNote(local);
+        setNotes(prev => [note, ...prev]);
+        setNotesTotal(t => t + 1);
+        setSelectedNote(note);
+        toast.success('已离线创建，联网后将自动同步');
+        return;
+      }
       toast.error('创建失败');
     }
-  }, [resolveCreateFolderId]);
+  }, [resolveCreateFolderId, userId]);
 
   // Create note from template
   const handleCreateFromTemplate = useCallback(async (templateId: string) => {
@@ -212,10 +318,11 @@ const NotesPage: React.FC = () => {
       setNotesTotal(t => t + 1);
       setSelectedNote(newNote);
       toast.success('笔记已从模板创建');
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('从模板创建失败');
     }
-  }, [resolveCreateFolderId]);
+  }, [resolveCreateFolderId, notifyIfOffline]);
 
   // Delete note
   const handleDeleteNote = useCallback(async (id: string) => {
@@ -232,9 +339,22 @@ const NotesPage: React.FC = () => {
         await noteApi.delete(id);
         toast.success('笔记已移入回收站');
       }
+      void dropCached([id]);
       if (selectedNote?.id === id) setSelectedNote(null);
       fetchNotes();
-    } catch {
+    } catch (err) {
+      // 离线删除：本地立即移除，服务端删除排队等待回传
+      if (isNetworkError(err) && !isTrash) {
+        const cached = await readNote(id);
+        if (cached) {
+          await deleteOfflineNote(cached);
+          if (selectedNote?.id === id) setSelectedNote(null);
+          setNotes(prev => prev.filter(n => n.id !== id));
+          setNotesTotal(t => Math.max(0, t - 1));
+          toast.success('已离线删除，联网后将自动同步');
+          return;
+        }
+      }
       toast.error('删除失败');
     }
   }, [selectedNote, fetchNotes, selectedCategory.type]);
@@ -245,10 +365,11 @@ const NotesPage: React.FC = () => {
       toast.success('笔记已恢复');
       fetchNotes();
       setSelectedNote(restored);
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('恢复失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, notifyIfOffline]);
 
   const handlePermanentDeleteNote = useCallback(async (id: string) => {
     if (!confirm('确定永久删除这条笔记吗？此操作无法恢复。')) return;
@@ -257,10 +378,11 @@ const NotesPage: React.FC = () => {
       toast.success('笔记已永久删除');
       if (selectedNote?.id === id) setSelectedNote(null);
       fetchNotes();
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('删除失败');
     }
-  }, [selectedNote, fetchNotes]);
+  }, [selectedNote, fetchNotes, notifyIfOffline]);
 
   const handleToggleFavorite = useCallback(async (id: string, favorited: boolean) => {
     try {
@@ -272,10 +394,11 @@ const NotesPage: React.FC = () => {
         toast.success('已收藏');
       }
       fetchNotes();
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('操作失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, notifyIfOffline]);
 
   const handleDuplicateNote = useCallback(async (id: string) => {
     try {
@@ -283,20 +406,26 @@ const NotesPage: React.FC = () => {
       toast.success('笔记已复制');
       fetchNotes();
       setSelectedNote(copied);
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('复制失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, notifyIfOffline]);
 
   const handlePinNote = useCallback(async (id: string, pinned: boolean) => {
     try {
       await noteApi.update(id, { isPinned: pinned } as NoteUpdate);
       toast.success(pinned ? '笔记已置顶' : '已取消置顶');
       fetchNotes();
-    } catch {
+    } catch (err) {
+      // 置顶属于字段修改，可安全排队到联网后回传
+      if (isNetworkError(err) && (await queueOfflineEdit(id, { isPinned: pinned }))) {
+        toast.success(pinned ? '已置顶，联网后同步' : '已取消置顶，联网后同步');
+        return;
+      }
       toast.error('操作失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, queueOfflineEdit]);
 
   // Move note to folder
   const handleMoveNote = useCallback(async (noteId: string, folderId: string | null) => {
@@ -304,10 +433,14 @@ const NotesPage: React.FC = () => {
       await noteApi.update(noteId, { folderId: folderId ?? undefined });
       toast.success('笔记已移动');
       fetchNotes();
-    } catch {
+    } catch (err) {
+      if (isNetworkError(err) && (await queueOfflineEdit(noteId, { folderId: folderId ?? undefined }))) {
+        toast.success('已移动，联网后同步');
+        return;
+      }
       toast.error('移动失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, queueOfflineEdit]);
 
   // Folder CRUD
   const handleCreateFolder = useCallback(async (name: string, parentId?: string) => {
@@ -315,20 +448,22 @@ const NotesPage: React.FC = () => {
       await noteFolderApi.create({ name, parentId });
       toast.success('文件夹已创建');
       fetchNotes();
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('创建文件夹失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, notifyIfOffline]);
 
   const handleRenameFolder = useCallback(async (id: string, name: string) => {
     try {
       await noteFolderApi.update(id, { name });
       toast.success('文件夹已重命名');
       fetchNotes();
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('重命名失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, notifyIfOffline]);
 
   const handleDeleteFolder = useCallback(async (id: string) => {
     if (!confirm('删除文件夹？其中的笔记将移至根目录。')) return;
@@ -336,10 +471,11 @@ const NotesPage: React.FC = () => {
       await noteFolderApi.delete(id);
       toast.success('文件夹已删除');
       fetchNotes();
-    } catch {
+    } catch (err) {
+      if (notifyIfOffline(err)) return;
       toast.error('删除文件夹失败');
     }
-  }, [fetchNotes]);
+  }, [fetchNotes, notifyIfOffline]);
 
   // Note updated from editor panel
   const handleNoteUpdated = useCallback((updated: Note) => {

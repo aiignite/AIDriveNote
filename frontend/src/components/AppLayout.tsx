@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useApp } from '../contexts/AppContext';
 import { aiApi } from '../services/ai/ai';
 import Logo from './Logo';
+import OfflineBanner from './OfflineBanner';
 
 const AISidebar = lazy(() => import('../components/ai/AISidebar'));
 
@@ -59,8 +60,8 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const aiPadding = aiOpen ? sidebarWidth : 0;
 
   return (
-    <div className={`min-h-screen ${isDark ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
-      <header className={`h-14 flex items-center justify-between px-4 border-b ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
+    <div className={`min-h-screen flex flex-col ${isDark ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
+      <header className={`h-14 shrink-0 flex items-center justify-between px-4 border-b ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
         <Link to="/" className="flex items-center gap-2.5 shrink-0">
           <Logo size={30} />
           <span className={`font-bold text-base tracking-tight ${isDark ? 'text-white' : 'text-gray-900'}`}>
@@ -83,7 +84,8 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           </button>
         </div>
       </header>
-      <div className="flex min-h-[calc(100vh-3.5rem)]" style={{ paddingRight: aiPadding }}>
+      <OfflineBanner />
+      <div className="flex flex-1 min-h-0" style={{ paddingRight: aiPadding }}>
         <main className="flex-1 min-w-0 min-h-0 flex flex-col">{children}</main>
         <Suspense fallback={null}>
           <AISidebar />
