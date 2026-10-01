@@ -61,6 +61,15 @@ class NoteCreate(BaseModel):
     status: Optional[str] = "Active"
 
 
+class NoteAppend(BaseModel):
+    """追加内容请求体。"""
+
+    # 待追加的内容，Markdown 或纯文本
+    text: str
+    # 预留的追加模式位，当前仅支持 text
+    mode: str = "text"
+
+
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
     note_type: Optional[str] = None
@@ -593,6 +602,29 @@ async def duplicate_note(
     if not copied:
         raise NotFoundException("Note")
     return await _enrich_note_out(db, copied, user)
+
+
+@router.post("/{note_id}/append", response_model=NoteOut)
+async def append_to_note(
+    note_id: UUID,
+    body: NoteAppend,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """向笔记末尾追加内容。
+
+    供 MCP 等外部集成直接写入，主动作由使用者在 Agent 侧发起，
+    因此不做二次确认；但仍保留编辑权限校验与自动修订记录。
+    仅支持 markdown / rich_text 两种笔记类型。
+    """
+    existing = await NoteService.get_note(db, note_id)
+    if not existing:
+        raise NotFoundException("Note")
+    await _assert_note_edit(db, existing, user)
+    item, error = await NoteService.append_text(db, note_id, user.id, body.text)
+    if error or item is None:
+        raise BadRequestException(error or "追加失败")
+    return await _enrich_note_out(db, item, user)
 
 
 @router.post("/{note_id}/restore", response_model=NoteOut)

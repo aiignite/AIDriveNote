@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { ArrowLeft, Bot, Brain, CloudOff, FolderSync, Save, Settings, Sparkles, Users } from 'lucide-react';
+import { ArrowLeft, Bot, Brain, CloudOff, FolderSync, KeyRound, Save, Settings, Sparkles, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../../contexts/AppContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -12,6 +12,7 @@ const aiNavItems = [
   { to: '/settings/skills', label: '技能', icon: Sparkles, accent: 'orange' as const },
   { to: '/settings/sync', label: '本地同步', icon: FolderSync, accent: 'orange' as const },
   { to: '/settings/offline', label: '离线缓存', icon: CloudOff, accent: 'orange' as const },
+  { to: '/settings/tokens', label: '访问令牌', icon: KeyRound, accent: 'orange' as const },
 ];
 
 const adminNavItems = [

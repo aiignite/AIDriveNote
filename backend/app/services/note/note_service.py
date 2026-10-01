@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.note import Note, NoteFavorite, NoteFolder, NoteNoteTag, NoteTemplate
+from app.services.note.rich_text_blocks import merge_rich_text_blocks
 
 
 class NoteFolderService:
@@ -300,6 +301,52 @@ class NoteService:
                 except Exception:
                     pass
         return await NoteService.get_note(db, note_id)
+
+    @staticmethod
+    async def append_text(
+        db: AsyncSession,
+        note_id: UUID,
+        user_id: UUID,
+        text: str,
+    ) -> tuple[Note | None, str | None]:
+        """向笔记末尾追加文本。
+
+        仅支持 markdown / rich_text 两种类型：
+        - markdown：读取 content["text"] 后以空行拼接
+        - rich_text：复用 merge_rich_text_blocks 追加为新的块
+
+        写回统一走 update_note，因此会自动生成修订记录并刷新检索与链接。
+
+        @param db 数据库会话
+        @param note_id 目标笔记 ID
+        @param user_id 操作人（用于 updated_by）
+        @param text 追加内容，Markdown 或纯文本
+        @returns (更新后的笔记, 错误信息)；失败时笔记为 None
+        """
+        if not text or not text.strip():
+            return None, "追加内容不能为空"
+        note = await NoteService.get_note(db, note_id)
+        if not note:
+            return None, "未找到笔记"
+        if note.note_type not in ("markdown", "rich_text"):
+            return None, f"仅支持 markdown/rich_text 类型，当前笔记类型: {note.note_type}"
+
+        content = note.content or {}
+        if note.note_type == "markdown":
+            existing = content.get("text", "") if isinstance(content, dict) else ""
+            new_content: dict = {"text": f"{existing}\n\n{text}" if existing else text}
+        else:
+            new_content = merge_rich_text_blocks(content, text)
+
+        updated = await NoteService.update_note(
+            db,
+            note_id,
+            {"content": new_content, "updated_by": user_id},
+            change_summary="外部集成追加内容",
+        )
+        if not updated:
+            return None, "追加失败"
+        return updated, None
 
     @staticmethod
     async def delete_note(db: AsyncSession, note_id: UUID) -> bool:

@@ -141,8 +141,21 @@ docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
 - `/users/search` — 分享时搜索用户
 - `/notes` — 笔记 CRUD、文件夹、标签、模板、全文搜索、版本、分享等
 - `/ai` — 模型 / 助手 / 技能 / 会话 / SSE 流式对话
+- `/api-tokens` — 个人访问令牌（PAT）签发、列表、撤销
 
 健康检查：`GET /health` → `{ "status": "ok", "app": "AIDriveNote" }`
+
+## MCP 集成
+
+通过内置的 MCP Server，可让 Claude Desktop / Cursor / Trae 等外部 Agent 把检索到的文档直接写入笔记（新建、追加），并支持文件夹、标签、全文搜索等定位辅助。
+
+```bash
+# 1. 在笔记「设置 → 访问令牌」生成 adn_ 令牌
+# 2. 在客户端 MCP 配置中填入令牌与地址
+# 3. 让 Agent 调用 list_folders 自检连通性
+```
+
+MCP Server 源码与完整安装说明见 [mcp-server/README.md](mcp-server/README.md)。
 
 ## 项目结构
 

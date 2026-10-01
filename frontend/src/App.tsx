@@ -15,6 +15,7 @@ const AISkillsPage = lazy(() => import('./pages/settings/AISkillsPage'));
 const UsersPage = lazy(() => import('./pages/settings/UsersPage'));
 const SyncSettingsPage = lazy(() => import('./pages/settings/SyncSettingsPage'));
 const OfflineSettingsPage = lazy(() => import('./pages/settings/OfflineSettingsPage'));
+const ApiTokensPage = lazy(() => import('./pages/settings/ApiTokensPage'));
 
 /** 动态 import 的模块类型 */
 type LazyModule<P> = () => Promise<{ default: React.ComponentType<P> }>;
@@ -81,6 +82,7 @@ const App: React.FC = () => (
             <Route path="skills" element={withSuspense(<AISkillsPage />)} />
             <Route path="sync" element={withSuspense(<SyncSettingsPage />)} />
             <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
+            <Route path="tokens" element={withSuspense(<ApiTokensPage />)} />
             <Route
               path="users"
               element={
