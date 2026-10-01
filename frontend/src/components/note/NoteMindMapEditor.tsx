@@ -997,7 +997,9 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
   const selectCls = `text-xs rounded px-1 py-0.5 border ${
     isDark ? 'bg-gray-700 border-gray-600 text-gray-200' : 'bg-white border-gray-300 text-gray-700'
   }`;
-  const panelCls = `absolute z-20 top-full left-0 mt-1 p-2 rounded-lg shadow-lg border grid grid-cols-4 gap-1 ${
+  // 注意：面板绝对定位在仅包裹按钮的窄容器内，必须用 w-max 按内容撑开宽度，
+  // 否则会按可用宽度收缩，导致 grid 列宽被压扁、色块互相覆盖
+  const panelCls = `absolute z-20 top-full left-0 mt-1 p-2 rounded-lg shadow-lg border grid grid-cols-4 gap-1 w-max ${
     isDark ? 'bg-gray-700 border-gray-600' : 'bg-white border-gray-200'
   }`;
 
