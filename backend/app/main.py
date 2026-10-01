@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.exceptions import AppException
 from app.routers.auth import router as auth_router
+from app.routers.api_tokens import router as api_tokens_router
 from app.routers.users import router as users_router
 from app.routers.ai import router as ai_router
 from app.routers.note.note import router as note_router
@@ -62,6 +63,7 @@ app.add_middleware(
 
 API_PREFIX = "/api/v1"
 app.include_router(auth_router, prefix=API_PREFIX)
+app.include_router(api_tokens_router, prefix=API_PREFIX)
 app.include_router(users_router, prefix=API_PREFIX)
 app.include_router(admin_users_router, prefix=API_PREFIX)
 app.include_router(note_router, prefix=API_PREFIX)

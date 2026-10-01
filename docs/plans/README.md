@@ -13,3 +13,4 @@
 | [Admin 账户管理页](./Admin账户管理页.md) | completed | 2026-07-05 | 用户角色体系 + Admin 用户管理页 |
 | [笔记原格式批量导出](./笔记原格式批量导出.md) | completed | 2026-07-06 | 全部笔记原格式导出，保留文件夹层级 |
 | [AI助手优化方案](./AI助手优化方案.md) | completed | 2026-07-06 | 笔记类型 AI 能力、技能路由、RAG、编辑器 AI 入口 |
+| [笔记MCP集成方案](../../.trae/documents/笔记MCP集成方案.md) | completed | 2026-10-01 | PAT 认证 + 访问令牌页 + mcp-server 独立包 |

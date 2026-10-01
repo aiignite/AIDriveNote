@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.exceptions import ForbiddenException
 from app.models.user import User
+from app.services.api_token_service import ApiTokenService
 from app.services.sso_service import SSOService
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,14 @@ async def get_current_user(
     if not token:
         raise credentials_exception
 
+    # 个人访问令牌（PAT）：外部 Agent（MCP）无浏览器 Cookie，走独立校验分支。
+    # 必须在 JWT 解析之前判断，因为 PAT 不是 JWT，直接解码必然失败。
+    if token.startswith(ApiTokenService.TOKEN_PREFIX):
+        user = await ApiTokenService.authenticate(db, token)
+        if user is None:
+            raise credentials_exception
+        return user
+
     if is_sso and settings.SSO_ENABLED:
         try:
             claims = SSOService.decode_portal_token(token)
@@ -77,6 +86,30 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None or user.status != "Active":
         raise credentials_exception
+    return user
+
+
+async def get_current_user_interactive(
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> User:
+    """仅允许交互式会话（JWT / SSO）的依赖。
+
+    令牌签发等高敏感操作使用它，避免「用访问令牌再签发访问令牌」
+    造成权限失控：一次泄露可能被用来持续续期。
+
+    @param request 原始请求，用于检查 Authorization 头
+    @param user 已通过 get_current_user 校验的用户
+    @returns 交互式会话对应的用户
+    """
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.startswith("Bearer "):
+        selected = auth_header[7:]
+        if selected.startswith(ApiTokenService.TOKEN_PREFIX):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="访问令牌不能用于管理访问令牌，请使用网页登录会话",
+            )
     return user
 
 
