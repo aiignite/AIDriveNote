@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 
 # 生产环境默认 API 根地址（当前为 /note 子路径部署）
-DEFAULT_BASE_URL = "https://aiignite.com.cn/note/api/v1"
+DEFAULT_BASE_URL = "https://www.aiignite.com.cn/note/api/v1"
 # 默认请求超时（秒）
 DEFAULT_TIMEOUT = 30.0
 
@@ -38,7 +38,7 @@ def load_settings() -> Settings:
             "未配置环境变量 AIDRIVENOTE_API_TOKEN。\n"
             "请先在笔记应用「设置 → 访问令牌」生成令牌，再写入 MCP 配置的 env 段，例如：\n"
             '  "env": {\n'
-            '    "AIDRIVENOTE_BASE_URL": "https://aiignite.com.cn/note/api/v1",\n'
+            '    "AIDRIVENOTE_BASE_URL": "https://www.aiignite.com.cn/note/api/v1",\n'
             '    "AIDRIVENOTE_API_TOKEN": "adn_xxxxxxxx"\n'
             "  }"
         )

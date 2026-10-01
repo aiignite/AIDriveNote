@@ -76,7 +76,7 @@ aidrivenote-mcp
         "aidrivenote-mcp"
       ],
       "env": {
-        "AIDRIVENOTE_BASE_URL": "https://aiignite.com.cn/note/api/v1",
+        "AIDRIVENOTE_BASE_URL": "https://www.aiignite.com.cn/note/api/v1",
         "AIDRIVENOTE_API_TOKEN": "adn_替换为你的令牌"
       }
     }
@@ -98,7 +98,7 @@ aidrivenote-mcp
     "aidrivenote": {
       "command": "aidrivenote-mcp",
       "env": {
-        "AIDRIVENOTE_BASE_URL": "https://aiignite.com.cn/note/api/v1",
+        "AIDRIVENOTE_BASE_URL": "https://www.aiignite.com.cn/note/api/v1",
         "AIDRIVENOTE_API_TOKEN": "adn_替换为你的令牌"
       }
     }
@@ -140,7 +140,7 @@ aidrivenote-mcp
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
 | `AIDRIVENOTE_API_TOKEN` | 是 | — | 设置 → 访问令牌 生成的 `adn_...` 令牌 |
-| `AIDRIVENOTE_BASE_URL` | 否 | `https://aiignite.com.cn/note/api/v1` | 后端 API 根地址 |
+| `AIDRIVENOTE_BASE_URL` | 否 | `https://www.aiignite.com.cn/note/api/v1` | 后端 API 根地址 |
 | `AIDRIVENOTE_TIMEOUT` | 否 | `30` | 单次请求超时（秒） |
 
 ## 五、可用工具
