@@ -2,7 +2,7 @@
  * NoteMarkdownEditor – 基于 @uiw/react-md-editor 的 Markdown 编辑器
  *
  * 能力概览：
- * - 使用官方内置完整工具条（加粗/标题/列表/表格/预览三态切换等），默认纯编辑模式；
+ * - 使用官方内置完整工具条（加粗/标题/列表/表格/预览三态切换等），默认纯预览模式；
  * - 预览区追加 rehype-slug，让标题带上稳定 id 锚点（GitHub 风格 slug）；
  * - 解析正文标题生成大纲并通过 onOutlineChange 上报，支持点击定位（预览锚点 / textarea 光标）；
  * - live 模式下 textarea 与预览区双向同步滚动；
@@ -130,12 +130,13 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
   /** 最新只读状态 */
   const readOnlyRef = useRef(readOnly);
   /** 最新预览模式 */
-  const previewRef = useRef<PreviewType>('edit');
+  const previewRef = useRef<PreviewType>('preview');
   /** 同步滚动时用于抑制回环的元素 */
   const suppressRef = useRef<HTMLElement | null>(null);
 
   const [value, setValue] = useState(content ?? '');
-  const [preview, setPreview] = useState<PreviewType>('edit');
+  // 默认进入纯预览：打开笔记即可阅读渲染结果，需要改源码时用顶部按钮切回编辑/实时预览
+  const [preview, setPreview] = useState<PreviewType>('preview');
   const prevNoteIdRef = useRef(noteId);
 
   /**

@@ -421,7 +421,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         <div className={`shrink-0 p-1.5 rounded-md ${typeCfg.bgColor}`}>
           <span className={typeCfg.color}>{typeCfg.icon}</span>
         </div>
-        {/* Title + time */}
+        {/* 两行布局：第一行标题，第二行标签与时间同行；省略简介以压缩条目高度 */}
         <div className="flex-1 min-w-0">
           <span className={`block text-sm truncate ${
             isSelected
@@ -432,30 +432,26 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             {note.isFavorite && <Star size={10} className="inline mr-1 text-amber-400 fill-amber-400" />}
             {note.title || '无标题'}
           </span>
-          {note.previewText && (
-            <span className={`block text-xs truncate mt-0.5 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-              {note.previewText}
-            </span>
-          )}
-          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+          {/* 不换行：标签保持原宽，时间占据剩余空间并在溢出时省略 */}
+          <div className="flex items-center gap-1 mt-0.5 min-w-0">
             {note.tags?.slice(0, 2).map(tag => (
               <span
                 key={tag.id}
-                className="text-[10px] px-1.5 py-0 rounded-full"
+                className="shrink-0 text-[10px] px-1.5 py-0 rounded-full"
                 style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
               >
                 {tag.name}
               </span>
             ))}
             {(note.tags?.length ?? 0) > 2 && (
-              <span className={`text-[10px] ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+              <span className={`shrink-0 text-[10px] ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
                 +{(note.tags?.length ?? 0) - 2}
               </span>
             )}
+            <span className={`min-w-0 truncate text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+              {formatRelativeTime(note.updatedAt)}
+            </span>
           </div>
-          <span className={`text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
-            {formatRelativeTime(note.updatedAt)}
-          </span>
         </div>
         {/* Three-dot menu */}
         <button
