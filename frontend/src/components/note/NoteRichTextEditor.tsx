@@ -139,8 +139,9 @@ const ColorPaletteMenu: React.FC<ColorPaletteMenuProps> = ({ isDark, icon, title
         <>
           {/* 点击空白处关闭面板 */}
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          {/* w-max：定位父容器仅为窄按钮，不加会被压缩导致格子重叠 */}
           <div
-            className={`absolute z-20 top-full left-0 mt-1 p-2 rounded-lg border shadow-lg grid grid-cols-5 gap-1.5 ${
+            className={`absolute z-20 top-full left-0 mt-1 p-2 rounded-lg border shadow-lg grid grid-cols-5 gap-1.5 w-max ${
               isDark ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'
             }`}
           >
