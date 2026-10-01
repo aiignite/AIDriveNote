@@ -51,8 +51,51 @@ export async function registerServiceWorker(): Promise<void> {
         }
       });
     });
+
+    // 首屏空闲后后台预热非首屏资源，兼顾离线可用性与首屏速度
+    scheduleCacheWarm();
   } catch {
     /* 注册失败（非安全上下文、浏览器禁用等）不影响在线使用 */
+  }
+}
+
+/**
+ * 首屏加载完成、浏览器空闲时，通知 SW 后台预热非首屏资源。
+ *
+ * 为什么不在安装期一次性预缓存：全部产物合计 3 MB 以上（懒加载页面、编辑器、
+ * KaTeX 字体、导出模块），安装期下载会与首屏请求争抢同一条链路，
+ * 弱网下首屏被拖到几十秒。改到 load 之后的空闲时段串行预热，
+ * 既不阻塞首屏，又能在用户真正断网前把离线资源补齐。
+ */
+function scheduleCacheWarm(): void {
+  /**
+   * 在浏览器空闲时执行回调；不支持 requestIdleCallback 时退化为定时器。
+   * @param callback 待执行回调
+   */
+  const onIdle = (callback: () => void): void => {
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(callback, { timeout: 5000 });
+    } else {
+      window.setTimeout(callback, 3000);
+    }
+  };
+
+  /** 向当前生效的 SW 发送预热指令 */
+  const send = async (): Promise<void> => {
+    try {
+      const ready = await navigator.serviceWorker.ready;
+      // 首次安装时页面尚未被接管，需回退到 active 实例
+      const target = navigator.serviceWorker.controller ?? ready.active;
+      target?.postMessage({ type: 'WARM_CACHE' });
+    } catch {
+      /* 预热失败不影响在线使用 */
+    }
+  };
+
+  if (document.readyState === 'complete') {
+    onIdle(() => void send());
+  } else {
+    window.addEventListener('load', () => onIdle(() => void send()), { once: true });
   }
 }
 
