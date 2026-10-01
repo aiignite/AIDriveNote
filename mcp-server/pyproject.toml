@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-  "mcp>=1.2.0",
+  # mcp 2.x 将 FastMCP 更名为 MCPServer 并调整了工具 API，
+  # 本包基于 1.x 的 FastMCP 编写，故锁定主版本上限
+  "mcp>=1.2.0,<2",
   "httpx>=0.27.0",
 ]
 
