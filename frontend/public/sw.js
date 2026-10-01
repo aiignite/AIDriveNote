@@ -12,7 +12,7 @@
  */
 
 /** 缓存版本号：修改缓存策略时递增，可让旧缓存被自动清理 */
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 /** 应用壳缓存名 */
 const SHELL_CACHE = `aidrivenote-shell-${CACHE_VERSION}`;
 /** 预缓存清单文件名（由构建期插件生成） */
@@ -44,6 +44,22 @@ function getBase() {
   } catch {
     return '/';
   }
+}
+
+/**
+ * 判断是否为本应用的后端接口请求（base 路径下的 api/）。
+ *
+ * 接口请求必须完全绕过 SW 直达网络，原因有二：
+ * 1. 写操作成功后前端会立即重读列表，cache-first 会返回旧数据，
+ *    导致界面不更新（需硬刷新才可见）；
+ * 2. CacheStorage 的键不含 Authorization，无法与用户绑定，
+ *    缓存接口响应会在切换账号时把上一个用户的数据回给新用户。
+ *
+ * @param {URL} url 请求 URL
+ * @returns {boolean} 是否为接口请求
+ */
+function isApiRequest(url) {
+  return url.pathname.startsWith(`${getBase()}api/`);
 }
 
 /**
@@ -127,6 +143,8 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.endsWith(MANIFEST_FILE)) return;
   // SW 自身脚本由浏览器管理，不参与缓存
   if (url.pathname.endsWith('/sw.js')) return;
+  // 接口请求直达网络，绝不缓存（否则写入后读不到新数据，且会跨账号串数据）
+  if (isApiRequest(url)) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(handleNavigate(request));
