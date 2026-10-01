@@ -587,6 +587,11 @@ const NotesPage: React.FC = () => {
               allTags={allTags}
               onNoteUpdated={handleNoteUpdated}
               onTagsChanged={handleEditorTagsChanged}
+              onDuplicateNote={handleDuplicateNote}
+              onDeleteNote={handleDeleteNote}
+              onMoveNote={handleMoveNote}
+              onToggleFullscreen={() => setIsFullscreen(f => !f)}
+              isFullscreen={isFullscreen}
               isDark={isDark}
               refreshTrigger={combinedRefreshTrigger}
             />

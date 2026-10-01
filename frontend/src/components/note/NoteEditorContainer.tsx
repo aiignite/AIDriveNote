@@ -1,8 +1,12 @@
 /**
  * NoteEditorContainer – 根据 note_type 按需加载对应编辑器
+ *
+ * 同时承担「命令注册链路」的透传：编辑器通过 onRegistryChange 上报自己支持的
+ * 命令与菜单组，通过 onOutlineChange 上报大纲数据，由 NoteEditorPanel 统一消费。
  */
 import React, { Suspense, useCallback, useMemo, lazy, forwardRef } from 'react';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
+import type { NoteEditorRegistry, NoteOutlineState } from '../../utils/noteCommands';
 
 const NoteRichTextEditor = lazy(() => import('./NoteRichTextEditor'));
 const NoteMarkdownEditor = lazy(() => import('./NoteMarkdownEditor'));
@@ -19,6 +23,10 @@ interface NoteEditorContainerProps {
   onChange?: (content: unknown) => void;
   readOnly?: boolean;
   isDark?: boolean;
+  /** 编辑器上报可用命令与菜单组 */
+  onRegistryChange?: (registry: NoteEditorRegistry) => void;
+  /** 编辑器上报大纲数据（无大纲能力时上报 null） */
+  onOutlineChange?: (state: NoteOutlineState | null) => void;
 }
 
 function unwrapContent(noteType: NoteType, raw: unknown): unknown {
@@ -49,6 +57,8 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
   onChange,
   readOnly = false,
   isDark = false,
+  onRegistryChange,
+  onOutlineChange,
 }, ref) => {
   const editorContent = useMemo(() => unwrapContent(noteType, content), [noteType, content]);
 
@@ -68,6 +78,8 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
             onChange={handleRichTextChange}
             readOnly={readOnly}
             isDark={isDark}
+            onRegistryChange={onRegistryChange}
+            onOutlineChange={onOutlineChange}
           />
         </Suspense>
       );
@@ -81,6 +93,8 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
             onChange={handleMarkdownChange}
             readOnly={readOnly}
             isDark={isDark}
+            onRegistryChange={onRegistryChange}
+            onOutlineChange={onOutlineChange}
           />
         </Suspense>
       );
@@ -95,6 +109,7 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
             onChange={handleMindMapChange}
             readOnly={readOnly}
             isDark={isDark}
+            onRegistryChange={onRegistryChange}
           />
         </Suspense>
       );
@@ -108,6 +123,7 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
             onChange={handleFlowchartChange}
             readOnly={readOnly}
             isDark={isDark}
+            onRegistryChange={onRegistryChange}
           />
         </Suspense>
       );

@@ -1,6 +1,7 @@
 /**
- * 笔记导出工具 — 支持 PDF / DOCX / HTML / Markdown / PNG / JSON
- * 重型依赖（jspdf/docx/html2canvas）仅在用户点击导出时加载。
+ * 笔记导出工具 — 支持 PDF / DOCX / HTML / Markdown / PNG / SVG / JSON / XMind / XML
+ * 重型依赖（jspdf/docx/html2canvas）仅在用户点击导出时加载；
+ * 编辑器相关导出（思维导图、流程图）通过动态 import 触达对应编辑器实现。
  */
 import jsPDF from 'jspdf';
 import { saveAs } from 'file-saver';
@@ -12,6 +13,32 @@ import type { ExportFormat } from './noteExportOptions';
 
 export type { ExportFormat, ExportOption } from './noteExportOptions';
 export { getExportOptions } from './noteExportOptions';
+
+/**
+ * 下载一段导出结果：dataURI 直接作为 a.href，纯 base64 补 MIME 前缀，其余按文本下载。
+ * @param data 导出结果内容
+ * @param fileName 文件名（含扩展名）
+ * @param mime 纯文本/二进制内容使用的 MIME 类型
+ */
+function downloadExportResult(data: string, fileName: string, mime = 'application/octet-stream'): void {
+  if (!data) return;
+  if (data.startsWith('data:')) {
+    const link = document.createElement('a');
+    link.href = data;
+    link.download = fileName;
+    link.click();
+    return;
+  }
+  // 形如 base64 的二进制（XMind 的 zip 等）
+  if (/^[A-Za-z0-9+/=\s]{64,}$/.test(data) && !/[<>]/.test(data)) {
+    const link = document.createElement('a');
+    link.href = `data:${mime};base64,${data.replace(/\s/g, '')}`;
+    link.download = fileName;
+    link.click();
+    return;
+  }
+  saveAs(new Blob([data], { type: `${mime};charset=utf-8` }), fileName);
+}
 
 function md2html(md: string): string {
   let html = md
@@ -179,10 +206,14 @@ export async function exportNote(
       return exportMarkdown(noteType, title, content);
     case 'png':
       return exportPng(noteType, fileName, content, mindMapRef);
+    case 'svg':
+      return exportSvg(noteType, fileName, mindMapRef);
     case 'json':
       return exportJson(fileName, content);
-    case 'svg':
-      return exportSvg(noteType, fileName, content);
+    case 'xmind':
+      return exportXmind(fileName, mindMapRef);
+    case 'xml':
+      return exportXml(fileName, content);
   }
 }
 
@@ -203,7 +234,7 @@ async function exportPdf(
   if (noteType === 'mindmap' && mindMapRef?.current) {
     // 思维导图 → 导出 PNG → 嵌入 PDF
     try {
-      const dataUrl = await mindMapRef.current.export('png');
+      const dataUrl = await mindMapRef.current.export('png', false);
       if (dataUrl) {
         const pdf = new jsPDF({ orientation: 'landscape' });
         pdf.setFontSize(18);
@@ -216,17 +247,26 @@ async function exportPdf(
   }
 
   if (noteType === 'flowchart') {
-    // 流程图 → 截图方式
-    const flowchartEl = document.querySelector('iframe[title="Drawio Editor"], iframe[title="Flowchart Viewer"]');
-    if (flowchartEl) {
-      const pdf = new jsPDF({ orientation: 'landscape' });
-      pdf.setFontSize(18);
-      pdf.text(title, 14, 20);
-      pdf.setFontSize(10);
-      pdf.text('流程图内容请在编辑器中查看（Draw.io 跨域限制无法直接截图）', 14, 35);
-      pdf.save(`${fileName}.pdf`);
-      return;
-    }
+    // 流程图 → 由流程图编辑器导出 PNG（Promise 化 postMessage）→ 嵌入 PDF
+    try {
+      const { exportActiveFlowchart } = await import('../components/note/NoteFlowchartEditor');
+      const png = await exportActiveFlowchart('png');
+      if (png) {
+        const pdf = new jsPDF({ orientation: 'landscape' });
+        pdf.setFontSize(18);
+        pdf.text(title, 14, 20);
+        pdf.addImage(png, 'PNG', 10, 30, 270, 160);
+        pdf.save(`${fileName}.pdf`);
+        return;
+      }
+    } catch { /* fallback below */ }
+    const pdf = new jsPDF({ orientation: 'landscape' });
+    pdf.setFontSize(18);
+    pdf.text(title, 14, 20);
+    pdf.setFontSize(10);
+    pdf.text('导出流程图图片失败，请在编辑器中重试导出。', 14, 35);
+    pdf.save(`${fileName}.pdf`);
+    return;
   }
 
   // 文本类笔记（rich_text / markdown）→ HTML 渲染到隐藏 div → html2canvas → PDF
@@ -538,29 +578,38 @@ async function exportPng(
   mindMapRef?: any,
 ): Promise<void> {
   if (noteType === 'mindmap' && mindMapRef?.current) {
-    try {
-      const dataUrl = await mindMapRef.current.export('png');
-      if (dataUrl) {
-        const link = document.createElement('a');
-        link.href = dataUrl;
-        link.download = `${fileName}.png`;
-        link.click();
-        return;
-      }
-    } catch { /* fallback */ }
+    // isDownload=false：由本函数统一落地，避免与库内下载重复触发
+    const dataUrl = await mindMapRef.current.export('png', false);
+    if (dataUrl) {
+      downloadExportResult(dataUrl, `${fileName}.png`, 'image/png');
+      return;
+    }
   }
 
   if (noteType === 'flowchart') {
-    // Draw.io 通过 postMessage 触发导出
-    const iframe = document.querySelector('iframe[title="Drawio Editor"]') as HTMLIFrameElement | null;
-    if (iframe?.contentWindow) {
-      iframe.contentWindow.postMessage(JSON.stringify({
-        action: 'export',
-        format: 'png',
-        filename: `${fileName}.png`,
-      }), '*');
+    const { exportActiveFlowchart } = await import('../components/note/NoteFlowchartEditor');
+    const data = await exportActiveFlowchart('png');
+    if (!data) throw new Error('流程图导出无返回数据');
+    downloadExportResult(data, `${fileName}.png`, 'image/png');
+  }
+}
+
+/* ────── SVG ────── */
+
+async function exportSvg(noteType: string, fileName: string, mindMapRef?: any): Promise<void> {
+  if (noteType === 'mindmap' && mindMapRef?.current) {
+    const data = await mindMapRef.current.export('svg', false);
+    if (data) {
+      downloadExportResult(data, `${fileName}.svg`, 'image/svg+xml');
       return;
     }
+  }
+
+  if (noteType === 'flowchart') {
+    const { exportActiveFlowchart } = await import('../components/note/NoteFlowchartEditor');
+    const data = await exportActiveFlowchart('svg');
+    if (!data) throw new Error('流程图导出无返回数据');
+    downloadExportResult(data, `${fileName}.svg`, 'image/svg+xml');
   }
 }
 
@@ -572,19 +621,22 @@ async function exportJson(fileName: string, content: unknown): Promise<void> {
   saveAs(blob, `${fileName}.json`);
 }
 
-/* ────── SVG ────── */
+/* ────── XMind（思维导图） ────── */
 
-async function exportSvg(noteType: string, fileName: string, _content: unknown): Promise<void> {
-  if (noteType === 'flowchart') {
-    // Draw.io 通过 postMessage 触发 SVG 导出
-    const iframe = document.querySelector('iframe[title="Drawio Editor"]') as HTMLIFrameElement | null;
-    if (iframe?.contentWindow) {
-      iframe.contentWindow.postMessage(JSON.stringify({
-        action: 'export',
-        format: 'svg',
-        filename: `${fileName}.svg`,
-      }), '*');
-      return;
-    }
-  }
+async function exportXmind(fileName: string, mindMapRef?: any): Promise<void> {
+  if (!mindMapRef?.current) throw new Error('思维导图未就绪');
+  const data = await mindMapRef.current.export('xmind', false);
+  if (!data) throw new Error('XMind 导出无返回数据');
+  downloadExportResult(data, `${fileName}.xmind`, 'application/zip');
+}
+
+/* ────── XML（流程图源文件） ────── */
+
+async function exportXml(fileName: string, content: unknown): Promise<void> {
+  const { exportActiveFlowchart } = await import('../components/note/NoteFlowchartEditor');
+  const fromEditor = await exportActiveFlowchart('xml');
+  const xml = fromEditor
+    || (typeof content === 'string' ? content : (content as any)?.xml ?? '');
+  if (!xml) throw new Error('流程图内容为空');
+  downloadExportResult(xml, `${fileName}.xml`, 'application/xml');
 }

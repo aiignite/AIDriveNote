@@ -18,6 +18,7 @@ const VALID_BLOCK_TYPES = new Set([
   'codeBlock',
   'quote',
   'image',
+  'divider',
 ]);
 
 type RawBlock = Record<string, unknown>;
