@@ -12,11 +12,13 @@
  */
 
 /** 缓存版本号：修改缓存策略时递增，可让旧缓存被自动清理 */
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 /** 应用壳缓存名 */
 const SHELL_CACHE = `aidrivenote-shell-${CACHE_VERSION}`;
-/** 预缓存清单文件名（由构建期插件生成） */
+/** 首屏预缓存清单文件名（由构建期插件生成，含 index.html 直接引用的入口资源） */
 const MANIFEST_FILE = 'sw-manifest.json';
+/** 其余产物清单文件名（懒加载页面、编辑器、字体等），由页面空闲时触发后台预热 */
+const REST_MANIFEST_FILE = 'sw-manifest-rest.json';
 /** 导航请求的 network-first 超时（毫秒），超时即回退缓存 */
 const NAV_TIMEOUT = 3000;
 
@@ -85,7 +87,12 @@ function offlineResponse() {
   );
 }
 
-// ── 安装：预缓存应用壳 ────────────────────────────────
+// ── 安装：预缓存首屏 ──────────────────────────────────
+// 这里只缓存首屏必需资源（入口 JS/CSS 与应用壳 HTML），保证两件事：
+// 1. 安装阶段不会下载懒加载页面、编辑器、KaTeX 字体等数 MB 的非首屏字节，
+//    从而不与首屏请求争抢带宽；
+// 2. 离线时至少能打开应用壳。
+// 其余产物改由页面空闲后触发 warmCache() 串行补齐。
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -140,7 +147,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   // 清单文件本身必须走网络，否则新版本清单永远拿不到
-  if (url.pathname.endsWith(MANIFEST_FILE)) return;
+  if (url.pathname.endsWith(MANIFEST_FILE) || url.pathname.endsWith(REST_MANIFEST_FILE)) return;
   // SW 自身脚本由浏览器管理，不参与缓存
   if (url.pathname.endsWith('/sw.js')) return;
   // 接口请求直达网络，绝不缓存（否则写入后读不到新数据，且会跨账号串数据）
@@ -198,11 +205,52 @@ async function handleAsset(request) {
   }
 }
 
+// ── 后台预热 ──────────────────────────────────────────
+
+/**
+ * 预热非首屏资源，补齐离线可用性。
+ *
+ * 由页面在 load 之后的空闲时段发消息触发，因此不会与首屏请求争抢带宽。
+ * 刻意采用**串行**下载（逐个 await）而非并发：
+ * 弱网下单条链路带宽本就被首屏占满，并发只会让两边都变慢。
+ * 已缓存的条目直接跳过，重复触发无副作用。
+ * @returns {Promise<void>}
+ */
+async function warmCache() {
+  const cache = await caches.open(SHELL_CACHE);
+  const manifestUrl = new URL(REST_MANIFEST_FILE, self.registration.scope).toString();
+  let assets;
+  try {
+    const response = await fetch(manifestUrl, { cache: 'no-store' });
+    if (!response.ok) return;
+    assets = await response.json();
+  } catch {
+    return; // 清单不可用则放弃预热，运行时缓存仍会按需补齐
+  }
+  if (!Array.isArray(assets)) return;
+
+  for (const url of assets) {
+    try {
+      if (await cache.match(url)) continue;
+      await cache.add(url);
+    } catch {
+      /* 忽略单个资源失败，不阻断后续预热 */
+    }
+  }
+}
+
 // ── 与页面通信 ────────────────────────────────────────
 
 self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data) return;
   // 页面提示「有新版本」后，用户点击刷新时才让新 SW 接管
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+  if (data.type === 'SKIP_WAITING') {
     void self.skipWaiting();
+    return;
+  }
+  // 首屏加载完成、页面空闲后触发，后台串行预热非首屏资源
+  if (data.type === 'WARM_CACHE') {
+    event.waitUntil(warmCache());
   }
 });
