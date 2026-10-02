@@ -810,10 +810,20 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     return list;
   }, [panelCommands, registry]);
 
-  /** 编辑器的注册回调（稳定引用，通过 ref 读取当前笔记类型） */
+  /**
+   * 编辑器的注册回调（稳定引用，通过 ref 读取当前笔记类型）。
+   * 兜底防环：registry 引用未变时返回原 state，避免「上报 → 父组件重渲染 →
+   * 子编辑器 registry 重算 → 再上报」形成无限更新循环导致页面崩溃。
+   */
   const handleRegistryChange = useCallback((next: NoteEditorRegistry) => {
-    setRegistrySlot({ type: noteTypeRef.current, registry: next });
+    const type = noteTypeRef.current;
+    setRegistrySlot(prev => (
+      prev && prev.type === type && prev.registry === next ? prev : { type, registry: next }
+    ));
   }, []);
+
+  /** 打开录音转写面板（稳定引用，避免子编辑器 registry 依赖抖动） */
+  const handleOpenRecording = useCallback(() => setShowRecording(true), []);
 
   /** 编辑器的大纲上报回调（稳定引用） */
   const handleOutlineChange = useCallback((next: NoteOutlineState | null) => {
@@ -1131,7 +1141,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               isDark={isDark}
               onRegistryChange={handleRegistryChange}
               onOutlineChange={handleOutlineChange}
-              onOpenRecording={() => setShowRecording(true)}
+              onOpenRecording={handleOpenRecording}
             />
           )}
         </div>
