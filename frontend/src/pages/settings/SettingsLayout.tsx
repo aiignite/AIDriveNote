@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { ArrowLeft, Bot, Brain, CloudOff, FolderSync, KeyRound, Save, Settings, Sparkles, Users } from 'lucide-react';
+import { ArrowLeft, Bot, Brain, BookOpen, CloudOff, FolderSync, KeyRound, Mic, Save, Settings, Sparkles, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../../contexts/AppContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -10,6 +10,8 @@ const aiNavItems = [
   { to: '/settings/models', label: '模型', icon: Brain, accent: 'orange' as const },
   { to: '/settings/assistants', label: '助手', icon: Bot, accent: 'orange' as const },
   { to: '/settings/skills', label: '技能', icon: Sparkles, accent: 'orange' as const },
+  { to: '/settings/asr', label: '语音转写', icon: Mic, accent: 'orange' as const },
+  { to: '/settings/common-terms', label: '常用词库', icon: BookOpen, accent: 'orange' as const },
   { to: '/settings/sync', label: '本地同步', icon: FolderSync, accent: 'orange' as const },
   { to: '/settings/offline', label: '离线缓存', icon: CloudOff, accent: 'orange' as const },
   { to: '/settings/tokens', label: '访问令牌', icon: KeyRound, accent: 'orange' as const },

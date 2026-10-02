@@ -34,6 +34,17 @@ services:
       SSO_ENABLED: "${SSO_ENABLED:-false}"
       SSO_SECRET_KEY: "${SSO_SECRET_KEY:-}"
       SSO_ISSUER: "${SSO_ISSUER:-aidriveall}"
+      # 语音转写：remote 模式指向局域网 asr_gateway（见文件末尾注释）
+      NOTE_ASR_MODE: "${NOTE_ASR_MODE:-remote}"
+      NOTE_ASR_REMOTE_URL: "${NOTE_ASR_REMOTE_URL:-}"
+      NOTE_ASR_REMOTE_API_KEY: "${NOTE_ASR_REMOTE_API_KEY:-}"
+      NOTE_ASR_REMOTE_TIMEOUT: "${NOTE_ASR_REMOTE_TIMEOUT:-3600}"
+      NOTE_ASR_FALLBACK_LOCAL: "${NOTE_ASR_FALLBACK_LOCAL:-false}"
+      # local 兜底/降级参数（无 GPU 用 cpu/int8）
+      NOTE_WHISPER_MODEL: "${NOTE_WHISPER_MODEL:-medium}"
+      NOTE_WHISPER_LANGUAGE: "${NOTE_WHISPER_LANGUAGE:-zh}"
+      NOTE_WHISPER_DEVICE: "${NOTE_WHISPER_DEVICE:-cpu}"
+      NOTE_WHISPER_COMPUTE_TYPE: "${NOTE_WHISPER_COMPUTE_TYPE:-int8}"
     ports:
       - "127.0.0.1:3275:3275"
     volumes:
@@ -61,6 +72,29 @@ services:
       - backend
     networks:
       - appnet
+
+  # ── 局域网语音转写网关（可选，默认注释；需要 GPU 转写时取消注释）──
+  # 说明：网关为独立服务，使用自身 ASR_* 变量；需与 backend 的 NOTE_ASR_* 对应。
+  # 端口默认映射 8091:8090，避免与应用端口冲突。宿主机需装 ffmpeg、并准备 CUDA。
+  # asr_gateway:
+  #   build:
+  #     context: ./asr_gateway
+  #     dockerfile: Dockerfile          # 如无 Dockerfile，可改用下方 image
+  #   # image: aidrivenote/asr-gateway:latest
+  #   restart: unless-stopped
+  #   environment:
+  #     ASR_API_KEY: "${NOTE_ASR_REMOTE_API_KEY:?NOTE_ASR_REMOTE_API_KEY is required}"
+  #     ASR_MODEL: "${ASR_MODEL:-medium}"
+  #     ASR_LANGUAGE: "${ASR_LANGUAGE:-zh}"
+  #     ASR_DEVICE: "${ASR_DEVICE:-cpu}"          # 有 GPU 改 cuda
+  #     ASR_COMPUTE_TYPE: "${ASR_COMPUTE_TYPE:-int8}"  # 有 GPU 改 float16
+  #     ASR_PRELOAD: "${ASR_PRELOAD:-1}"
+  #     HF_ENDPOINT: "https://hf-mirror.com"
+  #     HF_HUB_DISABLE_XET: "1"
+  #   ports:
+  #     - "8091:8090"
+  #   networks:
+  #     - appnet
 
 volumes:
   postgres_data:

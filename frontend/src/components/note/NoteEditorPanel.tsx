@@ -17,6 +17,7 @@ import NoteEditorContainer from './NoteEditorContainer';
 import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';
 import NoteCommandPalette from './NoteCommandPalette';
 import NoteOutlinePanel from './NoteOutlinePanel';
+import NoteRecordingPanel from './recording/NoteRecordingPanel';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
 import {
   noteApi, noteTagApi, noteTemplateApi,
@@ -235,6 +236,8 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   const [outlineSlot, setOutlineSlot] = useState<OutlineSlot | null>(null);
   /** 是否显示大纲侧栏 */
   const [showOutline, setShowOutline] = useState(false);
+  /** 是否打开录音转写面板（仅富文本） */
+  const [showRecording, setShowRecording] = useState(false);
   /** 命令面板开关 */
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** 快捷键帮助弹窗 */
@@ -1128,6 +1131,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               isDark={isDark}
               onRegistryChange={handleRegistryChange}
               onOutlineChange={handleOutlineChange}
+              onOpenRecording={() => setShowRecording(true)}
             />
           )}
         </div>
@@ -1173,6 +1177,17 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         commands={paletteCommands}
         isDark={isDark}
       />
+
+      {/* 录音转写面板（仅富文本；插入能力复用编辑器注册的 insertBlocksAfterCursor） */}
+      {note.noteType === 'rich_text' && (
+        <NoteRecordingPanel
+          open={showRecording}
+          noteId={note.id}
+          isDark={isDark}
+          onClose={() => setShowRecording(false)}
+          onInsert={blocks => registry?.insertBlocksAfterCursor?.(blocks)}
+        />
+      )}
 
       {/* 移动到文件夹弹窗 */}
       {showMoveDialog && (

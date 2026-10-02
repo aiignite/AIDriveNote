@@ -18,6 +18,7 @@ const VALID_BLOCK_TYPES = new Set([
   'codeBlock',
   'quote',
   'image',
+  'audio',
   'divider',
 ]);
 
@@ -64,6 +65,16 @@ function normalizeImageProps(props: Record<string, unknown>): Record<string, unk
   return normalized;
 }
 
+function normalizeAudioProps(props: Record<string, unknown>): Record<string, unknown> {
+  return {
+    backgroundColor: typeof props.backgroundColor === 'string' ? props.backgroundColor : 'default',
+    name: String(props.name ?? ''),
+    url: String(props.url ?? ''),
+    caption: String(props.caption ?? ''),
+    showPreview: props.showPreview !== false,
+  };
+}
+
 /** 将 AI/外部 blocks 转为 BlockNote 可识别的 PartialBlock 列表（剥离自定义 id，补全 props）。 */
 export function normalizeBlocksForBlockNote(raw: unknown): PartialBlock[] {
   let blocks: RawBlock[] = [];
@@ -88,6 +99,13 @@ export function normalizeBlocksForBlockNote(raw: unknown): PartialBlock[] {
       return {
         type: 'image',
         props: normalizeImageProps(props),
+      } as PartialBlock;
+    }
+
+    if (type === 'audio') {
+      return {
+        type: 'audio',
+        props: normalizeAudioProps(props),
       } as PartialBlock;
     }
 
