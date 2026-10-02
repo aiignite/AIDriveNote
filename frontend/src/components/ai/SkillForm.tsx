@@ -11,6 +11,14 @@ interface SkillFormProps {
 const INPUT =
   'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100';
 
+/** 适用笔记类型选项（值需与后端约定保持一致） */
+const NOTE_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'markdown', label: 'Markdown' },
+  { value: 'rich_text', label: '富文本' },
+  { value: 'mindmap', label: '思维导图' },
+  { value: 'flowchart', label: '流程图' },
+];
+
 export const SkillForm: React.FC<SkillFormProps> = ({ skill, onSave, onClose }) => {
   const isEditing = !!skill;
   const [toolOptions, setToolOptions] = useState<Array<{ name: string; label: string }>>([]);
@@ -22,6 +30,7 @@ export const SkillForm: React.FC<SkillFormProps> = ({ skill, onSave, onClose }) 
     description: skill?.description ?? '',
     promptTemplate: skill?.promptTemplate ?? '',
     toolNames: skill?.toolNames ?? [],
+    applicableNoteTypes: skill?.applicableNoteTypes ?? [],
     priority: skill?.priority ?? 50,
     isEnabled: skill?.isEnabled ?? true,
   });
@@ -59,6 +68,19 @@ export const SkillForm: React.FC<SkillFormProps> = ({ skill, onSave, onClose }) 
     }));
   };
 
+  /**
+   * 切换某个适用笔记类型的选中态
+   * @param noteType 笔记类型值（markdown/rich_text/mindmap/flowchart）
+   */
+  const toggleNoteType = (noteType: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      applicableNoteTypes: prev.applicableNoteTypes.includes(noteType)
+        ? prev.applicableNoteTypes.filter((item) => item !== noteType)
+        : [...prev.applicableNoteTypes, noteType],
+    }));
+  };
+
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     onSave({
@@ -70,6 +92,8 @@ export const SkillForm: React.FC<SkillFormProps> = ({ skill, onSave, onClose }) 
       keywords: parsedKeywords,
       priority: formData.priority,
       isEnabled: formData.isEnabled,
+      // 空选择表示不限，传 null 让后端回退到内置默认表
+      applicableNoteTypes: formData.applicableNoteTypes.length ? formData.applicableNoteTypes : null,
     });
   };
 
@@ -163,6 +187,34 @@ export const SkillForm: React.FC<SkillFormProps> = ({ skill, onSave, onClose }) 
                   ))}
                 </div>
               ) : null}
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                适用笔记类型
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {NOTE_TYPE_OPTIONS.map((option) => {
+                  const selected = formData.applicableNoteTypes.includes(option.value);
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => toggleNoteType(option.value)}
+                      className={`rounded-xl border px-3 py-2 text-xs font-medium transition ${
+                        selected
+                          ? 'border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950/30 dark:text-orange-300'
+                          : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+                不选择表示不限类型；空选时将回退为内置技能的默认适用范围。
+              </p>
             </div>
 
             <div>

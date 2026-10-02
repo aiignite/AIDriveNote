@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, History, Loader2, Plus, Sparkles, X } from 'lucide-react';
+import { Bot, History, Plus, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   aiApi,
   type AIAssistant,
   type AIConversation,
   type AIModel,
+  type AISkill,
 } from '../../services/ai/ai';
 import { useApp } from '../../contexts/AppContext';
 import { useAIChat } from '../../hooks/useAIChat';
@@ -13,6 +14,9 @@ import NoteChangeConfirmCard from './NoteChangeConfirmCard';
 import AIChatMarkdown from './AIChatMarkdown';
 import AIChatInput, { createPendingAttachment, type PendingAttachment } from './AIChatInput';
 import MessageAttachmentGallery from './MessageAttachmentGallery';
+import SkillActivationCard from './SkillActivationCard';
+import ToolCallDisplay from './ToolCallDisplay';
+import ChatThinkingIndicator, { extractThinkingContent } from './ChatThinkingIndicator';
 import { stripAttachmentMarkers } from '../../utils/aiAttachmentDisplay';
 
 const AISidebar: React.FC = () => {
@@ -31,11 +35,14 @@ const AISidebar: React.FC = () => {
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<PendingAttachment[]>([]);
+  const [skills, setSkills] = useState<AISkill[]>([]);
+  const [pinnedSkillCodes, setPinnedSkillCodes] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const {
-    messages, loading, streamingContent, activeSkill, applyingIndex,
+    messages, loading, streamingContent, applyingIndex,
+    streamingActivatedSkills, streamingThinking, streamingToolCalls,
     sendMessage, handleApply, handleApplyStreaming, handleConfirmDelete, handleDismiss,
     loadMessagesFromHistory, setMessages, streamingPending, setStreamingPending, stopGeneration,
   } = useAIChat({
@@ -51,15 +58,17 @@ const AISidebar: React.FC = () => {
     if (!aiOpen) return;
     void (async () => {
       try {
-        const [asst, convs, modelList, settings] = await Promise.all([
+        const [asst, convs, modelList, settings, skillList] = await Promise.all([
           aiApi.listAssistants(),
           aiApi.listConversations(),
           aiApi.listModels().catch(() => [] as AIModel[]),
           aiApi.getSettings().catch(() => null),
+          aiApi.listSkills().catch(() => [] as AISkill[]),
         ]);
         setAssistants(asst);
         setConversations(convs);
         setModels(modelList);
+        setSkills(skillList.filter(s => s.isEnabled));
         if (settings?.sidebarWidth) setSidebarWidth(settings.sidebarWidth);
 
         const recommended = pageAIContext?.recommendedAssistant;
@@ -131,6 +140,13 @@ const AISidebar: React.FC = () => {
       void attemptUpload(entry);
     }
   }, [conversationId]);
+
+  /** 切换技能固定状态（固定后发送时以 force_skills 下发） */
+  const toggleSkill = useCallback((code: string) => {
+    setPinnedSkillCodes(prev =>
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code],
+    );
+  }, []);
 
   const handleRemoveFile = useCallback((localId: string) => {
     setPendingFiles(prev => {
@@ -210,8 +226,9 @@ const AISidebar: React.FC = () => {
     void sendMessage(text, {
       attachmentIds: validIds,
       attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
+      forceSkills: pinnedSkillCodes.length > 0 ? pinnedSkillCodes : undefined,
     });
-  }, [input, pendingFiles, sendMessage, conversationId]);
+  }, [input, pendingFiles, sendMessage, conversationId, pinnedSkillCodes]);
 
   const quickActions = pageAIContext?.quickActions ?? [];
 
@@ -263,16 +280,6 @@ const AISidebar: React.FC = () => {
           </button>
         </div>
       </div>
-
-      {activeSkill && (
-        <div className={`px-3 py-1.5 border-b flex items-center gap-1.5 text-xs ${isDark ? 'border-gray-700 bg-orange-950/20 text-orange-300' : 'border-orange-100 bg-orange-50 text-orange-700'}`}>
-          <Sparkles size={12} />
-          <span>{activeSkill.name}</span>
-          {activeSkill.reason && (
-            <span className={`truncate ${isDark ? 'text-orange-400/70' : 'text-orange-600/70'}`}>· {activeSkill.reason}</span>
-          )}
-        </div>
-      )}
 
       {showHistory && (
         <div className={`max-h-40 overflow-y-auto border-b ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50'}`}>
@@ -330,7 +337,21 @@ const AISidebar: React.FC = () => {
                   <p className="whitespace-pre-wrap">{stripAttachmentMarkers(msg.content)}</p>
                 ) : null
               ) : (
-                <AIChatMarkdown content={msg.content} />
+                <>
+                  {msg.activatedSkills && msg.activatedSkills.length > 0 && (
+                    <SkillActivationCard skills={msg.activatedSkills} isDark={isDark} />
+                  )}
+                  {msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <ToolCallDisplay toolCalls={msg.toolCalls} isDark={isDark} />
+                  )}
+                  {(msg.thinking || extractThinkingContent(msg.content).thinking) && (
+                    <ChatThinkingIndicator
+                      thinking={msg.thinking || extractThinkingContent(msg.content).thinking}
+                      isDark={isDark}
+                    />
+                  )}
+                  <AIChatMarkdown content={msg.content} />
+                </>
               )}
             </div>
             {msg.role === 'assistant' && msg.notePendingChange && !msg.notePendingChange.dismissed && (
@@ -354,9 +375,22 @@ const AISidebar: React.FC = () => {
             )}
           </div>
         ))}
-        {streamingContent && (
+        {(streamingContent || streamingThinking || streamingToolCalls.length > 0 || loading) && (
           <div className={`rounded-xl px-3 py-2 text-sm ${isDark ? 'bg-gray-800 text-gray-100' : 'bg-gray-100 text-gray-800'}`}>
-            <AIChatMarkdown content={streamingContent} />
+            {streamingActivatedSkills.length > 0 && (
+              <SkillActivationCard skills={streamingActivatedSkills} isDark={isDark} />
+            )}
+            {streamingToolCalls.length > 0 && (
+              <ToolCallDisplay toolCalls={streamingToolCalls} isDark={isDark} />
+            )}
+            {(streamingThinking || loading) && (
+              <ChatThinkingIndicator
+                thinking={streamingThinking}
+                streaming={loading}
+                isDark={isDark}
+              />
+            )}
+            {streamingContent && <AIChatMarkdown content={streamingContent} />}
           </div>
         )}
         {streamingPending && !streamingPending.applied && !streamingPending.dismissed && (
@@ -366,11 +400,6 @@ const AISidebar: React.FC = () => {
             onApply={() => void handleApplyStreaming()}
             onDismiss={() => setStreamingPending(prev => prev ? { ...prev, dismissed: true } : null)}
           />
-        )}
-        {loading && !streamingContent && (
-          <div className="flex items-center gap-2 text-sm text-gray-500">
-            <Loader2 size={16} className="animate-spin" /> 思考中…
-          </div>
         )}
         <div ref={bottomRef} />
       </div>
@@ -386,6 +415,9 @@ const AISidebar: React.FC = () => {
         onRemoveFile={handleRemoveFile}
         isDark={isDark}
         inputRef={inputRef}
+        skills={skills}
+        pinnedSkillCodes={pinnedSkillCodes}
+        onToggleSkill={toggleSkill}
       />
 
       {currentAssistant?.model && !selectedModelId && (

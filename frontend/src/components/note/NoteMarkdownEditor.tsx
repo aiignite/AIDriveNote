@@ -24,6 +24,7 @@ import type {
   NoteOutlineItem,
   NoteOutlineState,
 } from '../../utils/noteCommands';
+import { useSpeechInput } from '../../hooks/useSpeechInput';
 import 'katex/dist/katex.min.css';
 import 'highlight.js/styles/github.css';
 import 'highlight.js/styles/github-dark.css';
@@ -215,6 +216,42 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
     },
     [getTextarea],
   );
+
+  /**
+   * 在光标处插入纯文本（用于语音输入结果落地，不做包裹）
+   * @param text 待插入文本
+   */
+  const insertTextAtCursor = useCallback(
+    (text: string) => {
+      if (!text) return;
+      const el = getTextarea();
+      const current = valueRef.current;
+      if (!el) {
+        const next = current + text;
+        valueRef.current = next;
+        setValue(next);
+        onChangeRef.current?.(next);
+        return;
+      }
+      const start = el.selectionStart ?? current.length;
+      const end = el.selectionEnd ?? current.length;
+      const next = current.slice(0, start) + text + current.slice(end);
+      valueRef.current = next;
+      setValue(next);
+      onChangeRef.current?.(next);
+      const pos = start + text.length;
+      requestAnimationFrame(() => {
+        const target = getTextarea();
+        if (!target) return;
+        target.focus();
+        target.setSelectionRange(pos, pos);
+      });
+    },
+    [getTextarea],
+  );
+
+  /** 语音输入：识别结果插入光标处 */
+  const speech = useSpeechInput({ onFinal: insertTextAtCursor });
 
   /**
    * 执行一次撤销 / 重做
@@ -446,6 +483,13 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
       { id: 'format.link', label: '链接', run: handleLink, isEnabled: () => !readOnlyRef.current },
       { id: 'format.image', label: '图片', run: handleImage, isEnabled: () => !readOnlyRef.current },
       {
+        id: 'insert.speech',
+        label: speech.listening ? '停止语音输入' : '语音输入',
+        keywords: 'speech voice mic 语音 听写 输入',
+        run: speech.toggle,
+        isEnabled: () => !readOnlyRef.current && speech.supported,
+      },
+      {
         id: 'view.preview.edit',
         label: '编辑模式',
         run: handlePreviewEdit,
@@ -478,6 +522,7 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
         items: [
           { commandId: 'format.link' },
           { commandId: 'format.image' },
+          { commandId: 'insert.speech' },
           { commandId: 'format.table' },
           { commandId: 'format.hr' },
           { commandId: 'format.codeBlock', separatorBefore: true },
@@ -532,6 +577,9 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
     handlePreviewEdit,
     handlePreviewLive,
     handlePreviewPreview,
+    speech.toggle,
+    speech.listening,
+    speech.supported,
   ]);
 
   /** 上报命令注册表 */

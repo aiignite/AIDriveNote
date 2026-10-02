@@ -6,7 +6,9 @@ import toast from 'react-hot-toast';
 import {
   aiApi,
   buildChatPageContext,
+  type ActivatedSkillInfo,
   type PageAIContext,
+  type ToolCallEventItem,
 } from '../services/ai/ai';
 import { noteApi } from '../services/note';
 import type { NotePendingChange } from '../components/ai/NoteChangeConfirmCard';
@@ -19,6 +21,12 @@ export interface ChatMessage {
   attachments?: MessageAttachmentItem[];
   notePendingChange?: NotePendingChange;
   deletePending?: { noteId: string; noteTitle: string };
+  /** 本轮激活的技能列表（用于技能卡片展示） */
+  activatedSkills?: ActivatedSkillInfo[];
+  /** 本轮工具执行记录（用于工具卡片展示） */
+  toolCalls?: ToolCallEventItem[];
+  /** 本轮思考过程（用于折叠展示） */
+  thinking?: string;
   applied?: boolean;
   dismissed?: boolean;
 }
@@ -27,6 +35,8 @@ export interface SendMessageOptions {
   selectionText?: string;
   attachmentIds?: string[];
   attachments?: MessageAttachmentItem[];
+  /** 手动固定的技能 code 列表 */
+  forceSkills?: string[];
 }
 
 export function parseNotePendingChange(result: Record<string, unknown>): NotePendingChange | null {
@@ -93,6 +103,9 @@ export function useAIChat({
   const [loading, setLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [activeSkill, setActiveSkill] = useState<{ name: string; reason?: string } | null>(null);
+  const [streamingActivatedSkills, setStreamingActivatedSkills] = useState<ActivatedSkillInfo[]>([]);
+  const [streamingThinking, setStreamingThinking] = useState('');
+  const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCallEventItem[]>([]);
   const [applyingIndex, setApplyingIndex] = useState<number | null>(null);
   const [streamingPending, setStreamingPending] = useState<NotePendingChange | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -118,6 +131,9 @@ export function useAIChat({
     setStreamingContent('');
     setStreamingPending(null);
     setActiveSkill(null);
+    setStreamingActivatedSkills([]);
+    setStreamingThinking('');
+    setStreamingToolCalls([]);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -125,6 +141,9 @@ export function useAIChat({
     let assistantContent = '';
     let pending: NotePendingChange | null = null;
     let deletePending: { noteId: string; noteTitle: string } | null = null;
+    let activatedSkills: ActivatedSkillInfo[] = [];
+    let thinkingContent = '';
+    const toolCalls: ToolCallEventItem[] = [];
     let aborted = false;
 
     const ctx = pageAIContext
@@ -142,16 +161,41 @@ export function useAIChat({
         modelId,
         pageContext: buildChatPageContext(ctx),
         attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+        forceSkills: options?.forceSkills,
         signal: controller.signal,
       });
 
       for await (const event of stream) {
-        if (event.type === 'skill_match' && event.skillName) {
-          setActiveSkill({ name: event.skillName, reason: event.reason });
+        if (event.type === 'skill_activated' && event.skills?.length) {
+          activatedSkills = event.skills;
+          setStreamingActivatedSkills(event.skills);
+        } else if (event.type === 'skill_match' && event.skillName) {
+          // 兼容旧事件：仅在无多技能事件时作为兜底
+          if (activatedSkills.length === 0) {
+            setActiveSkill({ name: event.skillName, reason: event.reason });
+          }
+        } else if (event.type === 'thinking' && event.content) {
+          thinkingContent += event.content;
+          setStreamingThinking(thinkingContent);
+        } else if (event.type === 'tool_execution_start' && event.tool) {
+          toolCalls.push({ name: event.tool, status: 'running' });
+          setStreamingToolCalls([...toolCalls]);
         } else if (event.type === 'content' && event.content) {
           assistantContent += event.content;
           setStreamingContent(assistantContent);
         } else if (event.type === 'tool_result' && event.result) {
+          // 将对应的 running 工具项置为终态，并记录摘要
+          const toolName = event.tool;
+          if (toolName) {
+            const item = [...toolCalls].reverse().find(t => t.name === toolName && t.status === 'running');
+            if (item) {
+              const err = event.result.success === false ? String(event.result.error ?? '') : '';
+              item.status = err ? 'error' : 'success';
+              item.message = err
+                || (typeof event.result.message === 'string' ? event.result.message : undefined);
+              setStreamingToolCalls([...toolCalls]);
+            }
+          }
           const result = event.result;
           if (result.success === false && result.error) {
             assistantContent += `\n\n⚠️ ${result.error}`;
@@ -186,6 +230,9 @@ export function useAIChat({
         ),
         notePendingChange: pending ?? undefined,
         deletePending: deletePending ?? undefined,
+        activatedSkills: activatedSkills.length > 0 ? activatedSkills : undefined,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        thinking: thinkingContent.trim() || undefined,
       }]);
       setStreamingContent('');
     } catch (err) {
@@ -197,6 +244,9 @@ export function useAIChat({
           content: partial || '（已停止生成）',
           notePendingChange: pending ?? undefined,
           deletePending: deletePending ?? undefined,
+          activatedSkills: activatedSkills.length > 0 ? activatedSkills : undefined,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          thinking: thinkingContent.trim() || undefined,
         }]);
         setStreamingContent('');
         setStreamingPending(null);
@@ -212,6 +262,9 @@ export function useAIChat({
         setStreamingContent('');
       }
       setActiveSkill(null);
+      setStreamingActivatedSkills([]);
+      setStreamingThinking('');
+      setStreamingToolCalls([]);
     }
   }, [loading, selectedAssistant, conversationId, modelId, pageAIContext, onConversationId]);
 
@@ -315,6 +368,9 @@ export function useAIChat({
     loading,
     streamingContent,
     activeSkill,
+    streamingActivatedSkills,
+    streamingThinking,
+    streamingToolCalls,
     applyingIndex,
     sendMessage,
     handleApply,

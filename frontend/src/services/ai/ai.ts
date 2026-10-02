@@ -151,6 +151,8 @@ export interface AISkill {
   priority: number;
   isEnabled: boolean;
   isBuiltin: boolean;
+  /** 适用笔记类型（markdown/rich_text/mindmap/flowchart）；null 表示走内置默认 */
+  applicableNoteTypes?: string[] | null;
 }
 
 export interface AISkillInput {
@@ -162,6 +164,8 @@ export interface AISkillInput {
   keywords?: string[];
   priority?: number;
   isEnabled?: boolean;
+  /** 适用笔记类型；传 null 表示恢复为内置默认 */
+  applicableNoteTypes?: string[] | null;
 }
 
 export interface SkillBindingItem {
@@ -171,14 +175,48 @@ export interface SkillBindingItem {
   isEnabled: boolean;
 }
 
+/** 已激活技能信息（由后端 skill_activated 事件下发） */
+export interface ActivatedSkillInfo {
+  /** 技能名称 */
+  name: string;
+  /** 技能 code（可选） */
+  code?: string;
+  /** 技能描述 */
+  description?: string;
+  /** 匹配得分 */
+  score?: number;
+  /** 结构化命中原因 */
+  reasons?: string[];
+}
+
+/** 工具执行状态项（前端聚合 tool_execution_start / tool_result 得到） */
+export interface ToolCallEventItem {
+  /** 工具名称 */
+  name: string;
+  /** 执行状态 */
+  status: 'running' | 'success' | 'error';
+  /** 结果摘要/错误信息 */
+  message?: string;
+}
+
 export interface ChatStreamEvent {
-  type: 'content' | 'tool_result' | 'done' | 'error' | 'skill_match';
+  type:
+    | 'content'
+    | 'tool_result'
+    | 'done'
+    | 'error'
+    | 'skill_match'
+    | 'skill_activated'
+    | 'tool_execution_start'
+    | 'thinking';
   content?: string;
   tool?: string;
   result?: Record<string, unknown>;
   conversationId?: string;
   skillName?: string;
   reason?: string;
+  /** 多技能激活列表（skill_activated 事件） */
+  skills?: ActivatedSkillInfo[];
 }
 
 export const aiApi = {
@@ -254,6 +292,8 @@ export const aiApi = {
     pageContext?: ChatPageContext;
     modelId?: string;
     attachmentIds?: string[];
+    /** 手动固定的技能 code 列表（非空时后端跳过自动匹配） */
+    forceSkills?: string[];
     signal?: AbortSignal;
   }): AsyncGenerator<ChatStreamEvent> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -271,6 +311,9 @@ export const aiApi = {
         model_id: params.modelId,
         page_context: params.pageContext,
         attachment_ids: params.attachmentIds,
+        force_skills: params.forceSkills && params.forceSkills.length > 0
+          ? params.forceSkills
+          : undefined,
       }),
     });
     if (!res.ok || !res.body) throw new Error('AI stream failed');

@@ -31,6 +31,8 @@ const PROVIDER_OPTIONS = [
     endpoint: '',
     authHint: '需要 API Key',
     endpointHint: '使用兼容网关时再填写自定义地址。',
+    suggestedModelId: 'gpt-4o',
+    suggestedImage: true,
   },
   {
     value: 'ANTHROPIC',
@@ -39,6 +41,8 @@ const PROVIDER_OPTIONS = [
     endpoint: '',
     authHint: '需要 API Key',
     endpointHint: '建议优先使用默认官方地址。',
+    suggestedModelId: 'claude-3-5-sonnet-latest',
+    suggestedImage: true,
   },
   {
     value: 'MINIMAX',
@@ -47,6 +51,8 @@ const PROVIDER_OPTIONS = [
     endpoint: 'https://api.minimax.chat/v1',
     authHint: '需要 API Key',
     endpointHint: '默认补全官方地址，可按企业网关覆盖。',
+    suggestedModelId: 'abab6.5s-chat',
+    suggestedImage: false,
   },
   {
     value: 'OLLAMA',
@@ -55,6 +61,8 @@ const PROVIDER_OPTIONS = [
     endpoint: 'http://localhost:11434',
     authHint: '通常无需 API Key',
     endpointHint: '本地运行时建议保持默认地址。',
+    suggestedModelId: 'qwen2.5',
+    suggestedImage: false,
   },
   {
     value: 'LMSTUDIO',
@@ -63,6 +71,8 @@ const PROVIDER_OPTIONS = [
     endpoint: 'http://localhost:1234',
     authHint: '通常无需 API Key',
     endpointHint: '默认端口 1234，可按本机设置覆盖。',
+    suggestedModelId: 'local-model',
+    suggestedImage: false,
   },
 ];
 
@@ -147,11 +157,18 @@ export const ModelForm: React.FC<ModelFormProps> = ({ model, onSave, onClose }) 
     setFormData((current) => ({ ...current, ...patch }));
   };
 
+  /**
+   * 切换提供商时按预设快速填充 endpoint / 推荐模型 ID / 图片能力
+   * @param provider 目标提供商值
+   */
   const handleProviderChange = (provider: string) => {
     const nextProvider = PROVIDER_OPTIONS.find((item) => item.value === provider);
     updateForm({
       provider,
       endpoint: nextProvider?.endpoint ?? '',
+      // 仅在用户尚未填写模型 ID 时填充推荐值，避免覆盖已输入内容
+      modelId: formData.modelId.trim() ? formData.modelId : (nextProvider?.suggestedModelId ?? ''),
+      supportsImage: nextProvider?.suggestedImage ?? formData.supportsImage,
     });
   };
 
@@ -253,6 +270,9 @@ export const ModelForm: React.FC<ModelFormProps> = ({ model, onSave, onClose }) 
                         </span>
                         <span className="rounded-full bg-white px-2.5 py-1 dark:bg-slate-900">
                           {providerConfig.endpointHint}
+                        </span>
+                        <span className="rounded-full bg-white px-2.5 py-1 dark:bg-slate-900">
+                          推荐模型：{providerConfig.suggestedModelId}
                         </span>
                       </div>
                     </div>

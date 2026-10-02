@@ -28,6 +28,8 @@ const formatTime = (value?: string) => {
 
 const AIAssistantsPage: React.FC = () => {
   const [assistants, setAssistants] = useState<AIAssistant[]>([]);
+  /** 各助手已启用技能数量（assistantId -> count），用于卡片展示 */
+  const [skillCounts, setSkillCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -47,7 +49,20 @@ const AIAssistantsPage: React.FC = () => {
   const loadAssistants = useCallback(async () => {
     setLoading(true);
     try {
-      setAssistants(await aiApi.listAssistants());
+      const list = await aiApi.listAssistants();
+      setAssistants(list);
+      // 逐个拉取助手已绑定技能，统计启用数量用于卡片展示（失败时静默降级为 0）
+      const entries = await Promise.all(
+        list.map(async (assistant) => {
+          try {
+            const bindings = await aiApi.getAssistantSkills(assistant.id);
+            return [assistant.id, bindings.filter((item) => item.isEnabled).length] as const;
+          } catch {
+            return [assistant.id, 0] as const;
+          }
+        }),
+      );
+      setSkillCounts(Object.fromEntries(entries));
     } catch (error) {
       console.error('Failed to load AI assistants:', error);
       toast.error('加载 AI 助手失败');
@@ -400,6 +415,9 @@ const AIAssistantsPage: React.FC = () => {
                       自定义
                     </span>
                   )}
+                  <span className="px-2.5 py-1 rounded-full bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-300">
+                    技能 {skillCounts[assistant.id] ?? 0}
+                  </span>
                   <span className="text-gray-400">{formatTime(assistant.createdAt)}</span>
                 </div>
                 <div className="grid grid-cols-2 gap-3 mt-4 text-xs">

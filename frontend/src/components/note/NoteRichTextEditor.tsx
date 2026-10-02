@@ -18,10 +18,11 @@ import {
   Heading1, Heading2, Heading3,
   Undo2, Redo2,
   AlignLeft, AlignCenter, AlignRight,
-  Link2, Highlighter, Palette, Eraser, Table, Minus, Quote, ImagePlus, ChevronDown, Mic,
+  Link2, Highlighter, Palette, Eraser, Table, Minus, Quote, ImagePlus, ChevronDown, Mic, AudioLines,
 } from 'lucide-react';
 import { parseBlockNoteContent } from '../../utils/blocknoteContent';
 import { uploadImageAsDataUrl } from '../../utils/blocknoteImageUpload';
+import { useSpeechInput } from '../../hooks/useSpeechInput';
 import type {
   NoteCommand,
   NoteEditorRegistry,
@@ -204,6 +205,9 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const editorRef = useRef<BlockNoteEditor>(editor);
   editorRef.current = editor;
 
+  /** 最新只读状态：供命令 isEnabled 稳定读取，避免命令闭包随渲染变化 */
+  const readOnlyRef = useRef(readOnly);
+
   const prevNoteIdRef = useRef(noteId);
   const contentSigRef = useRef('');
   const suppressChangeRef = useRef(true);
@@ -382,6 +386,11 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
     };
   }, [editor, syncBlockTypeFromCursor]);
 
+  // 同步只读状态到 ref，供命令 isEnabled 稳定读取
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+  }, [readOnly]);
+
   // 卸载时清理节流定时器并清空大纲
   useEffect(() => () => {
     if (outlineTimerRef.current !== null) window.clearTimeout(outlineTimerRef.current);
@@ -542,6 +551,20 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   }, []);
 
   /**
+   * 把语音识别出的文本作为新段落插入当前光标块之后
+   * @param text 识别出的最终文本
+   * @returns 无
+   */
+  const insertSpeechText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    insertBlocksAfterCursor([{ type: 'paragraph', content: trimmed } as PartialBlock]);
+  }, [insertBlocksAfterCursor]);
+
+  /** 语音输入：识别结果作为新段落插入 */
+  const speech = useSpeechInput({ onFinal: insertSpeechText });
+
+  /**
    * 插入图片：先询问网络地址，留空则打开本地文件选择
    * @returns 无
    */
@@ -687,6 +710,13 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       cmd('insert.table', '表格', insertTable, undefined, 'table 表格 插入'),
       cmd('insert.image', '插入图片', insertImage, undefined, 'image picture 图片 上传'),
       cmd('insert.recording', '录音转写', () => onOpenRecording?.(), undefined, 'record audio mic 录音 语音 转写'),
+      {
+        id: 'insert.speech',
+        label: speech.listening ? '停止语音输入' : '语音输入',
+        keywords: 'speech voice mic 语音 听写 输入',
+        run: speech.toggle,
+        isEnabled: () => !readOnlyRef.current && speech.supported,
+      },
       cmd('insert.link', '插入链接', insertLink, 'Mod+K', 'link url 超链接'),
       // 视图 - 对齐
       cmd('view.align.left', '左对齐', () => setAlignment('left'), undefined, 'align left 左对齐'),
@@ -727,6 +757,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           { commandId: 'insert.table' },
           { commandId: 'insert.image' },
           { commandId: 'insert.recording' },
+          { commandId: 'insert.speech' },
           { commandId: 'insert.link' },
           { commandId: 'insert.bulletList', separatorBefore: true },
           { commandId: 'insert.numberedList' },
@@ -771,6 +802,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
     insertDivider, insertTable, insertImage, insertLink,
     applyTextColor, applyBackgroundColor,
     insertBlocksAfterCursor, onOpenRecording,
+    speech.toggle, speech.listening, speech.supported,
   ]);
 
   // 上报 registry
@@ -840,6 +872,17 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={insertDivider} title="插入分隔线"><Minus size={16} /></button>
           <button type="button" className={btnCls} onClick={insertImage} title="插入图片"><ImagePlus size={16} /></button>
           <button type="button" className={btnCls} onClick={() => onOpenRecording?.()} title="录音转写"><Mic size={16} /></button>
+          <button
+            type="button"
+            className={`${btnCls} ${speech.listening ? 'text-red-500' : ''}`}
+            onClick={speech.toggle}
+            disabled={!speech.supported}
+            title={speech.supported
+              ? (speech.listening ? '停止语音输入' : '语音输入')
+              : '当前浏览器不支持语音输入'}
+          >
+            <AudioLines size={16} />
+          </button>
           <div className={sepCls} />
           <button type="button" className={btnCls} onClick={() => setAlignment('left')} title="左对齐"><AlignLeft size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('center')} title="居中"><AlignCenter size={16} /></button>

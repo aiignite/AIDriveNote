@@ -136,6 +136,7 @@ class AIService:
         page_context: dict[str, Any] | None = None,
         model_id: str | None = None,
         attachment_ids: list[str] | None = None,
+        force_skills: list[str] | None = None,
     ) -> AsyncIterator[str]:
         assistant = await AIService.get_assistant(db, assistant_name)
         if not assistant:
@@ -156,19 +157,25 @@ class AIService:
             model_name=resolution.model_name,
         )
 
-        skill_match = await SkillRouter.resolve_for_page(
+        skill_matches = await SkillRouter.resolve_all(
             db,
             page_name=(page_context or {}).get("pageName"),
             message=message,
             assistant=assistant,
             page_context=page_context,
+            force_codes=force_skills,
         )
-        if skill_match:
-            yield f"data: {json.dumps({'type': 'skill_match', 'skillName': skill_match.skill.name, 'reason': skill_match.reason}, ensure_ascii=False)}\n\n"
+        primary_skill = skill_matches[0] if skill_matches else None
+        if primary_skill:
+            # 兼容旧前端：仍下发首个技能的 skill_match 事件
+            yield f"data: {json.dumps({'type': 'skill_match', 'skillName': primary_skill.skill.name, 'reason': primary_skill.reason}, ensure_ascii=False)}\n\n"
+        if skill_matches:
+            # 新前端主用事件：多技能激活 + 结构化原因
+            yield f"data: {json.dumps({'type': 'skill_activated', 'skills': [{'name': m.skill.name, 'code': m.skill.code, 'description': m.skill.description or '', 'score': m.score, 'reasons': m.reasons} for m in skill_matches]}, ensure_ascii=False)}\n\n"
 
         system_parts = [assistant.system_prompt]
-        if skill_match:
-            system_parts.append(f"## 激活技能：{skill_match.skill.name}\n{skill_match.skill.prompt_template}")
+        for m in skill_matches:
+            system_parts.append(f"## 激活技能：{m.skill.name}\n{m.skill.prompt_template}")
         page_hint = _build_page_context_prompt(page_context)
         if page_hint:
             system_parts.append(f"## 页面上下文\n{page_hint}")
@@ -261,7 +268,7 @@ class AIService:
         await db.flush()
         await db.commit()
 
-        tool_names = SkillRouter.merge_tool_names(assistant.tools, skill_match.skill if skill_match else None)
+        tool_names = SkillRouter.merge_tool_names(assistant.tools, [m.skill for m in skill_matches])
         executor = ToolExecutor(db, user_id)
         tool_defs = executor.get_tools_for_assistant(tool_names)
         # 视觉图片与 function calling 同时存在时，MiniMax 等模型容易忽略图片；优先保证识图。
@@ -303,6 +310,11 @@ class AIService:
                     round_content += text
                     full_content += text
                     yield f"data: {json.dumps({'type': 'content', 'content': text}, ensure_ascii=False)}\n\n"
+                elif chunk.get("type") == "thinking":
+                    # 推理型模型（如部分 DeepSeek / QwQ）会给出思考过程，转发给前端折叠展示
+                    think_text = chunk.get("content") or ""
+                    if think_text:
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': think_text}, ensure_ascii=False)}\n\n"
                 elif chunk.get("type") == "tool_call":
                     round_tool_calls.append(chunk.get("tool_call"))
 
@@ -321,6 +333,8 @@ class AIService:
                 args = fn.get("arguments") or {}
                 if not name:
                     continue
+                # 工具开始执行：前端据此展示 running 态
+                yield f"data: {json.dumps({'type': 'tool_execution_start', 'tool': name}, ensure_ascii=False)}\n\n"
                 result = await executor.execute(name, args)
                 all_tool_results.append({
                     "tool": name,
