@@ -221,6 +221,15 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const onOutlineChangeRef = useRef(onOutlineChange);
   onOutlineChangeRef.current = onOutlineChange;
 
+  /**
+   * 最新的录音面板打开回调引用。
+   * 父组件常以内联箭头传入该回调，若直接作为 registry useMemo 的依赖会导致
+   * registry 每次渲染都重新生成 → 上报 effect 触发父组件 setState → 无限更新循环。
+   * 因此这里改为 ref 透传，彻底切断对回调身份的依赖。
+   */
+  const onOpenRecordingRef = useRef(onOpenRecording);
+  onOpenRecordingRef.current = onOpenRecording;
+
   /** 当前光标所在块的类型（驱动工具栏块类型下拉的选中值） */
   const [currentBlockType, setCurrentBlockType] = useState<string>('paragraph');
   /** 当前大纲条目（仅在变化时更新，保证上报引用稳定） */
@@ -709,7 +718,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       cmd('insert.divider', '分隔线', insertDivider, undefined, 'divider hr 分割线 水平线'),
       cmd('insert.table', '表格', insertTable, undefined, 'table 表格 插入'),
       cmd('insert.image', '插入图片', insertImage, undefined, 'image picture 图片 上传'),
-      cmd('insert.recording', '录音转写', () => onOpenRecording?.(), undefined, 'record audio mic 录音 语音 转写'),
+      cmd('insert.recording', '录音转写', () => onOpenRecordingRef.current?.(), undefined, 'record audio mic 录音 语音 转写'),
       {
         id: 'insert.speech',
         label: speech.listening ? '停止语音输入' : '语音输入',
@@ -801,7 +810,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
     toggleStyle, clearFormatting, insertBlock, setAlignment,
     insertDivider, insertTable, insertImage, insertLink,
     applyTextColor, applyBackgroundColor,
-    insertBlocksAfterCursor, onOpenRecording,
+    insertBlocksAfterCursor,
     speech.toggle, speech.listening, speech.supported,
   ]);
 
