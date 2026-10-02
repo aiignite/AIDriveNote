@@ -23,6 +23,8 @@ from app.models.note.note import (  # noqa: F401
     NoteTemplate,
     NoteFavorite,
 )
+from app.models.note.asr import NoteAsrSettings, NoteCommonTerm  # noqa: F401
+from app.models.note.recording import NoteRecording, NoteTranscript  # noqa: F401
 from app.models.ai.ai import (  # noqa: F401
     AIModel,
     AIAssistant,

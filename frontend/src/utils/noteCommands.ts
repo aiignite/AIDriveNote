@@ -84,6 +84,12 @@ export interface NoteEditorRegistry {
   commands: NoteCommand[];
   /** 编辑器自带的菜单组 */
   groups: NoteMenuGroup[];
+  /**
+   * 在当前光标块之后插入若干块。
+   * 供面板级组件（如录音转写面板）复用编辑器能力把内容插入笔记；
+   * 不具备块插入能力的编辑器可不实现。
+   */
+  insertBlocksAfterCursor?: (blocks: import('@blocknote/core').PartialBlock[]) => void;
 }
 
 /** 大纲（目录）条目 */

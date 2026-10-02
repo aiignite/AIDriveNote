@@ -12,6 +12,8 @@ const RegisterPage = lazy(() => import('./pages/RegisterPage'));
 const AIModelsPage = lazy(() => import('./pages/settings/AIModelsPage'));
 const AIAssistantsPage = lazy(() => import('./pages/settings/AIAssistantsPage'));
 const AISkillsPage = lazy(() => import('./pages/settings/AISkillsPage'));
+const ASRSettingsPage = lazy(() => import('./pages/settings/ASRSettingsPage'));
+const CommonTermsPage = lazy(() => import('./pages/settings/CommonTermsPage'));
 const UsersPage = lazy(() => import('./pages/settings/UsersPage'));
 const SyncSettingsPage = lazy(() => import('./pages/settings/SyncSettingsPage'));
 const OfflineSettingsPage = lazy(() => import('./pages/settings/OfflineSettingsPage'));
@@ -80,6 +82,8 @@ const App: React.FC = () => (
             <Route path="models" element={withSuspense(<AIModelsPage />)} />
             <Route path="assistants" element={withSuspense(<AIAssistantsPage />)} />
             <Route path="skills" element={withSuspense(<AISkillsPage />)} />
+            <Route path="asr" element={withSuspense(<ASRSettingsPage />)} />
+            <Route path="common-terms" element={withSuspense(<CommonTermsPage />)} />
             <Route path="sync" element={withSuspense(<SyncSettingsPage />)} />
             <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
             <Route path="tokens" element={withSuspense(<ApiTokensPage />)} />

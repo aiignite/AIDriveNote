@@ -18,7 +18,7 @@ import {
   Heading1, Heading2, Heading3,
   Undo2, Redo2,
   AlignLeft, AlignCenter, AlignRight,
-  Link2, Highlighter, Palette, Eraser, Table, Minus, Quote, ImagePlus, ChevronDown,
+  Link2, Highlighter, Palette, Eraser, Table, Minus, Quote, ImagePlus, ChevronDown, Mic,
 } from 'lucide-react';
 import { parseBlockNoteContent } from '../../utils/blocknoteContent';
 import { uploadImageAsDataUrl } from '../../utils/blocknoteImageUpload';
@@ -97,6 +97,8 @@ interface NoteRichTextEditorProps {
   onRegistryChange?: (registry: NoteEditorRegistry) => void;
   /** 上报大纲数据（只读或无标题时上报 null） */
   onOutlineChange?: (state: NoteOutlineState | null) => void;
+  /** 请求打开录音转写面板（由上层面板渲染并管理其开关） */
+  onOpenRecording?: () => void;
 }
 
 /**
@@ -184,6 +186,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   isDark = false,
   onRegistryChange,
   onOutlineChange,
+  onOpenRecording,
 }) => {
   const editor: BlockNoteEditor = useCreateBlockNote({
     initialContent: parseBlockNoteContent(content) ?? DEFAULT_BLOCKS,
@@ -527,6 +530,18 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   }, []);
 
   /**
+   * 在当前光标块之后插入一组块（供录音转写面板「插入笔记」复用）。
+   * @param blocks BlockNote 块数组
+   * @returns 无
+   */
+  const insertBlocksAfterCursor = useCallback((blocks: PartialBlock[]) => {
+    const ed = editorRef.current;
+    if (!ed || !blocks.length) return;
+    ed.focus();
+    ed.insertBlocks(blocks, ed.getTextCursorPosition().block, 'after');
+  }, []);
+
+  /**
    * 插入图片：先询问网络地址，留空则打开本地文件选择
    * @returns 无
    */
@@ -671,6 +686,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       cmd('insert.divider', '分隔线', insertDivider, undefined, 'divider hr 分割线 水平线'),
       cmd('insert.table', '表格', insertTable, undefined, 'table 表格 插入'),
       cmd('insert.image', '插入图片', insertImage, undefined, 'image picture 图片 上传'),
+      cmd('insert.recording', '录音转写', () => onOpenRecording?.(), undefined, 'record audio mic 录音 语音 转写'),
       cmd('insert.link', '插入链接', insertLink, 'Mod+K', 'link url 超链接'),
       // 视图 - 对齐
       cmd('view.align.left', '左对齐', () => setAlignment('left'), undefined, 'align left 左对齐'),
@@ -710,6 +726,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           { commandId: 'insert.divider' },
           { commandId: 'insert.table' },
           { commandId: 'insert.image' },
+          { commandId: 'insert.recording' },
           { commandId: 'insert.link' },
           { commandId: 'insert.bulletList', separatorBefore: true },
           { commandId: 'insert.numberedList' },
@@ -747,12 +764,13 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       },
     ];
 
-    return { commands, groups };
+    return { commands, groups, insertBlocksAfterCursor };
   }, [
     undo, redo, selectAll,
     toggleStyle, clearFormatting, insertBlock, setAlignment,
     insertDivider, insertTable, insertImage, insertLink,
     applyTextColor, applyBackgroundColor,
+    insertBlocksAfterCursor, onOpenRecording,
   ]);
 
   // 上报 registry
@@ -821,6 +839,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={insertTable} title="插入表格"><Table size={16} /></button>
           <button type="button" className={btnCls} onClick={insertDivider} title="插入分隔线"><Minus size={16} /></button>
           <button type="button" className={btnCls} onClick={insertImage} title="插入图片"><ImagePlus size={16} /></button>
+          <button type="button" className={btnCls} onClick={() => onOpenRecording?.()} title="录音转写"><Mic size={16} /></button>
           <div className={sepCls} />
           <button type="button" className={btnCls} onClick={() => setAlignment('left')} title="左对齐"><AlignLeft size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('center')} title="居中"><AlignCenter size={16} /></button>
