@@ -105,8 +105,36 @@ const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32];
 /** 展开层级候选项 */
 const EXPAND_LEVELS = [1, 2, 3, 4];
 
-/** 节点图标面板（非富文本模式下以文本形式渲染） */
+/** 节点图标面板中的 emoji 列表（仅作为图标外观展示） */
 const ICON_LIST = ['⭐', '✅', '❗', '❓', '📌', '💡', '🚩', '🎯', '❤️', '🔥', '⚠️', '📝'];
+
+/**
+ * simple-mind-map 的图标注册分组类型。
+ * 库要求节点图标以 `${type}_${name}` 形式存储并到 iconList 中查表渲染，
+ * 直接存 emoji 会查表失败、只留下空白占位，因此这里统一注册为一组 emoji 图标。
+ */
+const ICON_GROUP_TYPE = 'emoji';
+
+/**
+ * 把图标面板中的下标转换为 simple-mind-map 可识别的图标标识。
+ * @param index 图标在 ICON_LIST 中的下标
+ * @returns 形如 `emoji_1` 的图标标识
+ */
+const toIconValue = (index: number): string => `${ICON_GROUP_TYPE}_${index + 1}`;
+
+/**
+ * 构造 simple-mind-map 的 iconList 配置。
+ * emoji 通过内联 SVG 的 <text> 渲染，使节点图标能够真正显示出来。
+ * @returns simple-mind-map 的 iconList 选项
+ */
+const buildIconListOption = () => [{
+  name: '常用图标',
+  type: ICON_GROUP_TYPE,
+  list: ICON_LIST.map((emoji, index) => ({
+    name: String(index + 1),
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1024 1024"><text x="512" y="512" font-size="860" text-anchor="middle" dominant-baseline="central">${emoji}</text></svg>`,
+  })),
+}];
 
 /** 样式色板 */
 const COLOR_PALETTE = [
@@ -182,6 +210,41 @@ registerThemes();
 function getActiveNodes(mindMap: any): any[] {
   const list = mindMap?.renderer?.activeNodeList;
   return Array.isArray(list) ? list : [];
+}
+
+/**
+ * 递归把节点树中历史遗留的 emoji 图标值转换为 simple-mind-map 图标标识。
+ * 早期版本直接把 emoji 存入 node.data.icon，库查表失败导致只留空白占位，
+ * 这里统一转换为 `emoji_N` 以恢复显示。
+ * @param node 节点对象（就地修改）
+ */
+function convertLegacyIcons(node: any) {
+  if (!node || typeof node !== 'object') return;
+  const data = node.data;
+  if (data && Array.isArray(data.icon)) {
+    data.icon = data.icon.map((item: string) => {
+      const index = typeof item === 'string' ? ICON_LIST.indexOf(item) : -1;
+      return index >= 0 ? toIconValue(index) : item;
+    });
+  }
+  if (Array.isArray(node.children)) {
+    node.children.forEach(convertLegacyIcons);
+  }
+}
+
+/**
+ * 加载前准备思维导图数据：深拷贝后转换历史 emoji 图标，避免直接改动 props。
+ * @param data 原始思维导图数据
+ * @returns 可直接交给 simple-mind-map 的数据
+ */
+function prepareMindMapData(data: any): any {
+  try {
+    const cloned = JSON.parse(JSON.stringify(data));
+    convertLegacyIcons(cloned);
+    return cloned;
+  } catch {
+    return data;
+  }
 }
 
 /** 生成单条命令（统一补全 isEnabled 兜底，避免菜单里出现不可执行的项） */
@@ -293,9 +356,11 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
 
     const mindMap = new SimpleMindMap({
       el: containerRef.current,
-      data: defaultData,
+      data: prepareMindMapData(defaultData),
       readonly: readOnly,
       layout: defaultLayout || 'logicalStructure',
+      // 注册 emoji 图标，使节点图标能真正渲染出来
+      iconList: buildIconListOption(),
     } as any);
 
     mindMapRef.current = mindMap;
@@ -341,10 +406,10 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
   useEffect(() => {
     if (!mindMapRef.current) return;
 
-    const data = content || {
+    const data = prepareMindMapData(content || {
       data: { text: '中心主题' },
       children: [],
-    };
+    });
     const contentId = JSON.stringify(data);
     const noteChanged = prevNoteIdRef.current !== noteId;
     const resetChanged = lastResetKeyRef.current !== contentResetKey;
@@ -541,7 +606,7 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
   /* ---------- 插入操作 ---------- */
   /**
    * 为激活节点设置图标（图标以数组形式存储）。
-   * @param icon 单个 emoji 字符
+   * @param icon simple-mind-map 图标标识，形如 `emoji_1`
    */
   const applyIcon = useCallback((icon: string) => {
     const mm = mindMapRef.current;
@@ -871,11 +936,11 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
     });
 
     // 图标
-    ICON_LIST.forEach((icon, index) => {
+    ICON_LIST.forEach((emoji, index) => {
       list.push(createCommand({
         id: `insert.icon.${index}`,
-        label: `图标 ${icon}`,
-        run: () => applyIcon(icon),
+        label: `图标 ${emoji}`,
+        run: () => applyIcon(toIconValue(index)),
         isEnabled: hasNodes,
       }));
     });
@@ -1125,13 +1190,13 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
             </button>
             {openPalette === 'icon' && (
               <div className={panelCls} onClick={(e) => e.stopPropagation()}>
-                {ICON_LIST.map((icon) => (
+                {ICON_LIST.map((emoji, index) => (
                   <button
-                    key={icon}
+                    key={emoji}
                     className={`text-base rounded hover:bg-black/10 ${isDark ? 'text-gray-100' : 'text-gray-800'}`}
-                    onClick={() => { applyIcon(icon); setOpenPalette(null); }}
+                    onClick={() => { applyIcon(toIconValue(index)); setOpenPalette(null); }}
                   >
-                    {icon}
+                    {emoji}
                   </button>
                 ))}
               </div>
