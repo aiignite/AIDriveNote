@@ -34,14 +34,14 @@ services:
       SSO_ENABLED: "${SSO_ENABLED:-false}"
       SSO_SECRET_KEY: "${SSO_SECRET_KEY:-}"
       SSO_ISSUER: "${SSO_ISSUER:-aidriveall}"
-      # 语音转写：remote 模式指向局域网 asr_gateway（见文件末尾注释）
+      # 语音转写：remote 模式指向本 compose 内的 asr_gateway 容器
       NOTE_ASR_MODE: "${NOTE_ASR_MODE:-remote}"
-      NOTE_ASR_REMOTE_URL: "${NOTE_ASR_REMOTE_URL:-}"
+      NOTE_ASR_REMOTE_URL: "${NOTE_ASR_REMOTE_URL:-http://asr_gateway:8090/api/v1/transcribe}"
       NOTE_ASR_REMOTE_API_KEY: "${NOTE_ASR_REMOTE_API_KEY:-}"
       NOTE_ASR_REMOTE_TIMEOUT: "${NOTE_ASR_REMOTE_TIMEOUT:-3600}"
       NOTE_ASR_FALLBACK_LOCAL: "${NOTE_ASR_FALLBACK_LOCAL:-false}"
       # local 兜底/降级参数（无 GPU 用 cpu/int8）
-      NOTE_WHISPER_MODEL: "${NOTE_WHISPER_MODEL:-medium}"
+      NOTE_WHISPER_MODEL: "${NOTE_WHISPER_MODEL:-small}"
       NOTE_WHISPER_LANGUAGE: "${NOTE_WHISPER_LANGUAGE:-zh}"
       NOTE_WHISPER_DEVICE: "${NOTE_WHISPER_DEVICE:-cpu}"
       NOTE_WHISPER_COMPUTE_TYPE: "${NOTE_WHISPER_COMPUTE_TYPE:-int8}"
@@ -73,28 +73,32 @@ services:
     networks:
       - appnet
 
-  # ── 局域网语音转写网关（可选，默认注释；需要 GPU 转写时取消注释）──
-  # 说明：网关为独立服务，使用自身 ASR_* 变量；需与 backend 的 NOTE_ASR_* 对应。
-  # 端口默认映射 8091:8090，避免与应用端口冲突。宿主机需装 ffmpeg、并准备 CUDA。
-  # asr_gateway:
-  #   build:
-  #     context: ./asr_gateway
-  #     dockerfile: Dockerfile          # 如无 Dockerfile，可改用下方 image
-  #   # image: aidrivenote/asr-gateway:latest
-  #   restart: unless-stopped
-  #   environment:
-  #     ASR_API_KEY: "${NOTE_ASR_REMOTE_API_KEY:?NOTE_ASR_REMOTE_API_KEY is required}"
-  #     ASR_MODEL: "${ASR_MODEL:-medium}"
-  #     ASR_LANGUAGE: "${ASR_LANGUAGE:-zh}"
-  #     ASR_DEVICE: "${ASR_DEVICE:-cpu}"          # 有 GPU 改 cuda
-  #     ASR_COMPUTE_TYPE: "${ASR_COMPUTE_TYPE:-int8}"  # 有 GPU 改 float16
-  #     ASR_PRELOAD: "${ASR_PRELOAD:-1}"
-  #     HF_ENDPOINT: "https://hf-mirror.com"
-  #     HF_HUB_DISABLE_XET: "1"
-  #   ports:
-  #     - "8091:8090"
-  #   networks:
-  #     - appnet
+  # ── 语音转写网关（本机 CPU 推理：small + int8）──
+  # 说明：网关使用自身 ASR_* 变量；ASR_API_KEY 复用 backend 的 NOTE_ASR_REMOTE_API_KEY，
+  #       只需配置一个密钥即可双向对齐。backend 经服务名访问 http://asr_gateway:8090。
+  asr_gateway:
+    build:
+      context: ./asr_gateway
+      dockerfile: Dockerfile
+      args:
+        # 构建期预下载的权重规格，与运行期 ASR_MODEL 保持一致可避免二次下载
+        ASR_PRELOAD_MODEL: ${ASR_MODEL:-small}
+    restart: unless-stopped
+    environment:
+      ASR_API_KEY: "${NOTE_ASR_REMOTE_API_KEY:?NOTE_ASR_REMOTE_API_KEY is required}"
+      ASR_MODEL: "${ASR_MODEL:-small}"
+      ASR_LANGUAGE: "${ASR_LANGUAGE:-zh}"
+      ASR_DEVICE: "${ASR_DEVICE:-cpu}"
+      ASR_COMPUTE_TYPE: "${ASR_COMPUTE_TYPE:-int8}"
+      ASR_PRELOAD: "${ASR_PRELOAD:-1}"
+    # 资源上限：本机仅 2 核 / 3.6GB，限制转写占用以免拖垮笔记接口
+    mem_limit: ${ASR_MEM_LIMIT:-1536m}
+    cpus: ${ASR_CPUS:-1.5}
+    ports:
+      # 仅回环暴露，便于本机调试：curl -H "X-API-Key: ..." http://127.0.0.1:8091/health
+      - "127.0.0.1:8091:8090"
+    networks:
+      - appnet
 
 volumes:
   postgres_data:
