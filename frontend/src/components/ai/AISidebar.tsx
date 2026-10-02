@@ -19,6 +19,10 @@ import ToolCallDisplay from './ToolCallDisplay';
 import ChatThinkingIndicator, { extractThinkingContent } from './ChatThinkingIndicator';
 import { stripAttachmentMarkers } from '../../utils/aiAttachmentDisplay';
 
+/** AI 抽屉可拖动的宽度范围（与设置页保持一致） */
+const SIDEBAR_MIN_WIDTH = 320;
+const SIDEBAR_MAX_WIDTH = 600;
+
 const AISidebar: React.FC = () => {
   const {
     aiOpen, closeAI, pageAIContext, bumpNotesRefresh, theme,
@@ -39,6 +43,56 @@ const AISidebar: React.FC = () => {
   const [pinnedSkillCodes, setPinnedSkillCodes] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  /** 拖动调整宽度时的起始状态（仅用于拖动计算，不参与渲染） */
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  /** 始终保存最新宽度，供拖动结束时持久化使用 */
+  const widthRef = useRef(sidebarWidth);
+  widthRef.current = sidebarWidth;
+
+  /**
+   * 拖动过程中：按鼠标水平位移换算新宽度并同步到全局状态。
+   * 抽屉贴右侧，因此向左拖动（clientX 减小）应让宽度变大。
+   * @param e 全局 mousemove 事件
+   */
+  const handleResizeMove = useCallback((e: MouseEvent) => {
+    const state = dragRef.current;
+    if (!state) return;
+    const next = state.startWidth + (state.startX - e.clientX);
+    setSidebarWidth(Math.min(Math.max(next, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH));
+  }, [setSidebarWidth]);
+
+  /**
+   * 结束拖动：移除全局监听、恢复光标，并把最终宽度写入用户偏好。
+   */
+  const handleResizeEnd = useCallback(() => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    window.removeEventListener('mousemove', handleResizeMove);
+    window.removeEventListener('mouseup', handleResizeEnd);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    void aiApi.updateSettings({ sidebarWidth: widthRef.current }).catch(() => {});
+  }, [handleResizeMove]);
+
+  /**
+   * 开始拖动：记录起始位置与宽度，并绑定全局监听。
+   * @param e 手柄上的 mousedown 事件
+   */
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startWidth: widthRef.current };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleResizeMove);
+    window.addEventListener('mouseup', handleResizeEnd);
+  }, [handleResizeMove, handleResizeEnd]);
+
+  // 组件卸载时兜底清理拖动监听，避免残留监听造成的异常
+  useEffect(() => () => {
+    window.removeEventListener('mousemove', handleResizeMove);
+    window.removeEventListener('mouseup', handleResizeEnd);
+  }, [handleResizeMove, handleResizeEnd]);
 
   const {
     messages, loading, streamingContent, applyingIndex,
@@ -235,13 +289,21 @@ const AISidebar: React.FC = () => {
   if (!aiOpen) return null;
 
   const currentAssistant = assistants.find(a => a.name === selectedAssistant);
-  const panelWidth = Math.min(Math.max(sidebarWidth, 320), 600);
+  const panelWidth = Math.min(Math.max(sidebarWidth, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH);
 
   return (
     <div
       className={`fixed inset-y-0 right-0 z-40 flex flex-col border-l shadow-xl ${isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}
       style={{ width: panelWidth, maxWidth: '100vw' }}
     >
+      {/* 左侧拖动条：按住可调整抽屉宽度 */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        title="拖动调整宽度"
+        onMouseDown={handleResizeStart}
+        className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize transition-colors hover:bg-orange-500/60"
+      />
       <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <Bot size={18} className="text-orange-500 shrink-0" />
