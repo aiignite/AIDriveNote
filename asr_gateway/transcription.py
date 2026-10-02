@@ -1,13 +1,15 @@
 """asr_gateway 的 Whisper 转写引擎（GPU / CPU）。
 
 基于 faster-whisper 实现音频转写：优先 CUDA，不可用时自动回退 ``cpu/int8``。
-非 wav 音频依赖宿主机 ffmpeg 转成 16k 单声道 wav 后再送入模型。
+音频统一经 ffmpeg 解码为 16k 单声道 float32 数组后再送入模型——详见
+:meth:`TranscriptionEngine._decode_to_array` 中对 PyAV 兼容性的说明。
 """
 from __future__ import annotations
 
 import logging
 import shutil
 import subprocess
+import wave
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -86,6 +88,58 @@ class TranscriptionEngine:
             )
         return self._models[model_size]
 
+    def _decode_to_array(self, path: Path):
+        """把任意音频解码为 16k 单声道 float32 数组。
+
+        为什么不用 faster-whisper 自带的解码：其内部走 ``av.open(..., metadata_errors="ignore")``，
+        而该参数在 PyAV 19 中已被移除，直接传文件会抛
+        ``TypeError: open() got an unexpected keyword argument 'metadata_errors'``。
+        这里改为用 ffmpeg CLI 统一转 16k 单声道 PCM wav，再用标准库 ``wave`` 读取为
+        numpy 数组，从而完全绕开 PyAV 的解码路径（模型对数组输入同样支持）。
+
+        @param path 待解码的音频文件路径
+        @returns float32 的一维波形数组，取值范围 [-1, 1]
+        """
+        import numpy as np
+
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError(
+                f"ffmpeg not found; cannot decode {path.suffix}. Install ffmpeg on this host."
+            )
+
+        tmp_wav = path.with_suffix(".16k.wav")
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(path),
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(tmp_wav),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=600,
+            )
+            with wave.open(str(tmp_wav), "rb") as w:
+                frames = w.readframes(w.getnframes())
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"ffmpeg decode failed: {exc}") from exc
+        finally:
+            if tmp_wav.exists():
+                try:
+                    tmp_wav.unlink()
+                except OSError:
+                    pass
+
+        return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
     def transcribe(
         self,
         path: Path,
@@ -103,39 +157,11 @@ class TranscriptionEngine:
         size = model_size or self.model_size
         model = self._get_model(size)
 
-        # 优先 16k 单声道 wav。无 ffmpeg 时非 wav（webm/opus）常会卡住或失败。
-        work = path
-        tmp_wav: Path | None = None
-        if path.suffix.lower() not in {".wav"}:
-            if not shutil.which("ffmpeg"):
-                raise RuntimeError(
-                    f"ffmpeg not found; cannot decode {path.suffix}. "
-                    "Install ffmpeg on this host, or upload WAV from AIDriveNote."
-                )
-            tmp_wav = path.with_suffix(".16k.wav")
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-i",
-                        str(path),
-                        "-ar",
-                        "16000",
-                        "-ac",
-                        "1",
-                        str(tmp_wav),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    timeout=600,
-                )
-                work = tmp_wav
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"ffmpeg convert failed: {exc}") from exc
+        # 先解码成波形数组，再交给模型（见 _decode_to_array 的兼容性说明）
+        audio = self._decode_to_array(path)
 
         segments_iter, info = model.transcribe(  # type: ignore[union-attr]
-            str(work),
+            audio,
             language=language or None,
             beam_size=1,
             vad_filter=True,
@@ -160,9 +186,4 @@ class TranscriptionEngine:
                     language=lang,
                 )
             )
-        if tmp_wav and tmp_wav.exists():
-            try:
-                tmp_wav.unlink()
-            except OSError:
-                pass
         return TranscribeResult(segments=out)
