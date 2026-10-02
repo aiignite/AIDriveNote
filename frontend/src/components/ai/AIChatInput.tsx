@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef } from 'react';
-import { Image, Paperclip, Send } from 'lucide-react';
+import { Image, Mic, Paperclip, Send, Square, X } from 'lucide-react';
 import PendingAttachmentPreview, { type AttachmentPreviewItem } from './PendingAttachmentPreview';
+import ChatSkillPicker from './ChatSkillPicker';
+import { useSpeechInput } from '../../hooks/useSpeechInput';
+import type { AISkill } from '../../services/ai/ai';
 
 export interface PendingAttachment {
   localId: string;
@@ -22,6 +25,12 @@ interface AIChatInputProps {
   onRemoveFile: (localId: string) => void;
   isDark?: boolean;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /** 可选技能列表（用于技能固定选择器） */
+  skills?: AISkill[];
+  /** 已固定的技能 code 列表 */
+  pinnedSkillCodes?: string[];
+  /** 切换技能固定状态 */
+  onToggleSkill?: (code: string) => void;
 }
 
 function generateId(): string {
@@ -51,6 +60,9 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
   onRemoveFile,
   isDark = false,
   inputRef,
+  skills = [],
+  pinnedSkillCodes = [],
+  onToggleSkill,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -96,6 +108,17 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
       onSend();
     }
   }, [onSend]);
+
+  /** 把识别出的最终文本追加到输入框（中英文之间按需补空格） */
+  const handleSpeechFinal = useCallback((text: string) => {
+    const needsSpace = Boolean(value) && /[a-zA-Z0-9]$/.test(value) && /^[a-zA-Z0-9]/.test(text);
+    onChange(`${value}${needsSpace ? ' ' : ''}${text}`);
+  }, [value, onChange]);
+
+  const speech = useSpeechInput({ onFinal: handleSpeechFinal });
+
+  // 已固定技能（用于 chip 展示）
+  const pinnedSkills = skills.filter(s => pinnedSkillCodes.includes(s.code));
 
   const previewItems: AttachmentPreviewItem[] = pendingFiles.map(pf => ({
     key: pf.localId,
@@ -157,13 +180,66 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
         >
           <Image size={16} />
         </button>
+        <button
+          type="button"
+          onClick={speech.toggle}
+          disabled={loading || !speech.supported}
+          className={`p-1.5 rounded-lg transition-colors disabled:opacity-50 ${
+            speech.listening
+              ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
+              : isDark
+                ? 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+          }`}
+          title={speech.supported ? (speech.listening ? '停止语音输入' : '语音输入') : '当前浏览器不支持语音输入'}
+        >
+          {speech.listening ? <Square size={16} /> : <Mic size={16} />}
+        </button>
+        {onToggleSkill && skills.length > 0 && (
+          <ChatSkillPicker
+            skills={skills}
+            pinnedCodes={pinnedSkillCodes}
+            onToggle={onToggleSkill}
+            isDark={isDark}
+            disabled={loading}
+          />
+        )}
       </div>
+
+      {pinnedSkills.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {pinnedSkills.map(s => (
+            <span
+              key={s.code}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${
+                isDark ? 'bg-orange-900/40 text-orange-300' : 'bg-orange-100 text-orange-700'
+              }`}
+            >
+              {s.name}
+              <button
+                type="button"
+                onClick={() => onToggleSkill?.(s.code)}
+                className="transition-opacity hover:opacity-70"
+                title="取消固定"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       <PendingAttachmentPreview
         className="mb-2"
         items={previewItems}
         onRemove={onRemoveFile}
       />
+
+      {(speech.listening || speech.interimText || speech.error) && (
+        <p className={`mb-1.5 line-clamp-2 text-xs ${speech.error ? 'text-red-500' : isDark ? 'text-orange-300/80' : 'text-orange-600/80'}`}>
+          {speech.error ?? (speech.interimText ? `识别中：${speech.interimText}` : '正在聆听…')}
+        </p>
+      )}
 
       <div className="flex items-end gap-2">
         <textarea

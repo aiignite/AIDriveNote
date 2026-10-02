@@ -228,7 +228,12 @@ const NotesPage: React.FC = () => {
     setPageAIContext({
       pageName: 'notes',
       moduleName: 'note',
-      recommendedAssistant: '笔记助手',
+      // 思维导图/流程图笔记默认推荐对应的专用设计助手
+      recommendedAssistant: selectedNote?.noteType === 'mindmap'
+        ? '思维导图设计助手'
+        : selectedNote?.noteType === 'flowchart'
+          ? '流程图设计助手'
+          : '笔记助手',
       noteType: selectedNote?.noteType,
       contextHint,
       quickActions: selectedNote

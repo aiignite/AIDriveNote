@@ -173,6 +173,8 @@ class ChatStreamRequest(BaseModel):
     model_id: Optional[str] = None
     page_context: Optional[dict[str, Any]] = None
     attachment_ids: Optional[list[str]] = None
+    # 手动固定的技能 code 列表；非空时跳过自动匹配，直接激活指定技能
+    force_skills: Optional[list[str]] = None
 
 
 class SkillOut(BaseModel):
@@ -204,6 +206,8 @@ class SkillCreate(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     priority: int = 50
     is_enabled: bool = True
+    # 适用笔记类型（写入 extra_config.applicable_note_types）；None 表示不限
+    applicable_note_types: Optional[list[str]] = None
 
 
 class SkillUpdate(BaseModel):
@@ -214,9 +218,12 @@ class SkillUpdate(BaseModel):
     keywords: Optional[list[str]] = None
     priority: Optional[int] = None
     is_enabled: Optional[bool] = None
+    # 适用笔记类型（写入 extra_config.applicable_note_types）；None 表示不修改
+    applicable_note_types: Optional[list[str]] = None
 
 
 def _skill_to_out(s: AISkill) -> dict[str, Any]:
+    extra = s.extra_config if isinstance(s.extra_config, dict) else {}
     return {
         "id": s.id,
         "code": s.code,
@@ -228,6 +235,7 @@ def _skill_to_out(s: AISkill) -> dict[str, Any]:
         "priority": s.priority,
         "isEnabled": s.is_enabled,
         "isBuiltin": s.is_builtin,
+        "applicableNoteTypes": extra.get("applicable_note_types"),
     }
 
 
@@ -776,6 +784,7 @@ async def create_skill(
         priority=body.priority,
         is_enabled=body.is_enabled,
         is_builtin=False,
+        extra_config={"applicable_note_types": body.applicable_note_types},
     )
     db.add(skill)
     await db.commit()
@@ -796,8 +805,15 @@ async def update_skill(
     skill = result.scalar_one_or_none()
     if not skill:
         raise NotFoundException("AISkill")
-    for k, v in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    # applicable_note_types 不是列字段，需合并进 extra_config 后单独持久化
+    applicable = data.pop("applicable_note_types", None)
+    for k, v in data.items():
         setattr(skill, k, v)
+    if "applicable_note_types" in body.model_fields_set:
+        extra = dict(skill.extra_config or {})
+        extra["applicable_note_types"] = applicable
+        skill.extra_config = extra
     await db.commit()
     await db.refresh(skill)
     return _skill_to_out(skill)
@@ -995,6 +1011,7 @@ async def chat_stream(
                 page_context=body.page_context,
                 model_id=body.model_id,
                 attachment_ids=body.attachment_ids,
+                force_skills=body.force_skills,
             ):
                 yield chunk
         except Exception as exc:

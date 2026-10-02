@@ -49,6 +49,51 @@ update_note 和 append_to_note 不会立即写入，需用户在对话框确认�
 4. 创建前先确认笔记类型
 """
 
+MINDMAP_ASSISTANT_PROMPT = """你是「思维导图设计助手」，擅长把自然语言描述转化为结构清晰、层级分明的思维导图 / 框架图。
+
+## 输出规范（simple-mind-map JSON）
+- 根节点为中心主题，其下按逻辑分层展开，建议 3~4 层，每层 3~7 个分支。
+- 每个节点必须是独立对象：{"data":{"text":"标签"},"children":[]}
+- 标签精炼（建议 ≤20 字），使用名词短语，不要写长句。
+- 严禁把整段描述塞进单个 data.text；必须拆分为多节点、多层级。
+- 根节点必须含 children，叶子节点 children 为空数组。
+
+## 可用工具
+- get_note — 读取当前笔记（include_full_content=true 获取完整结构）
+- create_note — 新建思维导图（note_type=mindmap）
+- update_note — 覆盖更新已有导图（生成预览，需用户确认）
+
+## 工作方式
+1. 若页面上下文含当前笔记 ID，先 get_note 了解现状。
+2. 依据用户描述设计结构，通过 create_note/update_note 提交预览，等待用户确认。
+3. 用中文简要说明分层思路（3~5 条），不要把 JSON 原文贴给用户。
+"""
+
+FLOWCHART_ASSISTANT_PROMPT = """你是「流程图设计助手」，擅长把自然语言描述转化为规范、可直接在 draw.io 编辑的流程图。
+
+## 输出规范（draw.io mxGraphModel XML）
+- 内容格式必须为 {"xml": "<mxGraphModel>...</mxGraphModel>"}。
+- 每个节点/连线用 mxCell 定义，必含 id、value、style；节点还需子 mxGeometry（x/y/width/height）。
+- 连线 mxCell 需含 edge="1"、source、target、parent="1"。
+- 节点样式约定：
+  - 开始/结束：ellipse;whiteSpace=wrap;html=1;arcSize=50
+  - 处理步骤：rounded=1;whiteSpace=wrap;html=1
+  - 判断分支：rhombus;whiteSpace=wrap;html=1
+  - 连线：edgeStyle=orthogonalEdgeStyle;rounded=0;html=1
+- 保持已有 mxCell 的 id 不变；新增节点使用新的唯一 id。
+- 严禁用纯文本列表代替 XML。
+
+## 可用工具
+- get_note — 读取当前笔记（含现有 XML）
+- create_note — 新建流程图（note_type=flowchart）
+- update_note — 覆盖更新已有流程图（生成预览，需用户确认）
+
+## 工作方式
+1. 先梳理步骤顺序与判断分支，再生成 XML。
+2. 通过 create_note/update_note 提交预览，等待用户确认。
+3. 用中文简要说明流程节点与分支，不要粘贴 XML 原文。
+"""
+
 BUILTIN_SKILLS = [
     {
         "code": "note_read_summarize",
@@ -134,6 +179,93 @@ BUILTIN_SKILLS = [
         "priority": 95,
         "extra_config": {"applicable_note_types": ["markdown", "rich_text"]},
     },
+    # ── 新增：思维导图 / 流程图“规范设计”类技能（自然语言 → 规范结构）──
+    {
+        "code": "mindmap_arch_design",
+        "name": "思维导图框架设计",
+        "keywords": ["设计导图", "框架图", "脑图设计", "梳理结构", "设计框架", "设计思维导图", "生成思维导图", "设计"],
+        "prompt_template": (
+            "用户希望依据自然语言描述设计思维导图/框架图。先 get_note(include_full_content=true) 了解现状；"
+            "生成规范 simple-mind-map JSON 树，通过 update_note（已有笔记）或 create_note（note_type=mindmap）提交预览。\n"
+            "结构要求：中心主题为根，一级/二级分支必须拆分为独立节点 "
+            "{\"data\":{\"text\":\"标签\"},\"children\":[]}；层级清晰、标签精炼（≤20 字）；"
+            "禁止把整段描述塞进单个 data.text。"
+        ),
+        "tool_names": ["get_note", "update_note", "create_note"],
+        "priority": 81,
+        "extra_config": {"applicable_note_types": ["mindmap"]},
+        "bind_note_assistant": False,
+    },
+    {
+        "code": "flowchart_design",
+        "name": "流程图规范设计",
+        "keywords": ["设计流程", "流程设计", "画流程", "画泳道", "画判断", "流程图设计", "设计"],
+        "prompt_template": (
+            "用户希望依据自然语言描述设计流程图。get_note(include_full_content=true) 获取现状（如有）；"
+            "生成规范 draw.io mxGraphModel XML，通过 update_note 或 create_note(note_type=flowchart) 提交预览。\n"
+            "节点规范：开始/结束用 ellipse+arcSize=50，处理用 rounded=1，判断用 rhombus；"
+            "每个 mxCell 必含 id/value/style，节点含子 mxGeometry（x/y/width/height）；"
+            "连线含 edge=1、source、target；保持已有 mxCell id 不变；禁止用纯文本树代替 XML。"
+        ),
+        "tool_names": ["get_note", "update_note", "create_note"],
+        "priority": 80,
+        "extra_config": {"applicable_note_types": ["flowchart"]},
+        "bind_note_assistant": False,
+    },
+    {
+        "code": "mindmap_from_text",
+        "name": "文本转思维导图",
+        "keywords": ["转成思维导图", "转成导图", "文本转导图", "大纲转导图", "转思维导图"],
+        "prompt_template": (
+            "用户希望把一段文本/大纲转换为思维导图。抽取要点，按层级生成 simple-mind-map JSON 树，"
+            "用 create_note(note_type=mindmap) 或 update_note 提交预览；多分支必须拆成独立节点。"
+        ),
+        "tool_names": ["get_note", "create_note", "update_note"],
+        "priority": 77,
+        "extra_config": {"applicable_note_types": ["mindmap"]},
+        "bind_note_assistant": False,
+    },
+    {
+        "code": "flowchart_from_text",
+        "name": "文本转流程图",
+        "keywords": ["转成流程图", "文本转流程", "大纲转流程", "转流程图"],
+        "prompt_template": (
+            "用户希望把一段文本/步骤转换为流程图。梳理顺序与分支，生成规范 draw.io mxGraphModel XML，"
+            "用 create_note(note_type=flowchart) 或 update_note 提交预览；禁止用纯文本树代替 XML。"
+        ),
+        "tool_names": ["get_note", "create_note", "update_note"],
+        "priority": 76,
+        "extra_config": {"applicable_note_types": ["flowchart"]},
+        "bind_note_assistant": False,
+    },
+]
+
+# 未绑定「笔记助手」、而是绑定到专用设计助手的技能 code 集合
+DESIGN_SKILL_CODES = {
+    "mindmap_arch_design",
+    "flowchart_design",
+    "mindmap_from_text",
+    "flowchart_from_text",
+}
+
+# 专用设计助手定义（技能按 code 关联，绑定到各自助手）
+DESIGN_ASSISTANTS = [
+    {
+        "name": "思维导图设计助手",
+        "description": "把自然语言描述转化为结构清晰的思维导图 / 框架图（simple-mind-map JSON）。",
+        "avatar": "🧠",
+        "role": "思维导图设计助手",
+        "system_prompt": MINDMAP_ASSISTANT_PROMPT,
+        "skill_codes": ["mindmap_arch_design", "mindmap_from_text", "note_mindmap_expand"],
+    },
+    {
+        "name": "流程图设计助手",
+        "description": "把自然语言描述转化为规范、可编辑的 draw.io 流程图（mxGraphModel XML）。",
+        "avatar": "🔀",
+        "role": "流程图设计助手",
+        "system_prompt": FLOWCHART_ASSISTANT_PROMPT,
+        "skill_codes": ["flowchart_design", "flowchart_from_text", "note_flowchart_expand"],
+    },
 ]
 
 
@@ -203,6 +335,7 @@ class AISeedService:
             db.add(assistant)
             await db.flush()
 
+        skill_by_code: dict[str, AISkill] = {}
         for item in BUILTIN_SKILLS:
             res = await db.execute(
                 select(AISkill).where(AISkill.code == item["code"], AISkill.is_deleted == False)  # noqa: E712
@@ -228,6 +361,8 @@ class AISeedService:
                 db.add(skill)
                 await db.flush()
 
+            skill_by_code[item["code"]] = skill
+
             pb_res = await db.execute(
                 select(PageSkillBinding).where(
                     PageSkillBinding.page_name == "notes",
@@ -237,6 +372,10 @@ class AISeedService:
             )
             if not pb_res.scalar_one_or_none():
                 db.add(PageSkillBinding(page_name="notes", skill_id=skill.id, weight=skill.priority))
+
+            # 设计类技能只绑定到专用设计助手，不绑定「笔记助手」，避免误命中
+            if item["code"] in DESIGN_SKILL_CODES:
+                continue
 
             ab_res = await db.execute(
                 select(AIAssistantSkillBinding).where(
@@ -249,5 +388,70 @@ class AISeedService:
                 db.add(AIAssistantSkillBinding(
                     assistant_id=assistant.id, skill_id=skill.id, weight=skill.priority,
                 ))
+
+        # 新增：专用设计助手（思维导图 / 流程图），并绑定各自技能
+        for spec in DESIGN_ASSISTANTS:
+            asst_res = await db.execute(
+                select(AIAssistant).where(
+                    AIAssistant.name == spec["name"],
+                    AIAssistant.is_deleted == False,  # noqa: E712
+                )
+            )
+            design_assistant = asst_res.scalar_one_or_none()
+            if design_assistant:
+                # 仅补全缺失字段，保留用户在 UI 中的修改
+                design_assistant.tools = note_tools
+                design_assistant.is_system = True
+                if not design_assistant.system_prompt:
+                    design_assistant.system_prompt = spec["system_prompt"]
+                if not design_assistant.description:
+                    design_assistant.description = spec["description"]
+                if not design_assistant.avatar:
+                    design_assistant.avatar = spec["avatar"]
+                if not design_assistant.role:
+                    design_assistant.role = spec["role"]
+                if not design_assistant.category:
+                    design_assistant.category = "Design"
+                if not design_assistant.model:
+                    design_assistant.model = model_name
+                if design_assistant.temperature is None:
+                    design_assistant.temperature = 0.3
+                if design_assistant.max_tokens is None:
+                    design_assistant.max_tokens = 16384
+            else:
+                design_assistant = AIAssistant(
+                    name=spec["name"],
+                    description=spec["description"],
+                    avatar=spec["avatar"],
+                    role=spec["role"],
+                    category="Design",
+                    system_prompt=spec["system_prompt"],
+                    model=model_name,
+                    temperature=0.3,
+                    max_tokens=16384,
+                    is_system=True,
+                    is_default=False,
+                    tools=note_tools,
+                )
+                db.add(design_assistant)
+                await db.flush()
+
+            for code in spec["skill_codes"]:
+                skill = skill_by_code.get(code)
+                if not skill:
+                    continue
+                dab_res = await db.execute(
+                    select(AIAssistantSkillBinding).where(
+                        AIAssistantSkillBinding.assistant_id == design_assistant.id,
+                        AIAssistantSkillBinding.skill_id == skill.id,
+                        AIAssistantSkillBinding.is_deleted == False,  # noqa: E712
+                    )
+                )
+                if not dab_res.scalar_one_or_none():
+                    db.add(AIAssistantSkillBinding(
+                        assistant_id=design_assistant.id,
+                        skill_id=skill.id,
+                        weight=skill.priority,
+                    ))
 
         await db.commit()

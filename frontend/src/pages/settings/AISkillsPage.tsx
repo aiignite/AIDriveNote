@@ -18,6 +18,24 @@ import { aiApi, type AISkill, type AISkillInput, type SkillBindingItem } from '.
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { SkillForm } from '../../components/ai/SkillForm';
 
+/** 适用笔记类型筛选项（值需与后端约定一致） */
+const NOTE_TYPE_FILTERS: Array<{ value: string; label: string }> = [
+  { value: 'all', label: '全部类型' },
+  { value: 'markdown', label: 'Markdown' },
+  { value: 'rich_text', label: '富文本' },
+  { value: 'mindmap', label: '思维导图' },
+  { value: 'flowchart', label: '流程图' },
+];
+
+/**
+ * 把技能适用笔记类型转换成中文标签列表
+ * @param types 后端下发的适用类型值数组
+ * @returns 中文标签数组（空数组表示不限）
+ */
+const noteTypeLabels = (types?: string[] | null): string[] =>
+  NOTE_TYPE_FILTERS.filter((option) => option.value !== 'all' && (types || []).includes(option.value))
+    .map((option) => option.label);
+
 const AISkillsPage: React.FC = () => {
   const [skills, setSkills] = useState<AISkill[]>([]);
   const [pageBindings, setPageBindings] = useState<SkillBindingItem[]>([]);
@@ -26,6 +44,7 @@ const AISkillsPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [showBuiltinOnly, setShowBuiltinOnly] = useState(false);
+  const [noteTypeFilter, setNoteTypeFilter] = useState('all');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingSkill, setEditingSkill] = useState<AISkill | null>(null);
@@ -57,6 +76,9 @@ const AISkillsPage: React.FC = () => {
     const keyword = deferredSearchTerm.trim().toLowerCase();
     return skills.filter((skill) => {
       if (showBuiltinOnly && !skill.isBuiltin) return false;
+      if (noteTypeFilter !== 'all' && !(skill.applicableNoteTypes || []).includes(noteTypeFilter)) {
+        return false;
+      }
       if (!keyword) return true;
       return [skill.name, skill.code, skill.description, ...skill.keywords, ...skill.toolNames]
         .filter(Boolean)
@@ -64,7 +86,7 @@ const AISkillsPage: React.FC = () => {
         .toLowerCase()
         .includes(keyword);
     });
-  }, [deferredSearchTerm, showBuiltinOnly, skills]);
+  }, [deferredSearchTerm, showBuiltinOnly, noteTypeFilter, skills]);
 
   const isPageSkillEnabled = (skillId: string) => {
     const binding = pageBindings.find((item) => item.skillId === skillId);
@@ -258,6 +280,18 @@ const AISkillsPage: React.FC = () => {
             />
           </div>
           <div className="flex items-center gap-3">
+            <select
+              value={noteTypeFilter}
+              onChange={(event) => setNoteTypeFilter(event.target.value)}
+              className="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 outline-none focus:ring-2 focus:ring-orange-500"
+              title="按适用笔记类型筛选"
+            >
+              {NOTE_TYPE_FILTERS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             <button
               onClick={() => setShowBuiltinOnly((f) => !f)}
               className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border ${
@@ -378,6 +412,18 @@ const AISkillsPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
+                {noteTypeLabels(skill.applicableNoteTypes).length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 mt-3">
+                    {noteTypeLabels(skill.applicableNoteTypes).map((label) => (
+                      <span
+                        key={label}
+                        className="px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/30 text-xs text-blue-700 dark:text-blue-300"
+                      >
+                        适用：{label}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 {skill.toolNames.length > 0 ? (
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-3 truncate" title={skill.toolNames.join(', ')}>
                     工具：{skill.toolNames.join('、')}
