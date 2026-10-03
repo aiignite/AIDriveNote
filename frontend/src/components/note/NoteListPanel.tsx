@@ -10,6 +10,7 @@ import {
   MoreHorizontal, Trash2, ArrowUpDown, Folder, FolderOpen,
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
   BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, Download,
+  PanelLeftClose,
 } from 'lucide-react';
 import type { Note, NoteFolder, NoteTag } from '../../services/note';
 
@@ -124,6 +125,10 @@ export interface NoteListPanelProps {
   onRefresh?: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  /** 折叠左侧列表面板 */
+  onToggleCollapse?: () => void;
+  /** 移动端窄屏布局：常显操作入口、隐藏桌面专属控件 */
+  isMobile?: boolean;
 }
 
 const NoteListPanel: React.FC<NoteListPanelProps> = ({
@@ -162,6 +167,8 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   onRefresh,
   isFullscreen = false,
   onToggleFullscreen,
+  onToggleCollapse,
+  isMobile = false,
 }) => {
   const [internalCategory, setInternalCategory] = useState<NoteCategory>({ type: 'all' });
   const selectedCategory = selectedCategoryProp ?? internalCategory;
@@ -410,7 +417,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         key={note.id}
         onClick={() => onSelectNote(note)}
         onContextMenu={(e) => handleContextMenu(e, 'note', note.id)}
-        className={`group flex items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg mx-1 transition-all ${
+        className={`group flex items-center gap-2.5 px-3 py-2.5 md:py-2 cursor-pointer rounded-lg mx-1 transition-all ${
           isSelected
             ? (isDark ? 'bg-orange-900/30' : 'bg-orange-50')
             : (isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50')
@@ -453,10 +460,10 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             </span>
           </div>
         </div>
-        {/* Three-dot menu */}
+        {/* Three-dot menu：触屏无 hover，移动端常显 */}
         <button
           onClick={e => { e.stopPropagation(); handleContextMenu(e, 'note', note.id); }}
-          className={`p-0.5 rounded opacity-0 group-hover:opacity-100 transition ${isDark ? 'hover:bg-gray-600 text-gray-400' : 'hover:bg-gray-200 text-gray-400'}`}
+          className={`p-1.5 md:p-0.5 rounded transition ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} ${isDark ? 'hover:bg-gray-600 text-gray-400' : 'hover:bg-gray-200 text-gray-400'}`}
         >
           <MoreHorizontal size={14} />
         </button>
@@ -517,11 +524,11 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               </span>
             ) : null;
           })()}
-          {/* Hover actions */}
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          {/* Hover actions：移动端常显，避免触屏无法触发 */}
+          <div className={`flex items-center gap-0.5 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
             <button
               onClick={e => { e.stopPropagation(); startNewFolder(folder.id); }}
-              className={`p-0.5 rounded ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-400 hover:text-gray-700'}`}
+              className={`p-1.5 md:p-0.5 rounded ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-400 hover:text-gray-700'}`}
               title="新建子文件夹"
             >
               <FolderPlus size={13} />
@@ -598,9 +605,20 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     <div className={`h-full flex flex-col ${isDark ? 'bg-[#15232a]' : 'bg-white'}`}>
       {/* Header */}
       <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
-        <h3 className={`text-sm font-semibold ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
-          笔记 <span className="text-xs font-normal text-gray-400">({notes.length})</span>
-        </h3>
+        <div className="flex items-center gap-1.5 min-w-0">
+          {onToggleCollapse ? (
+            <button
+              onClick={() => onToggleCollapse()}
+              className={`p-1 -ml-1 rounded-md transition-colors ${isDark ? 'text-gray-400 hover:text-white hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+              title="折叠侧栏"
+            >
+              <PanelLeftClose size={15} />
+            </button>
+          ) : null}
+          <h3 className={`text-sm font-semibold truncate ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+            笔记 <span className="text-xs font-normal text-gray-400">({notes.length})</span>
+          </h3>
+        </div>
         <div className="flex items-center gap-1">
           {!isTrashView ? (
             <button
@@ -625,7 +643,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
             </button>
           ) : null}
-          {onToggleFullscreen ? (
+          {!isMobile && onToggleFullscreen ? (
             <button
               onClick={() => onToggleFullscreen()}
               className={`p-1.5 rounded-md transition-colors ${isDark ? 'text-gray-400 hover:text-white hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
@@ -759,7 +777,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             ref={searchInputRef}
             value={searchQuery}
             onChange={e => onSearchChange(e.target.value)}
-            placeholder="搜索笔记 (⌘+⇧+F)"
+            placeholder={isMobile ? '搜索笔记' : '搜索笔记 (⌘+⇧+F)'}
             className={`w-full pl-8 pr-3 py-1.5 text-sm rounded-lg border outline-none transition-colors ${
               isDark
                 ? 'bg-gray-800 border-gray-600 text-white placeholder-gray-500 focus:border-orange-500'
@@ -903,7 +921,11 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         <div
           ref={contextMenuRef}
           className={`fixed rounded-xl shadow-xl border z-[9999] overflow-hidden py-1 w-40 ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          style={{
+            // 钳制到视口内，避免在屏幕右 / 下边缘处溢出（移动端点击三点菜单时尤为明显）
+            left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 168)),
+            top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 260)),
+          }}
         >
           {contextMenu.type === 'note' && isTrashView && (
             <>
