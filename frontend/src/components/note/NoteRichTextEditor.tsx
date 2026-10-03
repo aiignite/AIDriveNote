@@ -19,6 +19,7 @@ import {
   Undo2, Redo2,
   AlignLeft, AlignCenter, AlignRight,
   Link2, Highlighter, Palette, Eraser, Table, Minus, Quote, ImagePlus, ChevronDown, Mic, AudioLines,
+  Expand, Shrink,
 } from 'lucide-react';
 import { parseBlockNoteContent } from '../../utils/blocknoteContent';
 import { uploadImageAsDataUrl } from '../../utils/blocknoteImageUpload';
@@ -234,6 +235,18 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const [currentBlockType, setCurrentBlockType] = useState<string>('paragraph');
   /** 当前大纲条目（仅在变化时更新，保证上报引用稳定） */
   const [outlineItems, setOutlineItems] = useState<NoteOutlineItem[]>([]);
+  /** 是否处于全屏编辑（固定定位铺满视口，行为与 Markdown 编辑器一致） */
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  /** 全屏时按 Esc 退出 */
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsFullscreen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isFullscreen]);
 
   /**
    * 从当前光标位置推断下拉选中值
@@ -829,7 +842,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   }, [outlineItems, handleOutlineSelect, onOutlineChange, readOnly]);
 
   return (
-    <div className="note-rich-text-editor w-full h-full flex flex-col overflow-hidden min-h-0">
+    <div className={`note-rich-text-editor w-full h-full flex flex-col overflow-hidden min-h-0 ${isFullscreen ? `fixed inset-0 z-[99999] ${isDark ? 'bg-gray-900' : 'bg-white'}` : ''}`}>
       {!readOnly && (
         <div className={`flex items-center gap-0.5 px-3 py-1.5 border-b shrink-0 flex-wrap ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50/50'}`}>
           <button type="button" className={btnCls} onClick={undo} title="撤销 (Ctrl+Z)"><Undo2 size={16} /></button>
@@ -896,6 +909,15 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={() => setAlignment('left')} title="左对齐"><AlignLeft size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('center')} title="居中"><AlignCenter size={16} /></button>
           <button type="button" className={btnCls} onClick={() => setAlignment('right')} title="右对齐"><AlignRight size={16} /></button>
+          <div className={sepCls} />
+          <button
+            type="button"
+            className={btnCls}
+            onClick={() => setIsFullscreen(v => !v)}
+            title={isFullscreen ? '退出全屏' : '全屏'}
+          >
+            {isFullscreen ? <Shrink size={16} /> : <Expand size={16} />}
+          </button>
         </div>
       )}
       <div className="flex-1 min-h-0 overflow-auto flex flex-col">

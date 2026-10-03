@@ -27,6 +27,7 @@ import {
   Smile, Image, Link2, StickyNote, Tag, Rows3, Spline,
   Maximize2, Minimize2, Focus, ZoomIn, ZoomOut,
   Map, Search, Palette, LayoutGrid, ListTree,
+  Expand, Shrink,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import SimpleMindMap from 'simple-mind-map';
@@ -331,6 +332,22 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
   const [openPalette, setOpenPalette] = useState<null | 'fill' | 'color' | 'border' | 'line' | 'icon'>(null);
   /** 搜索关键词 */
   const [searchText, setSearchText] = useState('');
+  /** 是否处于全屏编辑（固定定位铺满视口，行为与 Markdown 编辑器一致） */
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  /** 全屏切换后容器尺寸变化，通知思维导图重算画布尺寸；全屏时支持 Esc 退出 */
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => mindMapRef.current?.resize?.());
+    if (!isFullscreen) return () => cancelAnimationFrame(raf);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsFullscreen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isFullscreen]);
 
   onChangeRef.current = onChange;
   onNodeClickRef.current = onNodeClick;
@@ -1101,7 +1118,7 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
   );
 
   return (
-    <div className={`w-full h-full flex flex-col ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+    <div className={`w-full h-full flex flex-col ${isDark ? 'bg-gray-800' : 'bg-gray-50'} ${isFullscreen ? 'fixed inset-0 z-[99999]' : ''}`}>
       {!readOnly && (
         <div className={`flex items-center gap-1 px-3 py-1.5 border-b flex-wrap ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
           {/* 节点操作 */}
@@ -1295,6 +1312,17 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
               ))}
             </select>
           </div>
+
+          <div className={sepCls} />
+
+          {/* 全屏 */}
+          <button
+            onClick={() => setIsFullscreen(v => !v)}
+            className={btnCls}
+            title={isFullscreen ? '退出全屏' : '全屏'}
+          >
+            {isFullscreen ? <Shrink size={16} /> : <Expand size={16} />}
+          </button>
         </div>
       )}
 

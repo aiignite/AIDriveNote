@@ -9,6 +9,7 @@ import {
   type AISkill,
 } from '../../services/ai/ai';
 import { useApp } from '../../contexts/AppContext';
+import { useIsMobile } from '../../hooks/useMobile';
 import { useAIChat } from '../../hooks/useAIChat';
 import NoteChangeConfirmCard from './NoteChangeConfirmCard';
 import AIChatMarkdown from './AIChatMarkdown';
@@ -29,6 +30,8 @@ const AISidebar: React.FC = () => {
     aiPreset, clearAIPreset, sidebarWidth, setSidebarWidth,
   } = useApp();
   const isDark = theme === 'dark';
+  // 移动端：抽屉铺满整屏，禁用宽度拖拽
+  const isMobile = useIsMobile();
 
   const [assistants, setAssistants] = useState<AIAssistant[]>([]);
   const [models, setModels] = useState<AIModel[]>([]);
@@ -293,17 +296,19 @@ const AISidebar: React.FC = () => {
 
   return (
     <div
-      className={`fixed inset-y-0 right-0 z-40 flex flex-col border-l shadow-xl ${isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}
-      style={{ width: panelWidth, maxWidth: '100vw' }}
+      className={`fixed inset-y-0 right-0 z-40 flex flex-col border-l shadow-xl w-full md:w-auto safe-top safe-bottom ${isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}
+      style={{ width: isMobile ? undefined : panelWidth, maxWidth: '100vw' }}
     >
-      {/* 左侧拖动条：按住可调整抽屉宽度 */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        title="拖动调整宽度"
-        onMouseDown={handleResizeStart}
-        className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize transition-colors hover:bg-orange-500/60"
-      />
+      {/* 左侧拖动条（桌面专属）：按住可调整抽屉宽度 */}
+      {!isMobile && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="拖动调整宽度"
+          onMouseDown={handleResizeStart}
+          className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize transition-colors hover:bg-orange-500/60"
+        />
+      )}
       <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <Bot size={18} className="text-orange-500 shrink-0" />

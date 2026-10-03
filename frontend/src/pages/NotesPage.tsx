@@ -7,11 +7,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FileText,
-  Code2, Brain, GitFork,
+  Code2, Brain, GitFork, PanelLeftOpen,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../contexts/AppContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useIsMobile } from '../hooks/useMobile';
 import { buildNoteQuickActions } from '../utils/noteAIActions';
 import { isNetworkError } from '../services/client';
 import {
@@ -34,6 +35,8 @@ const NotesPage: React.FC = () => {
   const { user } = useAuth();
   const userId = user?.id ?? null;
   const isDark = theme === 'dark';
+  // 移动端：窄屏自动切换为单列布局（列表与编辑器互斥全宽显示）
+  const isMobile = useIsMobile();
 
   // Notes data
   const [notes, setNotes] = useState<Note[]>([]);
@@ -58,6 +61,20 @@ const NotesPage: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const dragStartXRef = useRef(0);
   const dragStartWidthRef = useRef(0);
+
+  // 左侧列表面板折叠状态，持久化到本地，刷新后保持
+  const [leftCollapsed, setLeftCollapsed] = useState(
+    () => localStorage.getItem('note_sidebar_collapsed') === '1',
+  );
+
+  /**
+   * 切换左侧列表面板折叠状态并持久化。
+   * @param collapsed 是否折叠
+   */
+  const toggleLeftCollapsed = useCallback((collapsed: boolean) => {
+    setLeftCollapsed(collapsed);
+    localStorage.setItem('note_sidebar_collapsed', collapsed ? '1' : '0');
+  }, []);
 
   // Debounce search input
   useEffect(() => {
@@ -499,6 +516,8 @@ const NotesPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // 移动端默认停留在列表页，不自动跳进上次打开的笔记
+    if (isMobile) return;
     if (notes.length === 0) return;
     const lastId = localStorage.getItem('note_last_opened_id');
     if (lastId && !selectedNote) {
@@ -534,109 +553,147 @@ const NotesPage: React.FC = () => {
 
   const combinedRefreshTrigger = editorRefreshTrigger + notesRefreshToken;
 
-  return (
-    <div className={`h-[calc(100vh-56px)] flex overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50' : ''} ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
-      {/* Left: Note list panel */}
-        <div
-          className={`shrink-0 border-r ${isDark ? 'border-gray-700' : 'border-gray-200'}`}
-          style={{ width: leftWidth }}
-        >
-          <NoteListPanel
-            notes={notes}
-            folders={folders}
-            allTags={allTags}
-            notesTotal={notesTotal}
-            selectedNoteId={selectedNote?.id || null}
-            onSelectNote={handleSelectNote}
-            onCreateNote={handleCreateNote}
-            onDeleteNote={handleDeleteNote}
-            onRestoreNote={handleRestoreNote}
-            onPermanentDeleteNote={handlePermanentDeleteNote}
-            onDuplicateNote={handleDuplicateNote}
-            onPinNote={handlePinNote}
-            onToggleFavorite={handleToggleFavorite}
-            onMoveNote={handleMoveNote}
-            onCreateFolder={handleCreateFolder}
-            onRenameFolder={handleRenameFolder}
-            onDeleteFolder={handleDeleteFolder}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            filterType={filterType}
-            onFilterTypeChange={setFilterType}
-            selectedTagIds={selectedTagIds}
-            onSelectedTagIdsChange={setSelectedTagIds}
-            onOpenTemplateGallery={() => setShowTemplateGallery(true)}
-            selectedCategory={selectedCategory}
-            onCategoryChange={setSelectedCategory}
-            searchInputRef={searchInputRef}
-            loading={loading}
-            isDark={isDark}
-            onRefresh={fetchNotes}
-            isFullscreen={isFullscreen}
-            onToggleFullscreen={() => setIsFullscreen(f => !f)}
-          />
-        </div>
+  /** 切到移动端时退出全屏：移动端不显示全屏按钮，否则会无法退出 */
+  useEffect(() => {
+    if (isMobile && isFullscreen) setIsFullscreen(false);
+  }, [isMobile, isFullscreen]);
 
-        {/* Resize handle */}
-        <div
-          onMouseDown={handleMouseDown}
-          className={`w-1 cursor-col-resize hover:bg-orange-500/50 transition-colors shrink-0 ${isDragging ? 'bg-orange-500/50' : ''}`}
-        />
+  /** 左侧笔记列表面板：移动端与桌面端共用；折叠 / 全屏为桌面专属能力，移动端不传 */
+  const noteListPanelEl = (
+    <NoteListPanel
+      notes={notes}
+      folders={folders}
+      allTags={allTags}
+      notesTotal={notesTotal}
+      selectedNoteId={selectedNote?.id || null}
+      onSelectNote={handleSelectNote}
+      onCreateNote={handleCreateNote}
+      onDeleteNote={handleDeleteNote}
+      onRestoreNote={handleRestoreNote}
+      onPermanentDeleteNote={handlePermanentDeleteNote}
+      onDuplicateNote={handleDuplicateNote}
+      onPinNote={handlePinNote}
+      onToggleFavorite={handleToggleFavorite}
+      onMoveNote={handleMoveNote}
+      onCreateFolder={handleCreateFolder}
+      onRenameFolder={handleRenameFolder}
+      onDeleteFolder={handleDeleteFolder}
+      searchQuery={searchQuery}
+      onSearchChange={setSearchQuery}
+      filterType={filterType}
+      onFilterTypeChange={setFilterType}
+      selectedTagIds={selectedTagIds}
+      onSelectedTagIdsChange={setSelectedTagIds}
+      onOpenTemplateGallery={() => setShowTemplateGallery(true)}
+      selectedCategory={selectedCategory}
+      onCategoryChange={setSelectedCategory}
+      searchInputRef={searchInputRef}
+      loading={loading}
+      isDark={isDark}
+      onRefresh={fetchNotes}
+      isMobile={isMobile}
+      isFullscreen={isFullscreen}
+      onToggleFullscreen={isMobile ? undefined : () => setIsFullscreen(f => !f)}
+      onToggleCollapse={isMobile ? undefined : () => toggleLeftCollapsed(true)}
+    />
+  );
 
-        {/* Right: Editor panel */}
-        <div className="flex-1 min-w-0 h-full min-h-0">
-          {selectedNote ? (
-            <NoteEditorPanel
-              note={selectedNote}
-              folders={folders}
-              allTags={allTags}
-              onNoteUpdated={handleNoteUpdated}
-              onTagsChanged={handleEditorTagsChanged}
-              onDuplicateNote={handleDuplicateNote}
-              onDeleteNote={handleDeleteNote}
-              onMoveNote={handleMoveNote}
-              onToggleFullscreen={() => setIsFullscreen(f => !f)}
-              isFullscreen={isFullscreen}
-              isDark={isDark}
-              refreshTrigger={combinedRefreshTrigger}
-            />
-          ) : (
-            <div className={`h-full flex flex-col items-center justify-center ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500/10 to-amber-500/10 flex items-center justify-center mb-4">
-                <FileText size={28} className={isDark ? 'text-gray-600' : 'text-gray-300'} />
-              </div>
-              <h3 className={`text-lg font-medium mb-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                选择一个笔记开始编辑
-              </h3>
-              <p className={`text-sm mb-6 ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
-                或创建一个新笔记
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { type: 'markdown', label: 'Markdown', icon: <Code2 size={20} />, color: 'from-green-500 to-emerald-600' },
-                  { type: 'mindmap', label: '思维导图', icon: <Brain size={20} />, color: 'from-orange-500 to-red-500' },
-                  { type: 'rich_text', label: '富文本', icon: <FileText size={20} />, color: 'from-orange-500 to-orange-600' },
-                  { type: 'flowchart', label: 'Drawio', icon: <GitFork size={20} />, color: 'from-orange-500 to-amber-600' },
-                ].map(item => (
-                  <button
-                    key={item.type}
-                    onClick={() => handleCreateNote(item.type)}
-                    className={`flex flex-col items-center gap-2 px-6 py-4 rounded-xl border transition-all hover:scale-105 hover:shadow-md ${
-                      isDark
-                        ? 'border-gray-700 bg-gray-800/50 hover:border-gray-600 text-gray-200'
-                        : 'border-gray-200 bg-white hover:border-gray-300 text-gray-700'
-                    }`}
-                  >
-                    <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${item.color} flex items-center justify-center text-white`}>
-                      {item.icon}
-                    </div>
-                    <span className="text-sm font-medium">{item.label}</span>
-                  </button>
-                ))}
-              </div>
+  /** 编辑器面板：移动端传入 onBack 以支持返回列表，桌面端不显示返回按钮 */
+  const editorPanelEl = selectedNote ? (
+    <NoteEditorPanel
+      note={selectedNote}
+      folders={folders}
+      allTags={allTags}
+      onNoteUpdated={handleNoteUpdated}
+      onTagsChanged={handleEditorTagsChanged}
+      onDuplicateNote={handleDuplicateNote}
+      onDeleteNote={handleDeleteNote}
+      onMoveNote={handleMoveNote}
+      onToggleFullscreen={() => setIsFullscreen(f => !f)}
+      isFullscreen={isFullscreen}
+      isDark={isDark}
+      refreshTrigger={combinedRefreshTrigger}
+      onBack={isMobile ? () => setSelectedNote(null) : undefined}
+    />
+  ) : (
+    <div className={`h-full flex flex-col items-center justify-center ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
+      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500/10 to-amber-500/10 flex items-center justify-center mb-4">
+        <FileText size={28} className={isDark ? 'text-gray-600' : 'text-gray-300'} />
+      </div>
+      <h3 className={`text-lg font-medium mb-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+        选择一个笔记开始编辑
+      </h3>
+      <p className={`text-sm mb-6 ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+        或创建一个新笔记
+      </p>
+      <div className="grid grid-cols-2 gap-3">
+        {[
+          { type: 'markdown', label: 'Markdown', icon: <Code2 size={20} />, color: 'from-green-500 to-emerald-600' },
+          { type: 'mindmap', label: '思维导图', icon: <Brain size={20} />, color: 'from-orange-500 to-red-500' },
+          { type: 'rich_text', label: '富文本', icon: <FileText size={20} />, color: 'from-orange-500 to-orange-600' },
+          { type: 'flowchart', label: 'Drawio', icon: <GitFork size={20} />, color: 'from-orange-500 to-amber-600' },
+        ].map(item => (
+          <button
+            key={item.type}
+            onClick={() => handleCreateNote(item.type)}
+            className={`flex flex-col items-center gap-2 px-6 py-4 rounded-xl border transition-all hover:scale-105 hover:shadow-md ${
+              isDark
+                ? 'border-gray-700 bg-gray-800/50 hover:border-gray-600 text-gray-200'
+                : 'border-gray-200 bg-white hover:border-gray-300 text-gray-700'
+            }`}
+          >
+            <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${item.color} flex items-center justify-center text-white`}>
+              {item.icon}
             </div>
-          )}
+            <span className="text-sm font-medium">{item.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={`h-full flex overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50' : ''} ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
+      {isMobile ? (
+        /* 移动端：单列前进 / 返回。未选中显示列表，选中显示全屏编辑器（顶部带返回按钮） */
+        <div className="flex-1 min-w-0 h-full min-h-0">
+          {selectedNote ? editorPanelEl : noteListPanelEl}
         </div>
+      ) : leftCollapsed ? (
+        /* 桌面端 · 折叠态：收成窄条，仅保留展开按钮 */
+        <div className={`w-9 shrink-0 flex flex-col items-center pt-3 border-r ${isDark ? 'border-gray-700 bg-[#15232a]' : 'border-gray-200 bg-white'}`}>
+          <button
+            onClick={() => toggleLeftCollapsed(false)}
+            className={`p-1.5 rounded-md transition-colors ${isDark ? 'text-gray-400 hover:text-white hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+            title="展开侧栏"
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        </div>
+      ) : (
+        /* 桌面端 · 展开态：笔记列表 + 可拖拽分隔条 */
+        <>
+          <div
+            className={`shrink-0 border-r ${isDark ? 'border-gray-700' : 'border-gray-200'}`}
+            style={{ width: leftWidth }}
+          >
+            {noteListPanelEl}
+          </div>
+
+          {/* Resize handle */}
+          <div
+            onMouseDown={handleMouseDown}
+            className={`w-1 cursor-col-resize hover:bg-orange-500/50 transition-colors shrink-0 ${isDragging ? 'bg-orange-500/50' : ''}`}
+          />
+        </>
+      )}
+
+      {/* 桌面端 · 右侧编辑器面板（移动端已在上方单列渲染） */}
+      {!isMobile && (
+        <div className="flex-1 min-w-0 h-full min-h-0">
+          {editorPanelEl}
+        </div>
+      )}
 
       {/* Ctrl+N new note popover */}
       {showNewNotePopover && (

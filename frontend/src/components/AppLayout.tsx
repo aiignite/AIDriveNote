@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom';
 import { Bot, LogOut, Moon, Settings, Sun } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useApp } from '../contexts/AppContext';
+import { useIsMobile } from '../hooks/useMobile';
 import { aiApi } from '../services/ai/ai';
 import Logo from './Logo';
 import OfflineBanner from './OfflineBanner';
+import InstallPrompt from './InstallPrompt';
 
 const AISidebar = lazy(() => import('../components/ai/AISidebar'));
 
@@ -13,6 +15,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, logout } = useAuth();
   const { theme, toggleTheme, openAI, aiOpen, sidebarWidth, setSidebarWidth } = useApp();
   const isDark = theme === 'dark';
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     void aiApi.getSettings().then(s => {
@@ -57,14 +60,15 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     return () => document.removeEventListener('keydown', handler);
   }, [openAI]);
 
-  const aiPadding = aiOpen ? sidebarWidth : 0;
+  const aiPadding = isMobile ? 0 : (aiOpen ? sidebarWidth : 0);
 
   return (
-    <div className={`min-h-screen flex flex-col ${isDark ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
-      <header className={`h-14 shrink-0 flex items-center justify-between px-4 border-b ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
+    <div className={`app-viewport flex flex-col ${isDark ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
+      {/* 用 min-h-14 而非 h-14：safe-top 的内边距需要撑高头部，固定高度会把内容压扁 */}
+      <header className={`min-h-14 shrink-0 flex items-center justify-between px-3 md:px-4 border-b safe-top safe-x ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
         <Link to="/" className="flex items-center gap-2.5 shrink-0">
           <Logo size={30} />
-          <span className={`font-bold text-base tracking-tight ${isDark ? 'text-white' : 'text-gray-900'}`}>
+          <span className={`font-bold text-base tracking-tight hidden sm:inline ${isDark ? 'text-white' : 'text-gray-900'}`}>
             AIDriveNote
           </span>
         </Link>
@@ -85,6 +89,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         </div>
       </header>
       <OfflineBanner />
+      <InstallPrompt />
       <div className="flex flex-1 min-h-0" style={{ paddingRight: aiPadding }}>
         <main className="flex-1 min-w-0 min-h-0 flex flex-col">{children}</main>
         <Suspense fallback={null}>

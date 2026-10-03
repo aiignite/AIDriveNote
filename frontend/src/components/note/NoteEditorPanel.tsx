@@ -11,7 +11,7 @@
  * 同时承载：⌘S 手动保存、⌘K 命令面板、文件导入、导出、移动到文件夹等面板级命令。
  */
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag } from 'lucide-react';
+import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import NoteEditorContainer from './NoteEditorContainer';
 import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';
@@ -194,6 +194,8 @@ interface NoteEditorPanelProps {
   isFullscreen?: boolean;
   isDark?: boolean;
   refreshTrigger?: number;
+  /** 移动端返回列表：传入后在顶部菜单栏显示返回按钮 */
+  onBack?: () => void;
 }
 
 const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
@@ -209,6 +211,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   isFullscreen = false,
   isDark = false,
   refreshTrigger,
+  onBack,
 }) => {
   const [title, setTitle] = useState(note.title);
   const [noteTags, setNoteTags] = useState<NoteTag[]>(note.tags ?? []);
@@ -871,8 +874,18 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   return (
     <div className={`h-full flex flex-col ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
       {/* 菜单栏 + 保存 */}
-      <div className={`flex items-center justify-between gap-2 px-3 py-1.5 border-b shrink-0 ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
+      <div className={`flex items-center justify-between gap-2 px-3 py-1.5 border-b shrink-0 safe-x ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
         <div className="flex items-center gap-2 min-w-0">
+          {onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              className={`shrink-0 p-1 -ml-1 rounded-md transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-600 hover:bg-gray-100'}`}
+              title="返回列表"
+            >
+              <ChevronLeft size={18} />
+            </button>
+          ) : null}
           <NoteMenuBar menus={menus} isDark={isDark} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -907,13 +920,13 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium shrink-0 ${typeMeta.badgeColor}`}>
             {typeMeta.icon} {typeMeta.label}
           </span>
-          <span className={`text-xs shrink-0 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+          <span className={`text-xs shrink-0 hidden sm:inline ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
             {note.noteNo}
           </span>
           {note.folderId && folders.length > 0 && (() => {
             const folder = folders.find(f => f.id === note.folderId);
             return folder ? (
-              <span className={`text-xs flex items-center gap-1 shrink-0 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+              <span className={`text-xs hidden sm:flex items-center gap-1 shrink-0 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
                 {folder.name}
               </span>
@@ -1157,11 +1170,11 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       </div>
 
       {/* Footer: stats + last save hint */}
-      <div className={`flex items-center justify-between px-5 py-1.5 border-t shrink-0 ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50'}`}>
+      <div className={`flex items-center justify-between px-5 py-1.5 border-t shrink-0 safe-bottom safe-x ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50'}`}>
         <span className={`text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
           {calcStats(note.noteType, content)}
         </span>
-        <span className={`text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+        <span className={`text-xs hidden sm:inline ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
           {note.updatedAt ? `更新于 ${new Date(note.updatedAt).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}
         </span>
       </div>
