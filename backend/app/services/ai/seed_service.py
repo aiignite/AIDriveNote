@@ -238,6 +238,44 @@ BUILTIN_SKILLS = [
         "extra_config": {"applicable_note_types": ["flowchart"]},
         "bind_note_assistant": False,
     },
+    # ── 新增：联网查询 / 对话整理成笔记 ──
+    {
+        "code": "note_web_research",
+        "name": "联网查询",
+        "keywords": ["联网", "搜索", "搜一下", "查一下", "查一查", "最新", "网上", "检索", "在线查询", "实时"],
+        "prompt_template": (
+            "用户希望获取互联网上的实时/外部信息。先用 web_search 检索关键词，"
+            "拿到 {title,url,snippet} 结果后用中文综合归纳作答，并附上关键来源链接；"
+            "不要原样堆砌搜索结果。\n"
+            "若用户同时要求留档，再用 create_note 生成一篇 markdown 笔记（含来源链接）；"
+            "若联网搜索未启用或请求失败，如实说明原因，并基于已有知识谨慎作答。"
+        ),
+        "tool_names": ["web_search", "create_note"],
+        "priority": 82,
+        "extra_config": {
+            "applicable_note_types": None,
+            # 负向关键词：避免“搜索我的笔记 / 导图”这类本地检索被误判为联网搜索
+            "negative_keywords": ["笔记", "导图", "流程图", "drawio"],
+        },
+    },
+    {
+        "code": "chat_to_note",
+        "name": "整理成笔记",
+        "keywords": [
+            "整理成笔记", "存为笔记", "保存为文档", "导出为文档", "整理成文档",
+            "整理成一篇文章", "整理成文章", "把上面的内容整理", "生成文档", "存到笔记", "记为文档",
+        ],
+        "prompt_template": (
+            "用户希望把当前对话/查询/讨论的内容整理成文档并存入笔记。\n"
+            "1. 先梳理对话上下文中的关键结论，组织为结构清晰的 Markdown（一句话标题、分级小标题、"
+            "要点列表，涉及外部信息时附来源链接）；\n"
+            "2. 用 create_note(note_type=markdown) 创建笔记，标题需概括主题，正文避免口语化冗余；\n"
+            "3. 若用户明确要追加到某篇已有笔记，改用 append_to_note 并说明需在卡片确认。"
+        ),
+        "tool_names": ["create_note", "append_to_note"],
+        "priority": 88,
+        "extra_config": {"applicable_note_types": None},
+    },
 ]
 
 # 未绑定「笔记助手」、而是绑定到专用设计助手的技能 code 集合

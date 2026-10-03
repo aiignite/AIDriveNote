@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useRef } from 'react';
-import { Image, Mic, Paperclip, Send, Square, X } from 'lucide-react';
+import { Image, Loader2, Mic, Paperclip, Send, Square, X } from 'lucide-react';
 import PendingAttachmentPreview, { type AttachmentPreviewItem } from './PendingAttachmentPreview';
 import ChatSkillPicker from './ChatSkillPicker';
-import { useSpeechInput } from '../../hooks/useSpeechInput';
+import { useVoiceInput } from '../../hooks/useVoiceInput';
 import type { AISkill } from '../../services/ai/ai';
 
 export interface PendingAttachment {
@@ -109,13 +109,14 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
     }
   }, [onSend]);
 
-  /** 把识别出的最终文本追加到输入框（中英文之间按需补空格） */
-  const handleSpeechFinal = useCallback((text: string) => {
+  /** 把识别出的文本追加到输入框（中英文之间按需补空格） */
+  const handleVoiceFinal = useCallback((text: string) => {
     const needsSpace = Boolean(value) && /[a-zA-Z0-9]$/.test(value) && /^[a-zA-Z0-9]/.test(text);
     onChange(`${value}${needsSpace ? ' ' : ''}${text}`);
   }, [value, onChange]);
 
-  const speech = useSpeechInput({ onFinal: handleSpeechFinal });
+  // 统一语音入口：实时识别优先，移动端不可用时自动回退到录音转写
+  const voice = useVoiceInput({ onFinal: handleVoiceFinal });
 
   // 已固定技能（用于 chip 展示）
   const pinnedSkills = skills.filter(s => pinnedSkillCodes.includes(s.code));
@@ -182,18 +183,34 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
         </button>
         <button
           type="button"
-          onClick={speech.toggle}
-          disabled={loading || !speech.supported}
+          onClick={voice.toggle}
+          disabled={loading || !voice.supported || voice.transcribing}
           className={`p-1.5 rounded-lg transition-colors disabled:opacity-50 ${
-            speech.listening
+            voice.listening
               ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
-              : isDark
-                ? 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
-                : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+              : voice.transcribing
+                ? 'text-orange-500'
+                : isDark
+                  ? 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                  : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
           }`}
-          title={speech.supported ? (speech.listening ? '停止语音输入' : '语音输入') : '当前浏览器不支持语音输入'}
+          title={
+            !voice.supported
+              ? '当前浏览器不支持语音输入'
+              : voice.transcribing
+                ? '正在识别语音…'
+                : voice.listening
+                  ? '停止语音输入'
+                  : voice.mode === 'recording'
+                    ? '语音输入（录音识别）'
+                    : '语音输入'
+          }
         >
-          {speech.listening ? <Square size={16} /> : <Mic size={16} />}
+          {voice.transcribing
+            ? <Loader2 size={16} className="animate-spin" />
+            : voice.listening
+              ? <Square size={16} />
+              : <Mic size={16} />}
         </button>
         {onToggleSkill && skills.length > 0 && (
           <ChatSkillPicker
@@ -235,9 +252,16 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
         onRemove={onRemoveFile}
       />
 
-      {(speech.listening || speech.interimText || speech.error) && (
-        <p className={`mb-1.5 line-clamp-2 text-xs ${speech.error ? 'text-red-500' : isDark ? 'text-orange-300/80' : 'text-orange-600/80'}`}>
-          {speech.error ?? (speech.interimText ? `识别中：${speech.interimText}` : '正在聆听…')}
+      {(voice.listening || voice.transcribing || voice.interimText || voice.error || voice.hint) && (
+        <p className={`mb-1.5 line-clamp-2 text-xs ${voice.error ? 'text-red-500' : isDark ? 'text-orange-300/80' : 'text-orange-600/80'}`}>
+          {voice.error
+            ?? (voice.transcribing
+              ? '正在识别语音…'
+              : voice.interimText
+                ? `识别中：${voice.interimText}`
+                : voice.listening
+                  ? (voice.mode === 'recording' ? '正在录音，再次点击结束' : '正在聆听…')
+                  : voice.hint)}
         </p>
       )}
 

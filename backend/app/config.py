@@ -30,6 +30,14 @@ class Settings(BaseSettings):
 
     ADMIN_EMAIL: str | None = None
 
+    # ── AI 联网搜索（免 Key 网页抓取）──
+    # 是否启用联网搜索工具；默认关闭，需在 .env 显式开启后重启服务
+    AI_WEB_SEARCH_ENABLED: bool = False
+    # 单次搜索请求超时（秒）
+    AI_WEB_SEARCH_TIMEOUT: int = 10
+    # 单次搜索返回结果条数上限
+    AI_WEB_SEARCH_MAX_RESULTS: int = 5
+
     SSO_ENABLED: bool = False
     SSO_SECRET_KEY: str | None = None
     SSO_ISSUER: str = "aidriveall"
