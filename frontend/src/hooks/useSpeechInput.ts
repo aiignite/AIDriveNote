@@ -75,8 +75,11 @@ const ERROR_MESSAGES: Record<string, string> = {
 /** 静音/主动中止类错误：属于连续识别下的正常事件，不提示、可继续重启 */
 const BENIGN_ERRORS = new Set(['no-speech', 'aborted']);
 
-/** 致命错误：环境层面不可用，继续重启只会造成循环，必须立即停止 */
-const FATAL_ERRORS = new Set(['not-allowed', 'service-not-allowed', 'audio-capture']);
+/**
+ * 致命错误：环境层面不可用，继续重启只会造成循环，必须立即停止。
+ * 导出给上层（如 useVoiceInput）用于判定是否需要回退到录音转写通道。
+ */
+export const FATAL_SPEECH_ERRORS = new Set(['not-allowed', 'service-not-allowed', 'audio-capture']);
 
 /** 单次聆听允许的最大自动重启次数（超出即停止，防止无限循环） */
 const MAX_RESTARTS = 3;
@@ -106,6 +109,8 @@ export interface UseSpeechInputReturn {
   interimText: string;
   /** 错误提示（无错误为 null） */
   error: string | null;
+  /** 错误码（Web Speech API 原始 error，无错误为 null），供上层做能力回退判定 */
+  errorCode: string | null;
   /** 开始聆听 */
   start: () => void;
   /** 停止聆听 */
@@ -153,6 +158,7 @@ export function useSpeechInput(options: UseSpeechInputOptions = {}): UseSpeechIn
   const [listening, setListening] = useState(false);
   const [interimText, setInterimText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
 
   const supported = typeof window !== 'undefined'
     && Boolean(
@@ -234,9 +240,10 @@ export function useSpeechInput(options: UseSpeechInputOptions = {}): UseSpeechIn
       // 静音/主动中止属于连续识别的正常事件，不弹错误提示
       if (!BENIGN_ERRORS.has(ev.error)) {
         setError(ERROR_MESSAGES[ev.error] ?? `语音识别失败：${ev.error}`);
+        setErrorCode(ev.error);
       }
       // 致命错误立即停止，避免进入无意义的重启循环
-      if (FATAL_ERRORS.has(ev.error)) {
+      if (FATAL_SPEECH_ERRORS.has(ev.error)) {
         canRestartRef.current = false;
         stopRef.current();
       }
@@ -280,6 +287,7 @@ export function useSpeechInput(options: UseSpeechInputOptions = {}): UseSpeechIn
 
   const start = useCallback(() => {
     setError(null);
+    setErrorCode(null);
     const recognition = ensureRecognition();
     if (!recognition) {
       setError('当前浏览器不支持语音输入');
@@ -325,6 +333,7 @@ export function useSpeechInput(options: UseSpeechInputOptions = {}): UseSpeechIn
     clearInterimTimer();
     setInterimText('');
     setError(null);
+    setErrorCode(null);
   }, [clearInterimTimer]);
 
   // 卸载时彻底停止识别并清理定时器，避免残留监听与后台循环
@@ -340,7 +349,7 @@ export function useSpeechInput(options: UseSpeechInputOptions = {}): UseSpeechIn
     }
   }, []);
 
-  return { supported, listening, interimText, error, start, stop, toggle, reset };
+  return { supported, listening, interimText, error, errorCode, start, stop, toggle, reset };
 }
 
 export default useSpeechInput;
