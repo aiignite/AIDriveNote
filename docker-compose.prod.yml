@@ -45,6 +45,10 @@ services:
       NOTE_WHISPER_LANGUAGE: "${NOTE_WHISPER_LANGUAGE:-zh}"
       NOTE_WHISPER_DEVICE: "${NOTE_WHISPER_DEVICE:-cpu}"
       NOTE_WHISPER_COMPUTE_TYPE: "${NOTE_WHISPER_COMPUTE_TYPE:-int8}"
+      # AI 联网搜索（免 Key 网页抓取）；默认关闭，需在 .env 设为 true
+      AI_WEB_SEARCH_ENABLED: "${AI_WEB_SEARCH_ENABLED:-false}"
+      AI_WEB_SEARCH_TIMEOUT: "${AI_WEB_SEARCH_TIMEOUT:-10}"
+      AI_WEB_SEARCH_MAX_RESULTS: "${AI_WEB_SEARCH_MAX_RESULTS:-5}"
     ports:
       - "127.0.0.1:3275:3275"
     volumes:
