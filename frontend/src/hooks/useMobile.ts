@@ -20,6 +20,9 @@ const MOBILE_QUERY = `(max-width: ${MOBILE_BREAKPOINT}px)`;
 /** 独立窗口（已安装 PWA）媒体查询串 */
 const STANDALONE_QUERY = '(display-mode: standalone)';
 
+/** 粗指针媒体查询串（手指触摸的主要特征） */
+const COARSE_POINTER_QUERY = '(pointer: coarse)';
+
 /**
  * 订阅一个媒体查询的匹配状态。
  * @param query 媒体查询串
@@ -50,6 +53,21 @@ function useMediaQuery(query: string): boolean {
  */
 export function useIsMobile(): boolean {
   return useMediaQuery(MOBILE_QUERY);
+}
+
+/**
+ * 当前设备是否具备触摸输入能力。
+ *
+ * 用于按「输入方式」而非「屏幕宽度」决定第三方编辑器的手势模式：
+ * 横屏手机宽度可超过移动端断点，而触屏笔记本宽度很大却同样支持触摸。
+ * 判定以粗指针（手指）为主，并以 navigator.maxTouchPoints 兜底。
+ * @returns 是否触摸设备
+ */
+export function useIsTouchDevice(): boolean {
+  const coarsePointer = useMediaQuery(COARSE_POINTER_QUERY);
+  const hasTouchPoints =
+    typeof navigator !== 'undefined' && (navigator.maxTouchPoints ?? 0) > 0;
+  return coarsePointer || hasTouchPoints;
 }
 
 /**

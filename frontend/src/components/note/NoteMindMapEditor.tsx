@@ -51,6 +51,8 @@ import MiniMapPlugin from 'simple-mind-map/src/plugins/MiniMap.js';
 import NodeImgAdjustPlugin from 'simple-mind-map/src/plugins/NodeImgAdjust.js';
 // @ts-expect-error no types available
 import AssociativeLinePlugin from 'simple-mind-map/src/plugins/AssociativeLine.js';
+// @ts-expect-error no types available
+import TouchEventPlugin from 'simple-mind-map/src/plugins/TouchEvent.js';
 import type {
   NoteCommand,
   NoteEditorRegistry,
@@ -78,6 +80,10 @@ SimpleMindMap.usePlugin(MiniMapPlugin);
 SimpleMindMap.usePlugin(NodeImgAdjustPlugin);
 // eslint-disable-next-line react-hooks/rules-of-hooks
 SimpleMindMap.usePlugin(AssociativeLinePlugin);
+// 触摸手势支持：把 touch 事件模拟为鼠标事件，实现单指拖动平移、双指捏合缩放、
+// 双击进入节点编辑。缺少该插件时移动端画布完全无法拖动与缩放。
+// eslint-disable-next-line react-hooks/rules-of-hooks
+SimpleMindMap.usePlugin(TouchEventPlugin);
 
 /** 可切换的布局结构（simple-mind-map 内置 6 种） */
 const LAYOUTS = [
@@ -1327,7 +1333,9 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
       )}
 
       <div className="flex-1 w-full relative overflow-hidden">
-        <div ref={containerRef} className="w-full h-full" />
+        {/* touch-none：禁止浏览器把单指拖动/双指捏合当作页面滚动与缩放，
+            交由 TouchEvent 插件处理为画布平移与缩放 */}
+        <div ref={containerRef} className="w-full h-full touch-none" />
         {/* 小地图：仅在小地图开启时渲染 */}
         {miniMapOn && (
           <div
