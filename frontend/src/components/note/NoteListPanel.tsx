@@ -10,7 +10,7 @@ import {
   MoreHorizontal, Trash2, ArrowUpDown, Folder, FolderOpen,
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
   BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, Download,
-  PanelLeftClose,
+  PanelLeftClose, Tag, X, Check,
 } from 'lucide-react';
 import type { Note, NoteFolder, NoteTag } from '../../services/note';
 
@@ -181,6 +181,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [showSortMenu, setShowSortMenu] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [showTagMenu, setShowTagMenu] = useState(false);
   const [internalFilterType, setInternalFilterType] = useState<string>('all');
   const filterType = filterTypeProp ?? internalFilterType;
   const setFilterType = useCallback((type: string) => {
@@ -214,6 +215,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
   const sortMenuRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
+  const tagMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
@@ -223,6 +225,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     const handler = (e: MouseEvent) => {
       if (sortMenuRef.current && !sortMenuRef.current.contains(e.target as Node)) setShowSortMenu(false);
       if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) setShowAddMenu(false);
+      if (tagMenuRef.current && !tagMenuRef.current.contains(e.target as Node)) setShowTagMenu(false);
       if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) setContextMenu(null);
     };
     document.addEventListener('mousedown', handler);
@@ -812,25 +815,68 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             </button>
           ))}
         </div>
-        {/* Tag filter */}
+        {/* Tag filter：标签较多时全部平铺会占满筛选区，改为下拉选择 */}
         {!isTrashView && allTags.length > 0 && (
-          <div className="flex gap-0.5 mt-1.5 flex-wrap">
-            {allTags.map(tag => (
+          <div ref={tagMenuRef} className="relative mt-1.5">
+            <div className="flex flex-wrap items-center gap-1">
               <button
-                key={tag.id}
-                onClick={() => toggleTagFilter(tag.id)}
-                className={`px-2 py-0.5 text-xs rounded-full transition-colors border ${
-                  selectedTagIds.includes(tag.id)
-                    ? 'border-transparent text-white'
-                    : isDark ? 'border-gray-600 text-gray-400' : 'border-gray-200 text-gray-500'
+                type="button"
+                onClick={() => setShowTagMenu(v => !v)}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border transition-colors ${
+                  selectedTagIds.length > 0
+                    ? 'border-orange-500 text-orange-600 dark:text-orange-400'
+                    : isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
                 }`}
-                style={selectedTagIds.includes(tag.id)
-                  ? { backgroundColor: tag.color }
-                  : { borderColor: `${tag.color}40`, color: tag.color }}
               >
-                {tag.name}
+                <Tag size={12} />
+                <span>标签</span>
+                {selectedTagIds.length > 0 && (
+                  <span className="inline-flex items-center justify-center min-w-[14px] h-[14px] px-1 rounded-full bg-orange-600 text-white text-[10px] leading-none">
+                    {selectedTagIds.length}
+                  </span>
+                )}
+                <ChevronDown size={12} className={`transition-transform ${showTagMenu ? 'rotate-180' : ''}`} />
               </button>
-            ))}
+              {/* 已选标签以 chip 呈现，点击即可移除 */}
+              {allTags.filter(t => selectedTagIds.includes(t.id)).map(tag => (
+                <button
+                  key={tag.id}
+                  type="button"
+                  onClick={() => toggleTagFilter(tag.id)}
+                  title={`移除标签：${tag.name}`}
+                  className="inline-flex items-center gap-0.5 px-2 py-0.5 text-xs rounded-full border border-transparent text-white"
+                  style={{ backgroundColor: tag.color }}
+                >
+                  <span className="max-w-[72px] truncate">{tag.name}</span>
+                  <X size={12} />
+                </button>
+              ))}
+            </div>
+            {showTagMenu && (
+              <div className={`absolute left-0 top-full z-30 mt-1 max-h-56 overflow-y-auto p-2 flex flex-wrap gap-1 rounded-lg shadow-lg border ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                {allTags.map(tag => {
+                  const active = selectedTagIds.includes(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => toggleTagFilter(tag.id)}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border transition-colors ${
+                        active
+                          ? 'border-transparent text-white'
+                          : isDark ? 'border-gray-600 text-gray-400 hover:bg-gray-700' : 'border-gray-200 text-gray-500 hover:bg-gray-100'
+                      }`}
+                      style={active
+                        ? { backgroundColor: tag.color }
+                        : { borderColor: `${tag.color}40`, color: tag.color }}
+                    >
+                      {active && <Check size={12} />}
+                      {tag.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
         {/* Project filter */}

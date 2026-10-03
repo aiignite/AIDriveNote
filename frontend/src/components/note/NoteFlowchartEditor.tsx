@@ -9,6 +9,7 @@
  */
 import React, { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { saveAs } from 'file-saver';
+import { useIsTouchDevice } from '../../hooks/useMobile';
 import type {
   NoteCommand,
   NoteMenuGroup,
@@ -35,8 +36,21 @@ interface NoteFlowchartEditorProps {
   onRegistryChange?: (registry: NoteEditorRegistry) => void;
 }
 
-/** drawio embed 编辑器地址 */
-const DRAWIO_URL = 'https://embed.diagrams.net/?embed=1&spin=1&proto=json&configure=1';
+/** drawio embed 编辑器基础地址 */
+const DRAWIO_BASE_URL = 'https://embed.diagrams.net/?embed=1&spin=1&proto=json&configure=1';
+
+/**
+ * 构造 drawio embed 编辑器地址。
+ *
+ * 触摸设备追加 touch=1（强制触摸模式界面）与 android=1（强制 Android 触摸
+ * 手势：单指平移、双指缩放），避免「请求桌面版网站」等场景下 UA 被识别为
+ * 桌面端、drawio 完全禁用触摸手势，导致画布无法缩放与移动。
+ * @param touch 是否触摸设备
+ * @returns 带触摸参数的 drawio embed 地址
+ */
+function buildDrawioUrl(touch: boolean): string {
+  return touch ? `${DRAWIO_BASE_URL}&touch=1&android=1` : DRAWIO_BASE_URL;
+}
 
 /** 加载超时时间（毫秒） */
 const LOAD_TIMEOUT = 10000;
@@ -132,6 +146,13 @@ const NoteFlowchartEditor: React.FC<NoteFlowchartEditorProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   /** 重试计数：变化时重挂 iframe 并重置加载态 */
   const [retryKey, setRetryKey] = useState(0);
+  /** 工具条「导出」菜单是否展开（点击切换，兼容触摸屏） */
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  /** 触摸设备：决定 drawio embed 是否启用触摸手势参数 */
+  const isTouch = useIsTouchDevice();
+
+  /** 导出菜单容器引用（用于点击外部关闭） */
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   /** 最新内容镜像（handler 内读取，避免监听重建） */
   const contentRef = useRef(content);
@@ -160,6 +181,18 @@ const NoteFlowchartEditor: React.FC<NoteFlowchartEditorProps> = ({
   useEffect(() => { isDarkRef.current = isDark; }, [isDark]);
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
   useEffect(() => { readyRef.current = ready; }, [ready]);
+
+  // 点击导出菜单外部时关闭（触摸屏无 hover，需依赖点击切换 + 外部关闭）
+  useEffect(() => {
+    /** 全局 mousedown 监听：点击菜单容器外即收起 */
+    const onOutside = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, []);
 
   /** 向 iframe 发送 postMessage(JSON) */
   const postMessage = useCallback((msg: Record<string, unknown>) => {
@@ -369,6 +402,7 @@ const NoteFlowchartEditor: React.FC<NoteFlowchartEditorProps> = ({
   }, []);
   /** 导出并落地 */
   const handleExport = useCallback(async (format: 'png' | 'svg' | 'pdf' | 'xml') => {
+    setShowExportMenu(false);
     const data = await exportActiveFlowchart(format);
     await downloadResult(format, data);
   }, [downloadResult]);
@@ -432,16 +466,18 @@ const NoteFlowchartEditor: React.FC<NoteFlowchartEditorProps> = ({
     >
       {/* 自有工具条（放在 iframe 之上，避免与 drawio 内部 UI 冲突） */}
       {!readOnly && (
-        <div className={`flex items-center gap-1 px-2 py-1 border-b ${isDark ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-gray-50'}`}>
+        <div className={`flex flex-wrap items-center gap-1 px-2 py-1 border-b ${isDark ? 'border-gray-700 bg-gray-900' : 'border-gray-200 bg-gray-50'}`}>
           <button type="button" className={toolbarBtn} onClick={handleSave}>保存</button>
-          <div className="relative group">
-            <button type="button" className={toolbarBtn}>导出 ▾</button>
-            <div className={`hidden group-hover:flex flex-col absolute left-0 top-full z-30 min-w-[96px] py-1 rounded-md shadow-lg border ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
-              <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('png')}>PNG</button>
-              <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('svg')}>SVG</button>
-              <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('pdf')}>PDF</button>
-              <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('xml')}>XML</button>
-            </div>
+          <div ref={exportMenuRef} className="relative">
+            <button type="button" className={toolbarBtn} onClick={() => setShowExportMenu(v => !v)}>导出 ▾</button>
+            {showExportMenu && (
+              <div className={`flex flex-col absolute left-0 top-full z-30 min-w-[96px] py-1 rounded-md shadow-lg border ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('png')}>PNG</button>
+                <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('svg')}>SVG</button>
+                <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('pdf')}>PDF</button>
+                <button type="button" className={`${toolbarBtn} text-left`} onClick={() => handleExport('xml')}>XML</button>
+              </div>
+            )}
           </div>
           <button type="button" className={toolbarBtn} onClick={handleImportClick}>导入</button>
           <button type="button" className={toolbarBtn} onClick={handleTemplate}>模板</button>
@@ -492,7 +528,7 @@ const NoteFlowchartEditor: React.FC<NoteFlowchartEditorProps> = ({
         <iframe
           key={retryKey}
           ref={iframeRef}
-          src={DRAWIO_URL}
+          src={buildDrawioUrl(isTouch)}
           className="w-full h-full border-0"
           title="Drawio Editor"
         />
