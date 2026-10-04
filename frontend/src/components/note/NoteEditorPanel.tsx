@@ -11,17 +11,18 @@
  * 同时承载：⌘S 手动保存、⌘K 命令面板、文件导入、导出、移动到文件夹等面板级命令。
  */
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft, AlertCircle } from 'lucide-react';
+import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft, AlertCircle, Sparkles, Loader2, Check } from 'lucide-react';
 import toast from 'react-hot-toast';
 import NoteEditorContainer from './NoteEditorContainer';
 import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';
 import NoteCommandPalette from './NoteCommandPalette';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import NoteOutlinePanel from './NoteOutlinePanel';
+import NoteEmailDialog from './NoteEmailDialog';
 import NoteRecordingPanel from './recording/NoteRecordingPanel';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
 import {
-  noteApi, noteTagApi, noteTemplateApi,
+  noteApi, noteTagApi, noteTemplateApi, noteTitleApi,
   type Note, type NoteUpdate, type NoteFolder, type NoteTag,
   type NoteBacklink, type NoteRevision, type NoteShare,
 } from '../../services/note';
@@ -260,6 +261,8 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   const [showShortcuts, setShowShortcuts] = useState(false);
   /** 移动到文件夹弹窗 */
   const [showMoveDialog, setShowMoveDialog] = useState(false);
+  /** 「发送到邮箱」弹窗（文件菜单触发） */
+  const [showEmailDialog, setShowEmailDialog] = useState(false);
   /** 移动目标文件夹（空串表示根目录） */
   const [moveFolderId, setMoveFolderId] = useState('');
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -515,6 +518,62 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     }, 1000);
   }, [note.id, onNoteUpdated, persistOffline, userId]);
 
+  /* ── AI 标题 ──────────────────────────────────────
+   * 与自动推导分工：后端在保存内容时会用「中心主题 / 首行 / 首节点」填充占位标题；
+   * 这里处理正文没有显式标题的情况，由模型概括一个。生成结果先落在输入框里由用户确认，
+   * 不直接静默写入。 */
+
+  /** AI 正在生成标题 */
+  const [aiTitleLoading, setAiTitleLoading] = useState(false);
+  /** AI 标题建议（待用户确认） */
+  const [aiTitleSuggestion, setAiTitleSuggestion] = useState<string | null>(null);
+
+  // 切换笔记时清掉上一篇的建议，避免误应用到新笔记
+  useEffect(() => {
+    setAiTitleSuggestion(null);
+    setAiTitleLoading(false);
+  }, [note.id]);
+
+  /** 请求 AI 生成标题建议（不写入，仅供确认） */
+  const handleGenerateAiTitle = useCallback(async () => {
+    if (aiTitleLoading) return;
+    setAiTitleLoading(true);
+    try {
+      const result = await noteTitleApi.generate(note.id);
+      if (!result.title) {
+        toast.error('未能生成标题，请确认笔记内容不为空');
+        return;
+      }
+      setAiTitleSuggestion(result.title);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'AI 标题生成失败');
+    } finally {
+      setAiTitleLoading(false);
+    }
+  }, [note.id, aiTitleLoading]);
+
+  /** 从内容推导标题（不调模型，即时返回） */
+  const handleDeriveTitle = useCallback(async () => {
+    try {
+      const result = await noteTitleApi.derive(note.id);
+      if (!result.title) {
+        toast.error('内容中没有可用的标题信息');
+        return;
+      }
+      setAiTitleSuggestion(result.title);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '标题提取失败');
+    }
+  }, [note.id]);
+
+  /** 采纳建议：填入输入框并沿用既有的自动保存流程 */
+  const applyAiTitle = useCallback(() => {
+    if (!aiTitleSuggestion) return;
+    handleTitleChange(aiTitleSuggestion);
+    setAiTitleSuggestion(null);
+    toast.success('标题已更新');
+  }, [aiTitleSuggestion, handleTitleChange]);
+
   // Auto-save description (debounce 1s)
   const descTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleDescriptionChange = useCallback((newDesc: string) => {
@@ -759,6 +818,12 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         run: () => handleExport(opt.format),
       })),
       { id: 'file.saveAsTemplate', label: '另存为模板…', keywords: 'template 模板', run: handleSaveAsTemplate },
+      {
+        id: 'file.sendEmail',
+        label: '发送到邮箱…',
+        keywords: 'email mail 邮件 发信 发送',
+        run: () => setShowEmailDialog(true),
+      },
       {
         id: 'file.duplicate',
         label: '复制笔记',
@@ -1032,6 +1097,60 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               isDark ? 'text-white placeholder-gray-600' : 'text-gray-900 placeholder-gray-300'
             }`}
           />
+          {/* AI 标题：生成建议 → 用户确认后才写入 */}
+          <div className="shrink-0 flex items-center gap-1">
+            {aiTitleSuggestion ? (
+              <>
+                <span className={`hidden md:inline text-xs max-w-[180px] truncate ${
+                  isDark ? 'text-gray-400' : 'text-gray-500'
+                }`} title={aiTitleSuggestion}>
+                  {aiTitleSuggestion}
+                </span>
+                <button
+                  type="button"
+                  onClick={applyAiTitle}
+                  title="采纳该标题"
+                  className="p-1 rounded-md bg-orange-600 text-white hover:bg-orange-700 transition-colors"
+                >
+                  <Check size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAiTitleSuggestion(null)}
+                  title="忽略"
+                  className={`p-1 rounded-md transition-colors ${
+                    isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
+                  }`}
+                >
+                  <X size={14} />
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleDeriveTitle()}
+                  title="从内容提取标题（中心主题 / 首行 / 首个节点）"
+                  className={`p-1 rounded-md transition-colors ${
+                    isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
+                  }`}
+                >
+                  <FileText size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateAiTitle()}
+                  disabled={aiTitleLoading}
+                  title="AI 生成标题"
+                  className={`p-1 rounded-md transition-colors disabled:opacity-50 ${
+                    isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
+                  }`}
+                >
+                  {aiTitleLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                </button>
+              </>
+            )}
+          </div>
           {/* Inline tag chips (compact) */}
           <div className="hidden sm:flex items-center gap-1 shrink-0 max-w-[30%] overflow-hidden">
             {noteTags.slice(0, 2).map(tag => (
@@ -1298,6 +1417,15 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           isDark={isDark}
           onClose={() => setShowRecording(false)}
           onInsert={blocks => registry?.insertBlocksAfterCursor?.(blocks)}
+        />
+      )}
+
+      {/* 发送到邮箱弹窗 */}
+      {showEmailDialog && (
+        <NoteEmailDialog
+          note={note}
+          isDark={isDark}
+          onClose={() => setShowEmailDialog(false)}
         />
       )}
 

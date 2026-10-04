@@ -3,7 +3,10 @@ export {
   noteFolderApi,
   noteTemplateApi,
   noteTagApi,
+  noteEmailApi,
+  noteTitleApi,
   type Note,
+  type NoteTitleSuggestResult,
   type NoteCreate,
   type NoteUpdate,
   type NoteFolder,
@@ -18,4 +21,6 @@ export {
   type NoteShare,
   type NoteListResponse,
   type NoteListParams,
+  type NoteEmailSendPayload,
+  type NoteEmailSendResult,
 } from './note';

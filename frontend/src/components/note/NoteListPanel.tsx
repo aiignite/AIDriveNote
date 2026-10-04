@@ -9,7 +9,7 @@ import {
   Search, Plus, FileText, Code2, Brain, GitFork,
   MoreHorizontal, Trash2, ArrowUpDown, Folder, FolderOpen,
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
-  BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, Download,
+  BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, FolderSync, Clock,
   PanelLeftClose, Tag, X, Check, LayoutGrid, CheckSquare, Square,
 } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -17,6 +17,8 @@ import {
   isStringArray,
   usePersistentState,
 } from '../../hooks/usePersistentState';
+import { ensurePermission, isSupported as isSyncSupported, loadHandleFromIndexedDB } from '../../services/sync/folderAccess';
+import { runSync } from '../../services/sync/syncEngine';
 import type { Note, NoteFolder, NoteTag } from '../../services/note';
 
 /* ── helpers ────────────────────────────────────── */
@@ -81,12 +83,23 @@ export type NoteCategory =
   | { type: 'folder'; folderId: string };
 
 
-const CATEGORY_TABS: { key: Exclude<NoteCategory['type'], 'folder'>; label: string }[] = [
-  { key: 'all', label: '全部笔记' },
-  { key: 'recent', label: '最近' },
-  { key: 'pinned', label: '置顶' },
-  { key: 'favorites', label: '收藏' },
-  { key: 'trash', label: '回收站' },
+/**
+ * 分类页签：文字标签改为图标按钮。
+ *
+ * 侧栏宽度有限（默认 320px，可拖到 240px），五个文字页签换行会占掉两行高度，
+ * 把垂直空间让给笔记列表。图标含义对老用户是自明的，故不保留文字标签；
+ * 完整名称保留在 title / aria-label 中，悬停与读屏仍可获知。
+ */
+const CATEGORY_TABS: {
+  key: Exclude<NoteCategory['type'], 'folder'>;
+  label: string;
+  icon: React.ReactNode;
+}[] = [
+  { key: 'all', label: '全部笔记', icon: <LayoutGrid size={14} /> },
+  { key: 'recent', label: '最近', icon: <Clock size={14} /> },
+  { key: 'pinned', label: '置顶', icon: <Pin size={14} /> },
+  { key: 'favorites', label: '收藏', icon: <Star size={14} /> },
+  { key: 'trash', label: '回收站', icon: <Trash2 size={14} /> },
 ];
 
 /* ── Folder tree node type ──────────────────────── */
@@ -148,6 +161,9 @@ export interface NoteListPanelProps {
   onToggleCollapse?: () => void;
   /** 移动端窄屏布局：常显操作入口、隐藏桌面专属控件 */
   isMobile?: boolean;
+  /** 打开「发送到邮箱」弹窗 */
+  /** 当前登录用户 ID：本地同步写入 manifest 时需要用于账号绑定校验 */
+  userId?: string | null;
 }
 
 const NoteListPanel: React.FC<NoteListPanelProps> = ({
@@ -188,6 +204,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   onToggleFullscreen,
   onToggleCollapse,
   isMobile = false,
+  userId,
 }) => {
   const [internalCategory, setInternalCategory] = useState<NoteCategory>({ type: 'all' });
   const selectedCategory = selectedCategoryProp ?? internalCategory;
@@ -300,8 +317,10 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     onSelectedTagIdsChange?.(next);
   }, [selectedTagIds, selectedTagIdsProp, onSelectedTagIdsChange]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [bulkExporting, setBulkExporting] = useState(false);
-  const [bulkExportProgress, setBulkExportProgress] = useState<{ done: number; total: number } | null>(null);
+  /** 本地同步进行中 */
+  const [syncingLocal, setSyncingLocal] = useState(false);
+  /** 本地同步进度（用于按钮上的加载态提示） */
+  const [syncProgress, setSyncProgress] = useState<{ done: number; total: number; phase: string } | null>(null);
   // Context menu
   const [contextMenu, setContextMenu] = useState<{
     x: number; y: number; type: 'note' | 'folder'; id: string;
@@ -537,11 +556,15 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     setContextMenu({ x: e.clientX, y: e.clientY, type, id });
   }, []);
 
+  /**
+   * 顶部「+」新建：不再自行推导目标文件夹，交给上层按
+   * 「选中笔记所在文件夹 → 选中的文件夹视图 → 根目录」的优先级统一解析，
+   * 避免这里与上层各算一套导致落位不一致。
+   */
   const handleCreate = useCallback((type: string) => {
-    const folderId = selectedCategory.type === 'folder' ? selectedCategory.folderId : undefined;
-    onCreateNote(type, folderId);
+    onCreateNote(type);
     setShowAddMenu(false);
-  }, [onCreateNote, selectedCategory]);
+  }, [onCreateNote]);
 
   const startNewFolder = useCallback((parentId?: string) => {
     setNewFolderParent(parentId ?? null);
@@ -567,38 +590,58 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
   const sortLabels: Record<SortMode, string> = { updatedAt: '修改时间', createdAt: '创建时间', title: '标题' };
 
-  const handleBulkExport = useCallback(async () => {
-    if (bulkExporting) return;
-    setBulkExporting(true);
-    setBulkExportProgress({ done: 0, total: 0 });
+  /**
+   * 顶部「本地同步」按钮：执行一次与本地文件夹的双向同步。
+   *
+   * 与「设置 → 本地同步」页共用同一个 runSync 引擎；这里做的是「一键同步」——
+   * 已绑定目录就直接跑，未绑定则提示去设置页绑定，避免在这里弹出目录选择器
+   * （浏览器要求必须由用户手势触发，而点击时已错过最佳时机）。
+   */
+  const handleLocalSync = useCallback(async () => {
+    if (syncingLocal) return;
+    if (!isSyncSupported()) {
+      toast.error('当前浏览器不支持本地文件夹同步，请使用 Chrome / Edge 桌面版');
+      return;
+    }
+    setSyncingLocal(true);
     try {
-      const { exportAllNotesNative } = await import('../../utils/noteBulkExport');
-      const result = await exportAllNotesNative((done, total) => {
-        setBulkExportProgress({ done, total });
-      });
-
-      if (result.count === 0) {
-        toast.error(result.skippedEmpty > 0 ? '没有可导出的笔记（内容均为空）' : '没有可导出的笔记');
+      const handle = await loadHandleFromIndexedDB();
+      if (!handle) {
+        toast.error('尚未绑定本地文件夹，请到「设置 → 本地同步」中先选择文件夹');
         return;
       }
-
-      let message =
-        result.method === 'folder'
-          ? `已导出 ${result.count} 篇笔记到所选文件夹`
-          : `已下载 AIDriveNote-export 压缩包（浏览器默认下载目录）`;
-      if (result.skippedEmpty > 0) {
-        message += `，跳过 ${result.skippedEmpty} 篇空笔记`;
+      if (!(await ensurePermission(handle, { requestInGesture: true }))) {
+        toast.error('未获得文件夹访问权限，请在「设置 → 本地同步」中重新授权');
+        return;
       }
-      toast.success(message);
+      if (!userId) {
+        toast.error('未获取到当前用户信息，请重新登录后再试');
+        return;
+      }
+      const report = await runSync(handle, {
+        mode: 'apply',
+        userId,
+        onProgress: p => setSyncProgress({ done: p.done, total: p.total, phase: p.phase }),
+      });
+      const changed = report.downloaded + report.uploaded
+        + report.localDeleted.length + report.remoteDeleted.length
+        + report.createdFolders.length + report.uploadedFolders.length
+        + report.removedFolders.length + report.conflicts.length;
+      if (changed === 0) toast.success('已是最新，无改动');
+      else toast.success(`同步完成：更新 ${changed} 项`);
+      if (report.errors.length > 0) {
+        toast.error(`其中 ${report.errors.length} 项失败，详见设置页同步结果`);
+      }
+      // 同步会改动笔记与文件夹，通知外层刷新列表
+      onRefresh?.();
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') return;
-      console.error('Bulk export failed:', err);
-      toast.error('导出失败，请重试');
+      console.error('Local sync failed:', err);
+      toast.error(err instanceof Error ? err.message : '同步失败，请稍后重试');
     } finally {
-      setBulkExporting(false);
-      setBulkExportProgress(null);
+      setSyncingLocal(false);
+      setSyncProgress(null);
     }
-  }, [bulkExporting]);
+  }, [syncingLocal, userId, onRefresh]);
 
   /* ── Render a single note item ─────────────────── */
   const renderNoteItem = (note: Note, level: number) => {
@@ -992,22 +1035,22 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             </button>
           ) : null}
           <h3 className={`text-sm font-semibold truncate ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
-            笔记 <span className="text-xs font-normal text-gray-400">({notes.length})</span>
+            {notes.length}
           </h3>
         </div>
         <div className="flex items-center gap-1">
           {!isTrashView ? (
             <button
-              onClick={() => void handleBulkExport()}
-              disabled={bulkExporting}
+              onClick={() => void handleLocalSync()}
+              disabled={syncingLocal}
               className={`p-1.5 rounded-md transition-colors ${
                 isDark
                   ? 'text-gray-400 hover:text-white hover:bg-gray-700'
                   : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-              } ${bulkExporting ? 'opacity-50 cursor-not-allowed' : ''}`}
-              title="按原格式导出全部笔记"
+              } ${syncingLocal ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title="与本地文件夹双向同步"
             >
-              <Download size={15} />
+              <FolderSync size={15} className={syncingLocal ? 'animate-spin' : ''} />
             </button>
           ) : null}
           {onRefresh ? (
@@ -1113,20 +1156,26 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
       {/* Category tabs */}
       <div className={`px-3 pt-2 pb-1 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
-        <div className="flex gap-1 flex-wrap">
-          {CATEGORY_TABS.map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => setSelectedCategory({ type: tab.key })}
-              className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
-                selectedCategory.type === tab.key
-                  ? (isDark ? 'bg-orange-600 text-white' : 'bg-orange-600 text-white')
-                  : (isDark ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100')
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="flex gap-1">
+          {CATEGORY_TABS.map(tab => {
+            const active = selectedCategory.type === tab.key;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => setSelectedCategory({ type: tab.key })}
+                title={tab.label}
+                aria-label={tab.label}
+                aria-pressed={active}
+                className={`p-1.5 rounded-md transition-colors ${
+                  active
+                    ? 'bg-orange-600 text-white'
+                    : (isDark ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100')
+                }`}
+              >
+                {tab.icon}
+              </button>
+            );
+          })}
         </div>
         {selectedCategory.type === 'folder' && (
           <div className={`mt-2 flex items-center gap-1 text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
@@ -1201,8 +1250,12 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               </button>
             );
           })}
-          {/* Tag filter：同样收为单个图标按钮 */}
-          {!isTrashView && allTags.length > 0 && (
+          {/* Tag filter：始终显示入口。
+              早期版本用 allTags.length > 0 做了条件渲染，导致「一个标签都没有」
+              的全新账号 / 标签被清空后，按钮直接消失且无处可去，
+              用户没法再建标签、也无法进入标签管理。入口改为常显，
+              菜单内再根据有无标签给出空态说明。 */}
+          {!isTrashView && (
             <div ref={tagMenuRef} className="relative shrink-0 ml-auto">
               <div className="flex items-center justify-end gap-1">
                 <button
@@ -1243,6 +1296,13 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               {showTagMenu && (
                 /* 右对齐 + 固定宽度：标签按钮位于筛选行最右，下拉向左展开并与侧边栏右缘对齐，不会溢出面板 */
                 <div className={`absolute right-0 top-full z-30 mt-1 w-56 max-w-[calc(100vw-2rem)] max-h-56 overflow-y-auto p-2 flex flex-wrap content-start gap-1 rounded-lg shadow-lg border ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                  {allTags.length === 0 && (
+                    /* 入口常显后必然会出现「一个标签都没有」的情形，给出明确指引而不是空白弹窗 */
+                    <p className={`w-full px-1 py-2 text-xs leading-relaxed ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+                      还没有任何标签。在笔记编辑器里打开一篇笔记，
+                      点标题旁的 <Tag size={11} className="inline align-[-1px]" /> 按钮即可新建。
+                    </p>
+                  )}
                   {allTags.map(tag => {
                     const active = selectedTagIds.includes(tag.id);
                     return (
@@ -1452,20 +1512,20 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         共 {displayCount} 篇
       </div>
 
-      {/* Bulk export progress overlay */}
-      {bulkExporting && bulkExportProgress ? (
+      {/* 本地同步进度遮罩 */}
+      {syncingLocal && syncProgress ? (
         <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/40">
           <div className={`rounded-xl shadow-2xl border px-6 py-5 min-w-[240px] text-center ${
             isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
           }`}>
-            <Download size={24} className={`mx-auto mb-3 ${isDark ? 'text-orange-400' : 'text-orange-600'}`} />
+            <FolderSync size={24} className={`mx-auto mb-3 ${isDark ? 'text-orange-400' : 'text-orange-600'}`} />
             <p className={`text-sm font-medium mb-1 ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
-              正在导出全部笔记…
+              {syncProgress.phase || '正在同步…'}
             </p>
             <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-              {bulkExportProgress.total > 0
-                ? `${bulkExportProgress.done} / ${bulkExportProgress.total}`
-                : '正在拉取笔记…'}
+              {syncProgress.total > 0
+                ? `${syncProgress.done} / ${syncProgress.total}`
+                : '正在处理…'}
             </p>
           </div>
         </div>

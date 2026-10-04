@@ -217,6 +217,58 @@ export const noteFolderApi = {
   delete: (id: string) => api.delete(`/notes/folders/${id}`),
 };
 
+// ── Note Email API ─────────────────────────────────────
+
+export interface NoteEmailSendPayload {
+  /** 目标笔记 ID */
+  noteId: string;
+  /** 收件人地址，支持逗号分隔多个 */
+  to: string;
+  /** 邮件标题；留空则用笔记标题 */
+  subject?: string;
+  /** 附言；留空则不带 */
+  message?: string;
+}
+
+export interface NoteEmailSendResult {
+  sent: boolean;
+  recipients: string[];
+  subject: string;
+  /** true 表示后端处于 EMAIL_MOCK 模式，只记日志未真实发送 */
+  mocked: boolean;
+}
+
+export const noteEmailApi = {
+  /** 把笔记渲染为 HTML 正文并发送 */
+  sendNote: (payload: NoteEmailSendPayload) =>
+    api.post<NoteEmailSendResult>('/notes/email/send', {
+      note_id: payload.noteId,
+      to: payload.to,
+      subject: payload.subject ?? null,
+      message: payload.message ?? null,
+    }),
+};
+
+// ── Note Title API ────────────────────────────────────
+
+export interface NoteTitleSuggestResult {
+  /** 建议标题；空字符串表示无法生成 */
+  title: string;
+}
+
+export const noteTitleApi = {
+  /** 从内容推导标题（不调模型） */
+  derive: (noteId: string) => api.post<NoteTitleSuggestResult>(`/notes/title/derive/${noteId}`, {}),
+
+  /** 调用 AI 生成标题建议 */
+  generate: (noteId: string, opts?: { assistantModel?: string; requestModel?: string }) =>
+    api.post<NoteTitleSuggestResult>('/notes/title/generate', {
+      note_id: noteId,
+      assistant_model: opts?.assistantModel ?? null,
+      request_model: opts?.requestModel ?? null,
+    }),
+};
+
 // ── Template Types ──────────────────────────────────
 
 export interface NoteTemplate {

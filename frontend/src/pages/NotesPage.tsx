@@ -78,16 +78,24 @@ const NotesPage: React.FC = () => {
   );
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // 侧栏宽度可调区间（拖拽与持久化共用，避免两处写死不同数字）
+  const MIN_LEFT_WIDTH = 240;
+  const MAX_LEFT_WIDTH = 600;
+
   // Sidebar width (draggable) —— 持久化，刷新后保持用户调好的宽度
   const [storedLeftWidth, setLeftWidth] = usePersistentStateDebounced<number>('note_sidebar_width', 320, 300);
   // 持久化的宽度可能来自旧版本或被手工改坏，统一夹到合法区间后再用于渲染
-  const leftWidth = clampNumber(storedLeftWidth, 240, 600, 320);
+  const leftWidth = clampNumber(storedLeftWidth, MIN_LEFT_WIDTH, MAX_LEFT_WIDTH, 320);
   // 拖拽过程中直接改 DOM 宽度，避免每帧 setState 触发列表+编辑器整体重渲染
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
+  /** 拖拽起点 X：只在 mousedown 写一次 */
   const dragStartXRef = useRef(0);
+  /** 拖拽起始宽度：只在 mousedown 写一次，作为整个拖拽过程的计算基准 */
   const dragStartWidthRef = useRef(0);
+  /** 拖拽过程中的实时宽度：每帧更新，松手时提交给 state */
+  const currentWidthRef = useRef(leftWidth);
 
   // 左侧列表面板折叠状态，持久化到本地，刷新后保持
   const [leftCollapsed, setLeftCollapsed] = useState(
@@ -327,11 +335,23 @@ const NotesPage: React.FC = () => {
     return false;
   }, []);
 
-  // Create note
+  /**
+   * 解析新建笔记的落位文件夹，优先级自高到低：
+   * 1. 当前选中笔记所在的文件夹 —— 新笔记与选中文件同级；
+   * 2. 当前选中的文件夹视图；
+   * 3. 以上都不满足则落到根目录（folderId 留空）。
+   *
+   * 回收站里的笔记处于已删除状态，不作为落位依据，直接按后两级处理。
+   * 选中笔记的文件夹可能已被删除或离线缓存过期，需确认它仍然存在再使用。
+   */
   const resolveCreateFolderId = useCallback((): string | undefined => {
+    if (selectedCategory.type !== 'trash') {
+      const noteFolderId = selectedNote?.folderId;
+      if (noteFolderId && folders.some(f => f.id === noteFolderId)) return noteFolderId;
+    }
     if (selectedCategory.type === 'folder') return selectedCategory.folderId;
     return undefined;
-  }, [selectedCategory]);
+  }, [selectedCategory, selectedNote, folders]);
 
   const handleCreateNote = useCallback(async (noteType: string, folderId?: string) => {
     const targetFolderId = folderId || resolveCreateFolderId();
@@ -582,24 +602,32 @@ const NotesPage: React.FC = () => {
     setIsDragging(true);
     isDraggingRef.current = true;
     dragStartXRef.current = e.clientX;
-    dragStartWidthRef.current = leftWidth;
+    // 以「当前真实 DOM 宽度」而非 state 作为基准：拖拽中途 DOM 已被直接改写，
+    // state 还是旧值，若用它做基准会导致第一次移动就跳一段。
+    const domWidth = leftPanelRef.current?.getBoundingClientRect().width;
+    const base = domWidth && domWidth > 0 ? domWidth : leftWidth;
+    dragStartWidthRef.current = base;
+    currentWidthRef.current = base;
   }, [leftWidth]);
 
   useEffect(() => {
     if (!isDragging) return;
     const handleMouseMove = (e: MouseEvent) => {
+      // 基准只在 mousedown 时记录一次；这里始终以它为原点做增量计算，
+      // 不能把上一帧的结果再累加回去，否则拖拽会「越拖越跑」。
       const diff = e.clientX - dragStartXRef.current;
-      const newWidth = Math.max(240, Math.min(600, dragStartWidthRef.current + diff));
+      const newWidth = Math.min(MAX_LEFT_WIDTH, Math.max(MIN_LEFT_WIDTH, dragStartWidthRef.current + diff));
       // 拖拽中只改 DOM 宽度：避免每个 mousemove 都触发 React 重渲染，
       // 那会让列表（已虚拟化）与编辑器一起重建，得不偿失。
       if (leftPanelRef.current) leftPanelRef.current.style.width = `${newWidth}px`;
-      dragStartWidthRef.current = newWidth;
+      currentWidthRef.current = newWidth;
     };
     const handleMouseUp = () => {
+      const finalWidth = currentWidthRef.current;
       setIsDragging(false);
       isDraggingRef.current = false;
       // 松手时才提交到 state 并持久化
-      setLeftWidth(dragStartWidthRef.current);
+      setLeftWidth(finalWidth);
     };
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
@@ -608,6 +636,13 @@ const NotesPage: React.FC = () => {
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isDragging, setLeftWidth]);
+
+  // 非拖拽状态下把 state 宽度同步到 DOM（折叠/展开、持久化回填都走这里）。
+  // 拖拽中必须跳过，否则每次重渲染都会把刚拖出来的宽度又覆盖回旧值。
+  useEffect(() => {
+    if (isDraggingRef.current) return;
+    if (leftPanelRef.current) leftPanelRef.current.style.width = `${leftWidth}px`;
+  }, [leftWidth]);
 
   const combinedRefreshTrigger = editorRefreshTrigger + notesRefreshToken;
 
@@ -653,6 +688,7 @@ const NotesPage: React.FC = () => {
       isFullscreen={isFullscreen}
       onToggleFullscreen={isMobile ? undefined : () => setIsFullscreen(f => !f)}
       onToggleCollapse={isMobile ? undefined : () => toggleLeftCollapsed(true)}
+      userId={userId}
     />
   );
 
