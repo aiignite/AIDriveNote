@@ -21,7 +21,8 @@ sudo usermod -aG docker "$USER"
 
 ### 2. 创建生产 `.env`
 
-在服务器 `~/AIDriveNote/.env`（**不要**从本机 rsync 覆盖）：
+在服务器 `~/AIDriveNote/.env`（**不要**从本机 rsync 覆盖）。注意 `asr_gateway` 服务还会额外要求
+`NOTE_ASR_REMOTE_API_KEY`（[docker-compose.prod.yml](../../docker-compose.prod.yml) 中以 `:?` 标注的必填项）：
 
 ```bash
 POSTGRES_USER=postgres
@@ -36,6 +37,10 @@ CORS_ORIGINS=http://<DEPLOY_HOST>:3270,http://localhost:3270
 
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen2.5
+
+# asr_gateway 必填
+NOTE_ASR_REMOTE_API_KEY=<与 enable-sso / 语音服务约定的密钥>
+NOTE_ASR_MODE=remote
 ```
 
 生成 SECRET_KEY：
@@ -72,14 +77,51 @@ AIDRIVENOTE_DEPLOY_HOST=<DEPLOY_HOST>
 AIDRIVENOTE_DEPLOY_USER=ubuntu
 AIDRIVENOTE_DEPLOY_PATH=/home/ubuntu/AIDriveNote
 AIDRIVENOTE_FRONTEND_PORT=3270
+
+# 生产子路径（非根目录！验证 URL 时必须带上）
+VITE_BASE_PATH=/note/
+NGINX_SUBPATH=1
+APP_HEALTH_PATH=/note/health
 ```
 
 **SSH 认证优先级：**
 
-1. SSH 密钥（推荐）：`ssh-copy-id ubuntu@<HOST>`
+1. SSH 密钥（推荐）：`ssh-copy-id ubuntu@<HOST>` — 之后所有 ssh/rsync 命令都无需额外包装
 2. 密码：在 `deploy.env` 设置 `AIDRIVENOTE_SSH_PASS`（勿提交 git）
+   - 沙箱环境禁止分配 pty 时 `sshpass` 不可用，改用 `SSH_ASKPASS`（见 SKILL.md「凭据处理」）
 
 `scripts/deploy.env` 已加入 `.gitignore`。
+
+---
+
+## 子路径部署验证要点
+
+站点挂在 `/note/`，验证时必须带前缀，否则会误判为部署失败：
+
+| URL | 期望 | 说明 |
+|-----|------|------|
+| `http://HOST:3270/` | 301 | 根路径重定向，**正常** |
+| `http://HOST:3270/health` | 404 | **正常**，health 不在子路径下 |
+| `http://HOST:3270/note/` | 200 + index.html | 前端正常 |
+| `http://HOST:3270/note/health` | 200 + index.html | 被 SPA 兜底，**不能**据此判断 API 健康 |
+
+API 健康的权威判据是远程 `deploy.sh` 在服务器本机执行的结果（[deploy.sh](../../deploy.sh) 用
+`${APP_HEALTH_PATH:-/health}` 拼路径，故子路径部署时应把它设为 `/note/health`）：
+
+```bash
+# 在服务器上执行，deploy.sh 已自动完成
+curl -sf "http://127.0.0.1:3270${APP_HEALTH_PATH:-/health}"
+# → {"status":"ok","app":"AIDriveNote"}
+```
+
+**验证改动生效**时，别只 curl 状态码（旧产物也是 200），要 grep 容器内产物：
+
+```bash
+docker exec aidrivenote-frontend-1 sh -c \
+  'grep -o ".\{130\}无标题笔记" /usr/share/nginx/html/assets/NotesPage-*.js'
+```
+
+注意 terser 会剥掉注释，只能 grep 实际代码或字符串字面量。
 
 ---
 
