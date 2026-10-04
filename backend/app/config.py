@@ -83,6 +83,18 @@ class Settings(BaseSettings):
     # 语音整理/润色默认模型；为空则走 AI 平台模型解析（DB 模型 → env Ollama 兜底）
     NOTE_AI_MODEL: str = ""
 
+    # ── 邮件发送（QQ SMTP，与 AIDriveAll 保持一致的配置项命名）──
+    # 留空则「发送到邮箱」功能不可用，前端会提示未配置
+    EMAIL_HOST: str = "smtp.qq.com"
+    EMAIL_PORT: int = 465
+    EMAIL_USER: str = ""
+    EMAIL_PASS: str = ""
+    EMAIL_FROM: str = ""
+    # 465 走隐式 SSL(SMTP_SSL)，否则按 starttls 处理
+    EMAIL_USE_SSL: bool = True
+    # true 时只记日志不发信，用于本地验证流程
+    EMAIL_MOCK: bool = True
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

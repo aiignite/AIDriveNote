@@ -766,5 +766,61 @@ def _register_all() -> None:
         }, "required": ["note_ids", "tag_names"]},
     }, _batch_add_tags, CATEGORY, "批量添加标签")
 
+    ToolRegistry.register("generate_note_title", {
+        "name": "generate_note_title",
+        "description": (
+            "为指定笔记生成一个凝练的标题并直接保存。"
+            "适用于正文没有明确标题、标题还是「无标题笔记」或过于笼统的情况。"
+            "若笔记已有合适标题，不要调用此工具。"
+        ),
+        "parameters": {"type": "object", "properties": {
+            "note_id": {"type": "string", "description": "笔记 UUID"},
+        }, "required": ["note_id"]},
+    }, _generate_note_title, CATEGORY, "AI 生成笔记标题")
+
+
+async def _generate_note_title(
+    db: AsyncSession, user_id: UUID, *,
+    note_id: str,
+) -> dict[str, Any]:
+    """AI 生成标题并写回笔记。
+
+    与前端「AI 标题」按钮共用同一套生成逻辑，区别只在于本工具直接落库
+    （用户在对话框里明确要求改标题，视为已授权）。
+    """
+    parsed = _parse_uuid(note_id)
+    if isinstance(parsed, dict):
+        return parsed
+    note, err = await _check_owner(db, parsed, user_id)
+    if err:
+        return err
+
+    from app.services.note.title_generator import TitleGenerator
+
+    try:
+        title = await TitleGenerator.generate(db, user_id, note)
+    except Exception as exc:  # noqa: BLE001 - 模型故障不应中断对话
+        return {"success": False, "error": f"标题生成失败：{exc}"}
+
+    if not title:
+        return {"success": False, "error": "笔记内容为空，无法生成标题"}
+
+    if title == note.title:
+        return {"success": True, "message": f"标题已经是「{title}」，无需修改"}
+
+    updated = await NoteService.update_note(
+        db,
+        parsed,
+        {"title": title, "updated_by": user_id},
+        change_summary="AI 生成标题",
+    )
+    if not updated:
+        return {"success": False, "error": f"未找到笔记 (id={note_id})"}
+    return {
+        "success": True,
+        "message": f"已将标题更新为「{updated.title}」",
+        "title": updated.title,
+    }
+
 
 _register_all()

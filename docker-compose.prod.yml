@@ -45,6 +45,14 @@ services:
       NOTE_WHISPER_LANGUAGE: "${NOTE_WHISPER_LANGUAGE:-zh}"
       NOTE_WHISPER_DEVICE: "${NOTE_WHISPER_DEVICE:-cpu}"
       NOTE_WHISPER_COMPUTE_TYPE: "${NOTE_WHISPER_COMPUTE_TYPE:-int8}"
+      # 邮件发送（发送到邮箱功能）；EMAIL_MOCK=false 时真实投递
+      EMAIL_HOST: "${EMAIL_HOST:-smtp.qq.com}"
+      EMAIL_PORT: "${EMAIL_PORT:-465}"
+      EMAIL_USER: "${EMAIL_USER:-}"
+      EMAIL_PASS: "${EMAIL_PASS:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      EMAIL_USE_SSL: "${EMAIL_USE_SSL:-true}"
+      EMAIL_MOCK: "${EMAIL_MOCK:-true}"
       # AI 联网搜索（免 Key 网页抓取）；默认关闭，需在 .env 设为 true
       AI_WEB_SEARCH_ENABLED: "${AI_WEB_SEARCH_ENABLED:-false}"
       AI_WEB_SEARCH_TIMEOUT: "${AI_WEB_SEARCH_TIMEOUT:-10}"

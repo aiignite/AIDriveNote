@@ -18,6 +18,8 @@ from app.routers.ai import router as ai_router
 from app.routers.note.note import router as note_router
 from app.routers.note.asr import router as note_asr_router
 from app.routers.note.recordings import router as note_recordings_router
+from app.routers.note.email import router as note_email_router
+from app.routers.note.title import router as note_title_router
 from app.routers.admin.users import router as admin_users_router
 from app.services.ai.seed_service import AISeedService
 from app.services.admin_bootstrap import AdminBootstrap
@@ -69,6 +71,8 @@ app.include_router(api_tokens_router, prefix=API_PREFIX)
 app.include_router(users_router, prefix=API_PREFIX)
 app.include_router(admin_users_router, prefix=API_PREFIX)
 app.include_router(note_router, prefix=API_PREFIX)
+app.include_router(note_email_router, prefix=API_PREFIX)
+app.include_router(note_title_router, prefix=API_PREFIX)
 app.include_router(note_recordings_router, prefix=API_PREFIX)
 app.include_router(note_asr_router, prefix=API_PREFIX)
 app.include_router(ai_router, prefix=API_PREFIX)

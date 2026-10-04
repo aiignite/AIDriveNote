@@ -276,6 +276,21 @@ class NoteService:
             return None
         content_changed = "content" in data and data["content"] != note.content
         title_changed = "title" in data and data["title"] != note.title
+
+        # 标题自动填充：仅当本次带回了新内容、且标题仍是占位值时才推导。
+        # 用户手动起过的名字绝不覆盖（见 title_derive.should_autofill_title）。
+        autofilled_title = ""
+        if content_changed and data.get("content") is not None:
+            from app.services.note.title_derive import should_autofill_title
+            autofilled_title = should_autofill_title(
+                note.title,
+                note.note_type,
+                data["content"],
+            )
+            if autofilled_title and autofilled_title != note.title:
+                data = {**data, "title": autofilled_title}
+                title_changed = True
+
         if save_revision and (content_changed or title_changed):
             from app.services.note.note_enhance_service import NoteRevisionService
             changed_by = data.get("updated_by")
