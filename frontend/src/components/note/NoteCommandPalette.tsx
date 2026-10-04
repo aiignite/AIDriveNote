@@ -6,6 +6,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { formatShortcut, MENU_GROUP_LABEL, type NoteCommand } from '../../utils/noteCommands';
 
 /** 分组标题的展示顺序（与菜单栏一致） */
@@ -63,6 +64,9 @@ const NoteCommandPalette: React.FC<NoteCommandPaletteProps> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // 模态：焦点限制在弹窗内，关闭后归还给触发元素
+  useFocusTrap(dialogRef, open);
 
   // 打开时重置查询并聚焦
   useEffect(() => {
@@ -163,11 +167,15 @@ const NoteCommandPalette: React.FC<NoteCommandPaletteProps> = ({
       onClick={onClose}
     >
       <div
-        className={`w-[520px] max-w-[92vw] rounded-xl border shadow-2xl overflow-hidden ${
-          isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-        }`}
-        onClick={e => e.stopPropagation()}
-      >
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="命令面板"
+      className={`w-[520px] max-w-[92vw] rounded-xl border shadow-2xl overflow-hidden ${
+        isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+      }`}
+      onClick={e => e.stopPropagation()}
+    >
         <div className={`flex items-center gap-2 px-3 py-2.5 border-b ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
           <Search size={14} className={isDark ? 'text-gray-500' : 'text-gray-400'} />
           <input
@@ -199,7 +207,12 @@ const NoteCommandPalette: React.FC<NoteCommandPaletteProps> = ({
           </span>
         </div>
 
-        <div ref={listRef} className="max-h-[52vh] overflow-y-auto py-1">
+        <div
+          ref={listRef}
+          role="listbox"
+          aria-label="命令列表"
+          className="max-h-[52vh] overflow-y-auto py-1"
+        >
           {flatItems.length === 0 ? (
             <p className={`px-4 py-6 text-center text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
               没有匹配的命令
@@ -219,6 +232,9 @@ const NoteCommandPalette: React.FC<NoteCommandPaletteProps> = ({
                     <button
                       key={item.cmd.id}
                       type="button"
+                      role="option"
+                      aria-selected={index === activeIndex}
+                      aria-disabled={!item.enabled}
                       data-index={index}
                       disabled={!item.enabled}
                       onMouseEnter={() => setActiveIndex(index)}

@@ -52,18 +52,28 @@ const AISidebar: React.FC = () => {
   /** 始终保存最新宽度，供拖动结束时持久化使用 */
   const widthRef = useRef(sidebarWidth);
   widthRef.current = sidebarWidth;
+  /** 抽屉根节点：拖拽中直接改它的 style，避免每帧重建全局 Context */
+  const panelRef = useRef<HTMLDivElement>(null);
 
   /**
-   * 拖动过程中：按鼠标水平位移换算新宽度并同步到全局状态。
+   * 拖动过程中：按鼠标水平位移换算新宽度。
    * 抽屉贴右侧，因此向左拖动（clientX 减小）应让宽度变大。
+   *
+   * 这里只改 DOM，不 setState：setSidebarWidth 会写全局 Context，
+   * 导致整个应用（含编辑器）每个 mousemove 都重渲染一次。
+   * 状态与持久化都推迟到松手时一次性完成。
    * @param e 全局 mousemove 事件
    */
   const handleResizeMove = useCallback((e: MouseEvent) => {
     const state = dragRef.current;
     if (!state) return;
-    const next = state.startWidth + (state.startX - e.clientX);
-    setSidebarWidth(Math.min(Math.max(next, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH));
-  }, [setSidebarWidth]);
+    const next = Math.min(
+      Math.max(state.startWidth + (state.startX - e.clientX), SIDEBAR_MIN_WIDTH),
+      SIDEBAR_MAX_WIDTH,
+    );
+    widthRef.current = next;
+    if (panelRef.current) panelRef.current.style.width = `${next}px`;
+  }, []);
 
   /**
    * 结束拖动：移除全局监听、恢复光标，并把最终宽度写入用户偏好。
@@ -75,8 +85,11 @@ const AISidebar: React.FC = () => {
     window.removeEventListener('mouseup', handleResizeEnd);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    void aiApi.updateSettings({ sidebarWidth: widthRef.current }).catch(() => {});
-  }, [handleResizeMove]);
+    const final = widthRef.current;
+    // 同步到本地状态并写入服务端偏好（各一次，而非拖动期间的每帧）
+    setSidebarWidth(final);
+    void aiApi.updateSettings({ sidebarWidth: final }).catch(() => {});
+  }, [handleResizeMove, setSidebarWidth]);
 
   /**
    * 开始拖动：记录起始位置与宽度，并绑定全局监听。
@@ -316,6 +329,7 @@ const AISidebar: React.FC = () => {
 
   return (
     <div
+      ref={panelRef}
       className={`fixed inset-y-0 right-0 z-40 flex flex-col border-l shadow-xl w-full md:w-auto safe-top safe-bottom ${isDark ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}
       style={{ width: isMobile ? undefined : panelWidth, maxWidth: '100vw' }}
     >

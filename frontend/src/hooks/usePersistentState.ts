@@ -50,6 +50,9 @@ export function usePersistentState<T>(
 /**
  * 同 usePersistentState，但写入前等待一段时间无新值再落盘。
  * 适用于搜索词这类高频输入，避免每次按键都写 localStorage。
+ *
+ * 也适用于拖拽类连续变更（如拖动分隔条调整面板宽度）——若每次 mousemove 都同步写盘，
+ * 会在一秒内产生上百次 localStorage 写入。
  * @param key 存储键
  * @param defaultValue 缺省值
  * @param debounceMs 静默等待毫秒数

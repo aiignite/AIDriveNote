@@ -35,6 +35,7 @@ import type { OutboxPayload } from '../services/offline/offlineDb';
 import NoteListPanel, { type NoteCategory } from '../components/note/NoteListPanel';
 import NoteEditorPanel from '../components/note/NoteEditorPanel';
 import NoteTemplateGallery from '../components/note/NoteTemplateGallery';
+import NoteQuickSwitcher from '../components/note/NoteQuickSwitcher';
 
 const NotesPage: React.FC = () => {
   const { theme, setPageAIContext, bumpNotesRefresh, notesRefreshToken } = useApp();
@@ -64,6 +65,8 @@ const NotesPage: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [editorRefreshTrigger, setEditorRefreshTrigger] = useState(0);
   const [showNewNotePopover, setShowNewNotePopover] = useState(false);
+  /** 快速切换器（⌘P）开关：与命令面板（⌘K）职责分离，一个定位笔记，一个执行命令 */
+  const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   // 当前分类页签持久化（folder 视图依赖具体 folderId，不持久化）
   const [storedCategoryType, setStoredCategoryType] = usePersistentState<NoteCategory['type']>(
@@ -76,9 +79,12 @@ const NotesPage: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Sidebar width (draggable) —— 持久化，刷新后保持用户调好的宽度
-  const [storedLeftWidth, setLeftWidth] = usePersistentState<number>('note_sidebar_width', 320);
+  const [storedLeftWidth, setLeftWidth] = usePersistentStateDebounced<number>('note_sidebar_width', 320, 300);
   // 持久化的宽度可能来自旧版本或被手工改坏，统一夹到合法区间后再用于渲染
   const leftWidth = clampNumber(storedLeftWidth, 240, 600, 320);
+  // 拖拽过程中直接改 DOM 宽度，避免每帧 setState 触发列表+编辑器整体重渲染
+  const leftPanelRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartXRef = useRef(0);
   const dragStartWidthRef = useRef(0);
@@ -247,6 +253,11 @@ const NotesPage: React.FC = () => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         searchInputRef.current?.focus();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p' && !e.shiftKey) {
+        // 拦截浏览器原生的「打印」快捷键，改为打开快速切换器
+        e.preventDefault();
+        setShowQuickSwitcher(true);
       }
       if (e.key === 'Escape') setShowNewNotePopover(false);
     };
@@ -541,6 +552,18 @@ const NotesPage: React.FC = () => {
     localStorage.setItem('note_last_opened_id', note.id);
   }, []);
 
+  /**
+   * 快速切换器选中笔记：目标可能不在当前筛选结果里（如在回收站视图切到一篇正常笔记），
+   * 因此先重置为「全部笔记」，再打开，保证目标在列表中可见。
+   */
+  const handleQuickSwitch = useCallback((note: Note) => {
+    setSelectedCategory({ type: 'all' });
+    setFilterType('all');
+    setSelectedTagIds([]);
+    setSearchQuery('');
+    handleSelectNote(note);
+  }, [handleSelectNote, setFilterType, setSelectedTagIds, setSearchQuery]);
+
   useEffect(() => {
     // 移动端默认停留在列表页，不自动跳进上次打开的笔记
     if (isMobile) return;
@@ -557,6 +580,7 @@ const NotesPage: React.FC = () => {
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     setIsDragging(true);
+    isDraggingRef.current = true;
     dragStartXRef.current = e.clientX;
     dragStartWidthRef.current = leftWidth;
   }, [leftWidth]);
@@ -566,16 +590,24 @@ const NotesPage: React.FC = () => {
     const handleMouseMove = (e: MouseEvent) => {
       const diff = e.clientX - dragStartXRef.current;
       const newWidth = Math.max(240, Math.min(600, dragStartWidthRef.current + diff));
-      setLeftWidth(newWidth);
+      // 拖拽中只改 DOM 宽度：避免每个 mousemove 都触发 React 重渲染，
+      // 那会让列表（已虚拟化）与编辑器一起重建，得不偿失。
+      if (leftPanelRef.current) leftPanelRef.current.style.width = `${newWidth}px`;
+      dragStartWidthRef.current = newWidth;
     };
-    const handleMouseUp = () => setIsDragging(false);
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      isDraggingRef.current = false;
+      // 松手时才提交到 state 并持久化
+      setLeftWidth(dragStartWidthRef.current);
+    };
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging]);
+  }, [isDragging, setLeftWidth]);
 
   const combinedRefreshTrigger = editorRefreshTrigger + notesRefreshToken;
 
@@ -700,6 +732,7 @@ const NotesPage: React.FC = () => {
         /* 桌面端 · 展开态：笔记列表 + 可拖拽分隔条 */
         <>
           <div
+            ref={leftPanelRef}
             className={`shrink-0 border-r ${isDark ? 'border-gray-700' : 'border-gray-200'}`}
             style={{ width: leftWidth }}
           >
@@ -720,6 +753,16 @@ const NotesPage: React.FC = () => {
           {editorPanelEl}
         </div>
       )}
+
+      {/* ⌘P 快速切换笔记：定位用，与 ⌘K 命令面板分工 */}
+      <NoteQuickSwitcher
+        open={showQuickSwitcher}
+        onClose={() => setShowQuickSwitcher(false)}
+        notes={notes}
+        selectedNoteId={selectedNote?.id ?? null}
+        onSelect={handleQuickSwitch}
+        isDark={isDark}
+      />
 
       {/* Ctrl+N new note popover */}
       {showNewNotePopover && (

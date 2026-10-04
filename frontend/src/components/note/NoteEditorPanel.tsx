@@ -16,6 +16,7 @@ import toast from 'react-hot-toast';
 import NoteEditorContainer from './NoteEditorContainer';
 import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';
 import NoteCommandPalette from './NoteCommandPalette';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import NoteOutlinePanel from './NoteOutlinePanel';
 import NoteRecordingPanel from './recording/NoteRecordingPanel';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
@@ -174,8 +175,11 @@ function toCommandMap(commands: NoteCommand[]): Record<string, NoteCommand> {
 const SHORTCUT_HELP: Array<{ keys: string; desc: string }> = [
   { keys: '⌘S', desc: '保存笔记' },
   { keys: '⌘K', desc: '打开命令面板' },
+  { keys: '⌘P', desc: '快速跳转到笔记' },
   { keys: '⌘N', desc: '新建笔记（列表区）' },
   { keys: '⌘⇧F', desc: '搜索笔记（列表区）' },
+  { keys: '⌘J', desc: '打开 AI 助手' },
+  { keys: 'Esc', desc: '关闭 AI 助手（焦点不在输入框时）' },
   { keys: '⌘Z / ⌘⇧Z', desc: '撤销 / 重做' },
   { keys: '⌘B / ⌘I / ⌘U', desc: '粗体 / 斜体 / 下划线' },
   { keys: 'Tab / Enter', desc: '思维导图：添加子节点 / 兄弟节点' },
@@ -259,6 +263,11 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   /** 移动目标文件夹（空串表示根目录） */
   const [moveFolderId, setMoveFolderId] = useState('');
   const importInputRef = useRef<HTMLInputElement>(null);
+  /** 两个模态弹窗的容器，用于焦点陷阱 */
+  const shortcutsDialogRef = useRef<HTMLDivElement>(null);
+  const moveDialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(shortcutsDialogRef, showShortcuts);
+  useFocusTrap(moveDialogRef, showMoveDialog);
 
   const titleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const contentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1296,6 +1305,10 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       {showMoveDialog && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30" onClick={() => setShowMoveDialog(false)}>
           <div
+            ref={moveDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="移动到文件夹"
             className={`w-80 rounded-xl border shadow-2xl p-4 ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
             onClick={e => e.stopPropagation()}
           >
@@ -1334,6 +1347,10 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       {showShortcuts && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30" onClick={() => setShowShortcuts(false)}>
           <div
+            ref={shortcutsDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="快捷键说明"
             className={`w-96 rounded-xl border shadow-2xl p-4 ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
             onClick={e => e.stopPropagation()}
           >

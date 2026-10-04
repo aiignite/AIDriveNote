@@ -223,6 +223,41 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   const [showBatchMenu, setShowBatchMenu] = useState(false);
   const batchMenuRef = useRef<HTMLDivElement>(null);
 
+  /* ── 拖拽移动 ──────────────────────────────────
+   * 拖笔记到文件夹即可移动，比右键菜单少两次点击。
+   * 用原生 HTML5 DnD：无需额外依赖，且移动端无鼠标时自动失效，不影响触屏体验。 */
+  const [draggingNoteId, setDraggingNoteId] = useState<string | null>(null);
+  /** 当前悬停的目标文件夹；null 表示不在任何文件夹上 */
+  const [dropFolderId, setDropFolderId] = useState<string | null>(null);
+
+  /** 开始拖拽：记录笔记 ID 到 dataTransfer，便于 drop 时读取 */
+  const handleNoteDragStart = useCallback((e: React.DragEvent, noteId: string) => {
+    setDraggingNoteId(noteId);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', noteId);
+  }, []);
+
+  /** 结束/取消拖拽：清理高亮状态 */
+  const handleDragEnd = useCallback(() => {
+    setDraggingNoteId(null);
+    setDropFolderId(null);
+  }, []);
+
+  /**
+   * 放下：把笔记移动到目标文件夹。
+   * @param e 拖拽事件
+   * @param folderId 目标文件夹 ID；null 表示移回根目录
+   */
+  const handleDrop = useCallback((e: React.DragEvent, folderId: string | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const noteId = e.dataTransfer.getData('text/plain') || draggingNoteId;
+    handleDragEnd();
+    if (!noteId) return;
+    onMoveNote(noteId, folderId);
+    toast.success(`已移动「${notes.find(n => n.id === noteId)?.title || '笔记'}」`);
+  }, [draggingNoteId, onMoveNote, handleDragEnd, notes]);
+
   /** 批量移动的文件夹选项（带缩进层级，空 id 表示根目录已单独处理） */
   const folderOptions = useMemo(() => {
     const byId = new Map(folders.map(f => [f.id, f]));
@@ -464,15 +499,29 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
   const displayCount = notesTotal ?? sortedNotes.length;
 
-  // 递归计算文件夹下的笔记数量（含子文件夹）
-  function countNotesInNode(node: TreeNode): number {
+  // 递归计算文件夹下的笔记数量（含子文件夹）。
+  // 对同一棵树会被每个文件夹行调用一次，故按节点 id 缓存结果，
+  // 避免每次渲染都把整棵树重复遍历 N 遍。
+  const noteCountCacheRef = useRef(new Map<string, number>());
+
+  const countNotesInNode = useCallback((node: TreeNode): number => {
+    if (node.type !== 'folder' || !node.folder) return 0;
+    const cached = noteCountCacheRef.current.get(node.folder.id);
+    if (cached !== undefined) return cached;
+
     let count = 0;
     for (const child of node.children) {
       if (child.type === 'note') count++;
       else count += countNotesInNode(child);
     }
+    noteCountCacheRef.current.set(node.folder.id, count);
     return count;
-  }
+  }, []);
+
+  // 树变化时清空缓存（笔记移动、改名等都会影响计数）
+  useEffect(() => {
+    noteCountCacheRef.current.clear();
+  }, [tree]);
 
   const toggleFolder = useCallback((id: string) => {
     setExpandedFolders(prev => {
@@ -567,9 +616,27 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     return (
       <div
         key={note.id}
+        role="option"
+        aria-selected={isSelected}
+        tabIndex={0}
+        onKeyDown={e => {
+          // 键盘可达：Enter 打开、Space 切换勾选
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (checkedIds.length === 0) onSelectNote(note);
+          } else if (e.key === ' ') {
+            e.preventDefault();
+            toggleNoteChecked(note.id, noteIndex, e.shiftKey);
+          }
+        }}
         onClick={e => handleRowClick(note, noteIndex, e.shiftKey)}
         onContextMenu={(e) => handleContextMenu(e, 'note', note.id)}
+        draggable={!isMobile}
+        onDragStart={e => handleNoteDragStart(e, note.id)}
+        onDragEnd={handleDragEnd}
         className={`group flex items-center gap-2 px-3 py-2.5 md:py-2 cursor-pointer rounded-lg mx-1 transition-all ${
+          draggingNoteId === note.id ? 'opacity-40' : ''
+        } ${
           isChecked
             ? (isDark ? 'bg-orange-900/25' : 'bg-orange-50/70')
             : isSelected
@@ -675,8 +742,18 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
       <div
           onClick={() => toggleFolder(folder.id)}
           onContextMenu={(e) => handleContextMenu(e, 'folder', folder.id)}
+          onDragOver={e => {
+            if (!draggingNoteId) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            setDropFolderId(folder.id);
+          }}
+          onDragLeave={() => setDropFolderId(cur => (cur === folder.id ? null : cur))}
+          onDrop={e => handleDrop(e, folder.id)}
           className={`group flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg cursor-pointer transition-all ${
-            isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50'
+            dropFolderId === folder.id
+              ? (isDark ? 'bg-orange-900/40 ring-1 ring-orange-500' : 'bg-orange-100 ring-1 ring-orange-400')
+              : isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50'
           }`}
           style={{ paddingLeft: `${paddingLeft}px` }}
         >
@@ -1309,7 +1386,13 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
       </div>
 
       {/* Tree / flat list —— 虚拟滚动：只渲染可视区的行，避免 500+ 笔记全量渲染卡顿 */}
-      <div ref={setScrollContainer} className="flex-1 overflow-y-auto py-1">
+      <div
+        ref={setScrollContainer}
+        role="listbox"
+        aria-label="笔记列表"
+        aria-multiselectable={showCheckboxes}
+        className="flex-1 overflow-y-auto py-1"
+      >
         {loading ? (
           <div className="flex items-center justify-center h-32">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-orange-600"></div>
@@ -1318,7 +1401,22 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
           renderEmptyState()
         ) : (
           <>
-            {/* 用一个等高占位容器撑开滚动高度，内部按 virtualItems 绝对定位渲染 */}
+            {scrollContainer && draggingNoteId && (
+            /* 拖拽悬停时在列表顶部提供「移回根目录」的落点 */
+            <div
+              onDragOver={e => { e.preventDefault(); setDropFolderId('__root__'); }}
+              onDragLeave={() => setDropFolderId(cur => (cur === '__root__' ? null : cur))}
+              onDrop={e => handleDrop(e, null)}
+              className={`mx-2 mb-1 px-3 py-1.5 rounded-lg text-xs text-center border border-dashed transition-colors ${
+                dropFolderId === '__root__'
+                  ? (isDark ? 'border-orange-500 bg-orange-900/30 text-orange-300' : 'border-orange-400 bg-orange-100 text-orange-700')
+                  : (isDark ? 'border-gray-700 text-gray-500' : 'border-gray-300 text-gray-400')
+              }`}
+            >
+              松开鼠标移回根目录
+            </div>
+          )}
+          {/* 用一个等高占位容器撑开滚动高度，内部按 virtualItems 绝对定位渲染 */}
             <div style={{ height: `${totalSize}px`, position: 'relative', width: '100%' }}>
               {virtualItems.map(vItem => {
                 const row = flatRows[vItem.index];
