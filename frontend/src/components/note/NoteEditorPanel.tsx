@@ -11,7 +11,7 @@
  * 同时承载：⌘S 手动保存、⌘K 命令面板、文件导入、导出、移动到文件夹等面板级命令。
  */
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft } from 'lucide-react';
+import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import NoteEditorContainer from './NoteEditorContainer';
 import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';
@@ -231,6 +231,15 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   const [contentResetKey, setContentResetKey] = useState(0);
   const [description, setDescription] = useState(note.description ?? '');
   const [saving, setSaving] = useState(false);
+  /**
+   * 正文保存失败时的待保存载荷。
+   * 非 null 表示「有内容没能存进服务端」，标题栏会显示可重试的红色提示，
+   * 切换笔记 / 关闭页面前会尝试补存，避免用户白写内容。
+   */
+  const [saveError, setSaveError] = useState<OutboxPayload | null>(null);
+  /** saveError 的 ref 镜像，供 beforeunload 等非 React 回调读取最新值 */
+  const saveErrorRef = useRef<OutboxPayload | null>(null);
+  saveErrorRef.current = saveError;
 
   /* ────── 命令体系相关状态 ────── */
   /** 编辑器注册的命令与菜单（附注册时的笔记类型） */
@@ -253,6 +262,8 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
 
   const titleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const contentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 防抖期间待保存的正文；切换笔记 / 关闭页面前据此补存，避免静默丢失 */
+  const pendingContentRef = useRef<OutboxPayload | null>(null);
   const contentLoadAtRef = useRef(0);
   const contentDirtyRef = useRef(false);
   const syncedContentNoteIdRef = useRef(note.id);
@@ -280,9 +291,23 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
 
   // 切换笔记：先用列表缓存内容即时渲染，后台拉取最新数据
   useEffect(() => {
+    const prevId = noteIdRef.current;
+    const switchingAway = prevId !== note.id;
+
+    // 离开旧笔记前，若防抖保存还没触发，先补存一次。
+    // 此前直接 clearTimeout 会让 2 秒内输入的内容随笔记切换而丢失。
+    if (switchingAway && contentTimerRef.current) {
+      const pending = pendingContentRef.current;
+      clearTimeout(contentTimerRef.current);
+      contentTimerRef.current = null;
+      if (pending) void flushContentSave(pending);
+    }
+
     syncedContentNoteIdRef.current = note.id;
     noteIdRef.current = note.id;
     contentDirtyRef.current = false;
+    pendingContentRef.current = null;
+    setSaveError(null);
     setTitle(note.title);
     setNoteTags(note.tags ?? []);
     setDescription(note.description ?? '');
@@ -291,11 +316,6 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     setContent(note.content ?? null);
     setContentLoaded(Boolean(note.content));
     contentLoadAtRef.current = Date.now();
-
-    if (contentTimerRef.current) {
-      clearTimeout(contentTimerRef.current);
-      contentTimerRef.current = null;
-    }
 
     noteApi.get(note.id).then(full => {
       if (noteIdRef.current !== note.id || contentDirtyRef.current) return;
@@ -311,6 +331,19 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       setContentLoaded(true);
     });
   }, [note.id, userId]);
+
+  // 离开页面前拦截：有未落库的内容时让浏览器弹确认框。
+  // 防抖保存最长有 2s 延迟，直接关标签页/刷新会让这段输入无处可寻。
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (!contentDirtyRef.current && !saveErrorRef.current) return;
+      e.preventDefault();
+      // 兼容旧浏览器；现代浏览器会显示自定义文案
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, []);
 
   // 同笔记元数据更新（保存后列表同步）
   useEffect(() => {
@@ -505,27 +538,53 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     }
   }, [showTagPopover]);
 
+  /**
+   * 把正文真正写入服务端（自动保存与手动重试共用）。
+   *
+   * 失败分两类，此前只有网络异常被处理、其余错误被静默吞掉，导致用户
+   * 以为已保存、实际内容丢失：
+   * - 网络异常且能入离线队列 → 视为已保存，提示联网后自动同步；
+   * - 网络异常但缓存里没有这篇笔记，或非网络异常（500 / 401 / 校验失败等）
+   *   → 记录 saveError，标题栏显示红色「保存失败，点击重试」。
+   *
+   * @param payload 正文载荷
+   */
+  const flushContentSave = useCallback(async (payload: OutboxPayload) => {
+    const targetId = noteIdRef.current;
+    try {
+      setSaving(true);
+      await noteApi.update(targetId, { content: payload.content as Record<string, unknown> } as NoteUpdate);
+      setSaving(false);
+      setSaveError(null);
+      if (targetId === noteIdRef.current) contentDirtyRef.current = false;
+    } catch (err) {
+      setSaving(false);
+      // 离线：正文变更入队，联网后自动回传（同一提示复用 id，避免连续输入刷屏）
+      if (isNetworkError(err) && await persistOffline(payload)) {
+        toast.success('已离线保存，联网后同步', { id: 'offline-save' });
+        if (targetId === noteIdRef.current) contentDirtyRef.current = false;
+        return;
+      }
+      // 其余失败一律留痕并提示，绝不静默丢弃用户内容
+      if (targetId === noteIdRef.current) setSaveError(payload);
+      toast.error('保存失败，内容未保存', { id: 'save-failed' });
+    }
+  }, [persistOffline]);
+
   // Auto-save content (debounce 2s) — AI 刷新后 1.5s 内忽略编辑器初始化 onChange
   const handleContentChange = useCallback((newContent: unknown) => {
     if (Date.now() - contentLoadAtRef.current < 1500) return;
     contentDirtyRef.current = true;
     setContent(newContent);
+    setSaveError(null); // 新一轮编辑清除上次的失败提示
+    const payload: OutboxPayload = { content: newContent as Record<string, unknown> };
+    pendingContentRef.current = payload;
     if (contentTimerRef.current) clearTimeout(contentTimerRef.current);
-    contentTimerRef.current = setTimeout(async () => {
-      try {
-        setSaving(true);
-        await noteApi.update(note.id, { content: newContent as Record<string, unknown> } as NoteUpdate);
-        setSaving(false);
-      } catch (err) {
-        setSaving(false);
-        // 离线：正文变更入队，联网后自动回传（同一提示复用 id，避免连续输入刷屏）
-        if (isNetworkError(err)
-          && await persistOffline({ content: newContent as Record<string, unknown> })) {
-          toast.success('已离线保存，联网后同步', { id: 'offline-save' });
-        }
-      }
+    contentTimerRef.current = setTimeout(() => {
+      pendingContentRef.current = null;
+      void flushContentSave(payload);
     }, 2000);
-  }, [note.id, persistOffline]);
+  }, [flushContentSave]);
 
   // Manual save
   const handleManualSave = useCallback(async () => {
@@ -840,9 +899,16 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   useEffect(() => {
     return () => {
       if (titleTimerRef.current) clearTimeout(titleTimerRef.current);
-      if (contentTimerRef.current) clearTimeout(contentTimerRef.current);
+      if (contentTimerRef.current) {
+        // 关闭编辑器（如移动端返回列表、全屏退出）时若仍有防抖待存内容，立即补存，
+        // 否则这 2 秒内的输入会随组件卸载一起消失
+        const pending = pendingContentRef.current;
+        clearTimeout(contentTimerRef.current);
+        contentTimerRef.current = null;
+        if (pending) void flushContentSave(pending);
+      }
     };
-  }, []);
+  }, [flushContentSave]);
 
   // Ctrl+S 保存 / Ctrl+K 命令面板
   useEffect(() => {
@@ -889,6 +955,20 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           <NoteMenuBar menus={menus} isDark={isDark} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {saveError && (
+            <button
+              type="button"
+              onClick={() => void flushContentSave(saveError)}
+              className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors ${
+                isDark
+                  ? 'text-red-400 hover:bg-red-950/40'
+                  : 'text-red-600 hover:bg-red-50'
+              }`}
+              title="正文未能保存，点击重试"
+            >
+              <AlertCircle size={12} /> 保存失败，点击重试
+            </button>
+          )}
           {saving && (
             <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>保存中...</span>
           )}

@@ -52,6 +52,8 @@ const STORE_HANDLES = 'handles';
 const HANDLE_KEY = 'dir';
 /** 选择器记忆 ID：让浏览器下次从同一目录开始 */
 const PICKER_ID = 'aidrivenote-vault';
+/** 目录名镜像的 localStorage 键（IndexedDB 被回收时的兜底展示） */
+const NAME_MIRROR_KEY = 'aidrivenote.sync.dirName';
 /** 应用内部数据目录名（manifest 与回收站都放这里） */
 export const APP_DIR = '.aidrivenote';
 /** 回收站目录（相对应用数据目录） */
@@ -144,9 +146,14 @@ function openHandleDb(): Promise<IDBDatabase> {
 /**
  * 把目录句柄持久化到 IndexedDB。
  * 目录句柄是可结构化克隆对象，因此可以直接入库，用户下次打开无需重新选目录。
+ *
+ * ⚠️ IndexedDB 在浏览器眼里属于「尽力而为」的缓存：站点存储紧张时整个库可能被直接回收，
+ * 目录句柄随之丢失，用户就得重新选一次文件夹。因此这里同时申请持久化存储，
+ * 并把目录名镜像到 localStorage 兜底（见 `requestPersistentStorage` 与 `saveDirNameMirror`）。
  * @param handle 已授权的目录句柄
  */
 export async function saveHandleToIndexedDB(handle: SyncDirectoryHandle): Promise<void> {
+  await requestPersistentStorage();
   const db = await openHandleDb();
   try {
     await new Promise<void>((resolve, reject) => {
@@ -157,6 +164,71 @@ export async function saveHandleToIndexedDB(handle: SyncDirectoryHandle): Promis
     });
   } finally {
     db.close();
+  }
+  saveDirNameMirror(handle.name);
+}
+
+/**
+ * 申请持久化存储（`navigator.storage.persist`）。
+ *
+ * 未申请持久化的站点，其 IndexedDB / localStorage 会被浏览器标记为「可回收」：
+ * 在磁盘空间紧张或长时间未访问时，整个 `aidrivenote-sync` 库可能被删除，
+ * 用户已绑定的本地文件夹就会「莫名其妙地不见了」。申请成功后浏览器会尽量不回收。
+ *
+ * 浏览器可能拒绝授予（无用户手势、权限策略限制），因此失败只记录不抛错——
+ * 后续仍有 localStorage 目录名镜像作为兜底提示。
+ * @returns 是否已处于持久化状态
+ */
+export async function requestPersistentStorage(): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persist) return false;
+  try {
+    if (await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 查询当前站点是否已获得持久化存储。
+ * @returns 是否为持久化（持久化判断为 false 时浏览器仍可能回收 IndexedDB）
+ */
+export async function isPersistent(): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persisted) return false;
+  try {
+    return await navigator.storage.persisted();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 把目录名镜像到 localStorage。
+ *
+ * 用途：即使 IndexedDB 里的句柄被浏览器回收，界面上仍能告诉用户
+ * 「你之前绑定的是哪个文件夹」，避免直接显示成从未设置过的样子。
+ * @param name 目录名；传空字符串表示清除镜像
+ */
+function saveDirNameMirror(name: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (name) localStorage.setItem(NAME_MIRROR_KEY, name);
+    else localStorage.removeItem(NAME_MIRROR_KEY);
+  } catch {
+    /* 隐私模式下写入可能失败，不影响主流程 */
+  }
+}
+
+/**
+ * 读取目录名镜像。
+ * @returns 之前绑定的目录名；从未绑定或已清除时返回空字符串
+ */
+export function loadDirNameMirror(): string {
+  if (typeof localStorage === 'undefined') return '';
+  try {
+    return localStorage.getItem(NAME_MIRROR_KEY) ?? '';
+  } catch {
+    return '';
   }
 }
 
@@ -177,7 +249,14 @@ export async function loadHandleFromIndexedDB(): Promise<SyncDirectoryHandle | n
           req.onerror = () => reject(req.error ?? new Error('读取目录句柄失败'));
         },
       );
-      return (handle as SyncDirectoryHandle | undefined) ?? null;
+      const stored = (handle as SyncDirectoryHandle | undefined) ?? null;
+      if (stored) {
+        // 数据还在：补写一次目录名镜像，并顺手申请持久化存储，
+        // 防止浏览器因存储紧张把 aidrivenote-sync 整个回收掉
+        saveDirNameMirror(stored.name);
+        void requestPersistentStorage();
+      }
+      return stored;
     } finally {
       db.close();
     }
@@ -188,8 +267,10 @@ export async function loadHandleFromIndexedDB(): Promise<SyncDirectoryHandle | n
 
 /**
  * 清除 IndexedDB 中保存的目录句柄（用户「断开文件夹」时调用）。
+ * 同时清除目录名镜像，避免界面上残留已失效的目录名。
  */
 export async function clearHandleFromIndexedDB(): Promise<void> {
+  saveDirNameMirror('');
   if (typeof indexedDB === 'undefined') return;
   try {
     const db = await openHandleDb();

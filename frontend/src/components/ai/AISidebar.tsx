@@ -154,6 +154,26 @@ const AISidebar: React.FC = () => {
     inputRef.current?.focus();
   }, [aiOpen, aiPreset, clearAIPreset, sendMessage]);
 
+  /**
+   * Esc 关闭抽屉。
+   * 输入框内按 Esc 不应直接关掉整个面板——用户很可能只是想在多行输入里换行或取消，
+   * 所以仅在焦点不在输入区域时才响应。移动端同理（无实体键盘，本就不会触发）。
+   */
+  useEffect(() => {
+    if (!aiOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      // 正在输入（输入框/下拉/多行文本）时不抢 Esc
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
+      e.preventDefault();
+      closeAI();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [aiOpen, closeAI]);
+
   const revokePendingPreview = useCallback((entry: PendingAttachment) => {
     if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
   }, []);

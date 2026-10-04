@@ -16,6 +16,7 @@
     "@emotion/react": "^11.14.0",
     "@mantine/core": "^8.3.11",
     "@mantine/hooks": "^8.3.11",
+    "@tanstack/react-virtual": "^3.14.13",
     "@uiw/react-md-editor": "^4.1.0",
     "docx": "^9.6.1",
     "file-saver": "^2.0.5",

@@ -13,6 +13,12 @@ import toast from 'react-hot-toast';
 import { useApp } from '../contexts/AppContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useIsMobile } from '../hooks/useMobile';
+import {
+  clampNumber,
+  isStringArray,
+  usePersistentState,
+  usePersistentStateDebounced,
+} from '../hooks/usePersistentState';
 import { buildNoteQuickActions } from '../utils/noteAIActions';
 import { isNetworkError } from '../services/client';
 import {
@@ -42,10 +48,16 @@ const NotesPage: React.FC = () => {
   const [notes, setNotes] = useState<Note[]>([]);
   const [folders, setFolders] = useState<NoteFolder[]>([]);
   const [loading, setLoading] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  // 搜索词高频变化，用防抖版本落盘
+  const [searchQuery, setSearchQuery] = usePersistentStateDebounced<string>('note_search_query', '');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [filterType, setFilterType] = useState<string>('all');
-  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  // 筛选与视图偏好持久化：刷新后无需重建视图
+  const [filterType, setFilterType] = usePersistentState<string>('note_filter_type', 'all');
+  const [selectedTagIds, setSelectedTagIds] = usePersistentState<string[]>(
+    'note_filter_tags',
+    [],
+    isStringArray,
+  );
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
   const [notesTotal, setNotesTotal] = useState(0);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -53,11 +65,20 @@ const NotesPage: React.FC = () => {
   const [editorRefreshTrigger, setEditorRefreshTrigger] = useState(0);
   const [showNewNotePopover, setShowNewNotePopover] = useState(false);
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState<NoteCategory>({ type: 'all' });
+  // 当前分类页签持久化（folder 视图依赖具体 folderId，不持久化）
+  const [storedCategoryType, setStoredCategoryType] = usePersistentState<NoteCategory['type']>(
+    'note_category_type',
+    'all',
+  );
+  const [selectedCategory, setSelectedCategory] = useState<NoteCategory>(
+    () => (storedCategoryType === 'folder' ? { type: 'all' } : { type: storedCategoryType }),
+  );
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Sidebar width (draggable)
-  const [leftWidth, setLeftWidth] = useState(320);
+  // Sidebar width (draggable) —— 持久化，刷新后保持用户调好的宽度
+  const [storedLeftWidth, setLeftWidth] = usePersistentState<number>('note_sidebar_width', 320);
+  // 持久化的宽度可能来自旧版本或被手工改坏，统一夹到合法区间后再用于渲染
+  const leftWidth = clampNumber(storedLeftWidth, 240, 600, 320);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartXRef = useRef(0);
   const dragStartWidthRef = useRef(0);
@@ -84,6 +105,11 @@ const NotesPage: React.FC = () => {
 
   const activeFolderId =
     selectedCategory.type === 'folder' ? selectedCategory.folderId : undefined;
+
+  // 分类页签变化时同步到 localStorage（folder 视图依赖具体文件夹，不持久化）
+  useEffect(() => {
+    if (selectedCategory.type !== 'folder') setStoredCategoryType(selectedCategory.type);
+  }, [selectedCategory.type, setStoredCategoryType]);
 
   /**
    * 从本地离线缓存构造列表数据。

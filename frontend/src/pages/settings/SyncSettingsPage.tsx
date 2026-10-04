@@ -3,6 +3,8 @@ import toast from 'react-hot-toast';
 import {
   AlertTriangle,
   CheckCircle2,
+  FileText,
+  Folder,
   FolderSync,
   HardDriveDownload,
   Loader2,
@@ -15,11 +17,15 @@ import { useAuth } from '../../contexts/AuthContext';
 import {
   clearHandleFromIndexedDB,
   ensurePermission,
+  isPersistent,
   isSupported,
+  listDir,
+  loadDirNameMirror,
   loadHandleFromIndexedDB,
   pickDirectory,
   queryPermission,
   saveHandleToIndexedDB,
+  type DirEntry,
   type SyncDirectoryHandle,
 } from '../../services/sync/folderAccess';
 import {
@@ -42,12 +48,29 @@ const SyncSettingsPage: React.FC = () => {
 
   const [handle, setHandle] = useState<SyncDirectoryHandle | null>(null);
   const [granted, setGranted] = useState(false);
+  const [dirName, setDirName] = useState('');
+  const [entries, setEntries] = useState<DirEntry[] | null>(null);
+  const [persistent, setPersistent] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<'idle' | 'compare' | 'apply'>('idle');
   const [report, setReport] = useState<SyncReport | null>(null);
   const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [error, setError] = useState('');
   const [showOrphans, setShowOrphans] = useState(false);
   const autoComparedRef = useRef(false);
+
+  /**
+   * 读取已绑定目录的直接子条目，用于在页面上展示文件夹与文件名称。
+   * 只列一层：既能让用户确认「绑的是哪个目录、里面有什么」，
+   * 又不会把上千个文件全塞进页面拖慢渲染。
+   * @param target 目录句柄
+   */
+  const refreshEntries = useCallback(async (target: SyncDirectoryHandle) => {
+    try {
+      setEntries(await listDir(target));
+    } catch {
+      setEntries([]);
+    }
+  }, []);
 
   /**
    * 执行一次同步（compare 只出报告，apply 真正写盘）。
@@ -70,6 +93,7 @@ const SyncSettingsPage: React.FC = () => {
           onProgress: setProgress,
         });
         setReport(result);
+        await refreshEntries(target);
         if (mode === 'apply') toast.success('同步完成');
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -78,22 +102,37 @@ const SyncSettingsPage: React.FC = () => {
         setProgress(null);
       }
     },
-    [user?.id],
+    [user?.id, refreshEntries],
   );
 
   // 打开页面时恢复上次授权的目录，并在有权限的前提下自动对比一次
   useEffect(() => {
-    if (!supported || autoComparedRef.current) return;
+    if (!supported) return;
+    void isPersistent().then(setPersistent);
+    if (autoComparedRef.current) return;
     autoComparedRef.current = true;
     void (async () => {
+      // 先读目录名镜像：即使句柄已被浏览器回收，也能告诉用户之前绑的是哪个目录
+      const mirrored = loadDirNameMirror();
+      if (mirrored) setDirName(mirrored);
       const stored = await loadHandleFromIndexedDB();
-      if (!stored) return;
+      if (!stored) {
+        // 句柄消失但镜像还在 —— 说明 IndexedDB 被回收了，明确提示用户重新绑定
+        if (mirrored) {
+          setError(
+            `之前绑定的文件夹「${mirrored}」的访问授权已被浏览器清除（通常是浏览器回收了本站存储）。请重新选择该文件夹，已同步的文件不会丢失。`
+          );
+        }
+        return;
+      }
       setHandle(stored);
+      setDirName(stored.name);
       const ok = await queryPermission(stored);
       setGranted(ok);
+      await refreshEntries(stored);
       if (ok) await run('compare', stored);
     })();
-  }, [supported, run]);
+  }, [supported, run, refreshEntries]);
 
   /**
    * 选择本地文件夹并持久化句柄。
@@ -105,7 +144,11 @@ const SyncSettingsPage: React.FC = () => {
       await saveHandleToIndexedDB(picked);
       setHandle(picked);
       setGranted(true);
+      setDirName(picked.name);
+      setError('');
       setReport(null);
+      await refreshEntries(picked);
+      setPersistent(await isPersistent());
       toast.success(`已绑定文件夹：${picked.name}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '选择文件夹失败');
@@ -124,6 +167,7 @@ const SyncSettingsPage: React.FC = () => {
       return;
     }
     toast.success('已重新授权');
+    await refreshEntries(handle);
     await run('compare', handle);
   };
 
@@ -134,6 +178,8 @@ const SyncSettingsPage: React.FC = () => {
     await clearHandleFromIndexedDB();
     setHandle(null);
     setGranted(false);
+    setDirName('');
+    setEntries(null);
     setReport(null);
     setError('');
     toast.success('已断开本地文件夹（文件未被改动）');
@@ -222,39 +268,79 @@ const SyncSettingsPage: React.FC = () => {
             {/* 已绑定目录 */}
             {handle && (
               <div
-                className={`mt-4 flex items-center justify-between gap-3 rounded-xl border p-3 ${
+                className={`mt-4 rounded-xl border p-3 ${
                   isDark ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-gray-50'
                 }`}
               >
-                <div className="min-w-0">
-                  <p className={`text-xs ${muted}`}>已绑定文件夹</p>
-                  <p className={`text-sm font-medium truncate ${isDark ? 'text-gray-200' : 'text-gray-900'}`}>
-                    {handle.name}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex items-center gap-2">
+                    <Folder size={14} className="text-amber-400 shrink-0" />
+                    <p className={`text-xs ${muted} shrink-0`}>已绑定文件夹</p>
+                    <p
+                      className={`text-sm font-medium truncate ${
+                        isDark ? 'text-gray-200' : 'text-gray-900'
+                      }`}
+                      title={dirName}
+                    >
+                      {dirName}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {granted ? (
+                      <span
+                        className={`flex items-center gap-1 text-xs ${
+                          isDark ? 'text-emerald-400' : 'text-emerald-600'
+                        }`}
+                      >
+                        <CheckCircle2 size={14} /> 已授权
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void handleReauthorize()}
+                        className={`flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                          isDark
+                            ? 'border-amber-800 text-amber-300 hover:bg-amber-950/50'
+                            : 'border-amber-300 text-amber-700 hover:bg-amber-50'
+                        }`}
+                      >
+                        <ShieldAlert size={13} /> 重新授权
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* 目录内容：让用户一眼确认绑的是哪个目录、里面已经有哪些文件和子文件夹 */}
+                {entries && entries.length > 0 && (
+                  <div className="mt-2.5 border-t border-dashed border-gray-300 dark:border-gray-700 pt-2.5">
+                    <p className={`text-xs ${muted} mb-1.5`}>
+                      目录内容（{entries.length} 项）
+                    </p>
+                    <ul
+                      className={`grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-1 text-xs ${
+                        isDark ? 'text-gray-400' : 'text-gray-500'
+                      }`}
+                    >
+                      {entries.map((entry) => (
+                        <li key={`${entry.kind}-${entry.name}`} className="flex items-center gap-1.5 min-w-0">
+                          {entry.kind === 'directory' ? (
+                            <Folder size={12} className="text-amber-400 shrink-0" />
+                          ) : (
+                            <FileText size={12} className="shrink-0" />
+                          )}
+                          <span className="truncate" title={entry.name}>
+                            {entry.name}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {entries && entries.length === 0 && (
+                  <p className={`mt-2 text-xs ${muted}`}>
+                    该文件夹目前为空，执行一次同步后笔记会以原生文件写入这里。
                   </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {granted ? (
-                    <span
-                      className={`flex items-center gap-1 text-xs ${
-                        isDark ? 'text-emerald-400' : 'text-emerald-600'
-                      }`}
-                    >
-                      <CheckCircle2 size={14} /> 已授权
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => void handleReauthorize()}
-                      className={`flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
-                        isDark
-                          ? 'border-amber-800 text-amber-300 hover:bg-amber-950/50'
-                          : 'border-amber-300 text-amber-700 hover:bg-amber-50'
-                      }`}
-                    >
-                      <ShieldAlert size={13} /> 重新授权
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
             )}
 
@@ -300,6 +386,24 @@ const SyncSettingsPage: React.FC = () => {
 
             {error && (
               <p className={`mt-3 text-sm ${isDark ? 'text-red-400' : 'text-red-600'}`}>{error}</p>
+            )}
+
+            {/* 未获得持久化存储时给出预警：浏览器可能回收 IndexedDB，导致目录授权丢失 */}
+            {handle && persistent === false && (
+              <div
+                className={`mt-3 flex items-start gap-2 rounded-xl border p-3 text-xs ${
+                  isDark
+                    ? 'border-amber-900/60 bg-amber-950/40 text-amber-300'
+                    : 'border-amber-200 bg-amber-50 text-amber-700'
+                }`}
+              >
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>
+                  浏览器未授予本站「持久化存储」。磁盘空间紧张或长时间不访问时，本地文件夹的授权记录
+                  <code className="mx-1">IndexedDB</code>
+                  可能被系统清除，届时需要重新绑定一次（已同步的文件不受影响）。
+                </span>
+              </div>
             )}
           </div>
         </div>

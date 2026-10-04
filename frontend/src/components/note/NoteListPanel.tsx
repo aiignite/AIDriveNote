@@ -10,8 +10,13 @@ import {
   MoreHorizontal, Trash2, ArrowUpDown, Folder, FolderOpen,
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
   BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, Download,
-  PanelLeftClose, Tag, X, Check,
+  PanelLeftClose, Tag, X, Check, LayoutGrid, CheckSquare, Square,
 } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import {
+  isStringArray,
+  usePersistentState,
+} from '../../hooks/usePersistentState';
 import type { Note, NoteFolder, NoteTag } from '../../services/note';
 
 /* ── helpers ────────────────────────────────────── */
@@ -37,6 +42,14 @@ const TYPE_ICON: Record<string, { icon: React.ReactNode; color: string; bgColor:
     color: 'text-orange-600 dark:text-orange-400',
     bgColor: 'bg-orange-50 dark:bg-orange-900/20',
   },
+};
+
+/** 笔记类型的中文名，用于筛选按钮的 title / aria-label（图标本身不显示文字） */
+const TYPE_LABEL: Record<string, string> = {
+  rich_text: '富文本',
+  markdown: 'Markdown',
+  mindmap: '思维导图',
+  flowchart: '流程图',
 };
 
 // 相对时间格式化
@@ -88,6 +101,12 @@ interface TreeNode {
 }
 
 /* ── props ──────────────────────────────────────── */
+
+/** 虚拟滚动的一行：文件夹行、新建输入行或笔记行 */
+type FlatRow =
+  | { kind: 'folder'; key: string; node: TreeNode }
+  | { kind: 'newFolder'; key: string; level: number }
+  | { kind: 'note'; key: string; note: Note; level: number };
 
 export interface NoteListPanelProps {
   notes: Note[];
@@ -177,8 +196,9 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     if (!selectedCategoryProp) setInternalCategory(cat);
     onCategoryChange?.(cat);
   }, [selectedCategoryProp, onCategoryChange]);
-  const [sortMode, setSortMode] = useState<SortMode>('updatedAt');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  // 排序方式持久化：刷新后保持用户习惯的排序视角
+  const [sortMode, setSortMode] = usePersistentState<SortMode>('note_sort_mode', 'updatedAt');
+  const [sortOrder, setSortOrder] = usePersistentState<'asc' | 'desc'>('note_sort_order', 'desc');
   const [showSortMenu, setShowSortMenu] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
@@ -190,6 +210,53 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   }, [filterTypeProp, onFilterTypeChange]);
   const [internalSelectedTagIds, setInternalSelectedTagIds] = useState<string[]>([]);
   const selectedTagIds = selectedTagIdsProp ?? internalSelectedTagIds;
+
+  /* ── 多选状态（批量整理）──
+   * 仅在非回收站视图启用：回收站的批量语义（永久删除）与常规批量操作差异较大，
+   * 先保持单选，避免误触导致不可逆操作。 */
+  const [checkedIds, setCheckedIds] = useState<string[]>([]);
+  /** Shift 连选的锚点，取最后一次点击的笔记下标 */
+  const selectionAnchorRef = useRef<number | null>(null);
+  /** 移动端没有 hover，checkbox 需常显 */
+  const showCheckboxes = !isTrashView;
+  /** 批量操作条中的「移动到文件夹」下拉开关 */
+  const [showBatchMenu, setShowBatchMenu] = useState(false);
+  const batchMenuRef = useRef<HTMLDivElement>(null);
+
+  /** 批量移动的文件夹选项（带缩进层级，空 id 表示根目录已单独处理） */
+  const folderOptions = useMemo(() => {
+    const byId = new Map(folders.map(f => [f.id, f]));
+    const depthOf = (folder: NoteFolder): number => {
+      let depth = 0;
+      let cur = folder.parentId;
+      const seen = new Set<string>([folder.id]);
+      while (cur && byId.has(cur) && !seen.has(cur)) {
+        seen.add(cur);
+        depth += 1;
+        cur = byId.get(cur)!.parentId;
+      }
+      return depth;
+    };
+    return folders.map(f => ({ id: f.id, name: f.name, depth: depthOf(f) }));
+  }, [folders]);
+
+  // 点击外部关闭批量移动菜单
+  useEffect(() => {
+    if (!showBatchMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (batchMenuRef.current && !batchMenuRef.current.contains(e.target as Node)) {
+        setShowBatchMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [showBatchMenu]);
+
+  /** 清空多选 */
+  const clearChecked = useCallback(() => {
+    setCheckedIds([]);
+    selectionAnchorRef.current = null;
+  }, []);
   const toggleTagFilter = useCallback((tagId: string) => {
     const next = selectedTagIds.includes(tagId)
       ? selectedTagIds.filter(id => id !== tagId)
@@ -282,6 +349,81 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     });
     return list;
   }, [notes, sortMode, sortOrder, selectedCategory.type]);
+
+  /** 切换单条笔记的选中状态；shift 连选时按区间批量勾选 */
+  const toggleNoteChecked = useCallback((noteId: string, index: number, shiftKey: boolean) => {
+    setCheckedIds(prev => {
+      const isChecked = prev.includes(noteId);
+      if (shiftKey && selectionAnchorRef.current !== null && showCheckboxes) {
+        const [start, end] = [selectionAnchorRef.current, index].sort((a, b) => a - b);
+        const span = sortedNotes.slice(start, end + 1).map(n => n.id);
+        return isChecked ? prev.filter(id => !span.includes(id)) : [...new Set([...prev, ...span])];
+      }
+      selectionAnchorRef.current = index;
+      return isChecked ? prev.filter(id => id !== noteId) : [...prev, noteId];
+    });
+  }, [sortedNotes, showCheckboxes]);
+
+  /** 全选当前筛选结果；已全选时再次点击取消 */
+  const toggleCheckAll = useCallback(() => {
+    setCheckedIds(prev => (prev.length === sortedNotes.length ? [] : sortedNotes.map(n => n.id)));
+  }, [sortedNotes]);
+
+  // 切换分类 / 搜索 / 筛选后，已勾选的笔记可能不在当前视图，清空避免误操作
+  useEffect(() => {
+    clearChecked();
+  }, [selectedCategory.type, filterType, selectedTagIds.join(','), searchQuery, clearChecked]);
+
+  /** 点击笔记行：多选态下改为切换勾选，否则正常打开 */
+  const handleRowClick = useCallback((note: Note, index: number, shiftKey: boolean) => {
+    if (checkedIds.length > 0 || showCheckboxes && (shiftKey)) {
+      toggleNoteChecked(note.id, index, shiftKey);
+      return;
+    }
+    onSelectNote(note);
+  }, [checkedIds.length, showCheckboxes, toggleNoteChecked, onSelectNote]);
+
+  /* ── 批量操作 ────────────────────────────────── */
+
+  /** 批量删除：逐条调用既有删除逻辑，保持与单条删除一致的软删语义 */
+  const handleBatchDelete = useCallback(() => {
+    const ids = [...checkedIds];
+    if (!ids.length) return;
+    const msg = `确定删除选中的 ${ids.length} 篇笔记吗？\n删除后可在回收站恢复。`;
+    if (!window.confirm(msg)) return;
+    ids.forEach(id => onDeleteNote(id));
+    clearChecked();
+    toast.success(`已删除 ${ids.length} 篇笔记`);
+  }, [checkedIds, onDeleteNote, clearChecked]);
+
+  /** 批量移动到指定文件夹 */
+  const handleBatchMove = useCallback((folderId: string | null) => {
+    const ids = [...checkedIds];
+    if (!ids.length) return;
+    ids.forEach(id => onMoveNote(id, folderId));
+    clearChecked();
+    toast.success(`已移动 ${ids.length} 篇笔记`);
+  }, [checkedIds, onMoveNote, clearChecked]);
+
+  /** 批量置顶 / 取消置顶 */
+  const handleBatchPin = useCallback((pinned: boolean) => {
+    if (!onPinNote) return;
+    const ids = [...checkedIds];
+    if (!ids.length) return;
+    ids.forEach(id => onPinNote(id, pinned));
+    clearChecked();
+    toast.success(pinned ? `已置顶 ${ids.length} 篇笔记` : `已取消置顶 ${ids.length} 篇笔记`);
+  }, [checkedIds, onPinNote, clearChecked]);
+
+  /** 批量收藏 / 取消收藏 */
+  const handleBatchFavorite = useCallback((favorited: boolean) => {
+    if (!onToggleFavorite) return;
+    const ids = [...checkedIds];
+    if (!ids.length) return;
+    ids.forEach(id => onToggleFavorite(id, favorited));
+    clearChecked();
+    toast.success(favorited ? `已收藏 ${ids.length} 篇笔记` : `已取消收藏 ${ids.length} 篇笔记`);
+  }, [checkedIds, onToggleFavorite, clearChecked]);
 
   // Build tree structure (only for "all" category, not trash)
   const tree = useMemo((): TreeNode[] => {
@@ -412,26 +554,61 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   /* ── Render a single note item ─────────────────── */
   const renderNoteItem = (note: Note, level: number) => {
     const isSelected = note.id === selectedNoteId;
+    const isChecked = checkedIds.includes(note.id);
+    const noteIndex = sortedNotes.findIndex(n => n.id === note.id);
     const typeCfg = TYPE_ICON[note.noteType] || TYPE_ICON.rich_text;
     const paddingLeft = level * 16 + 12;
+    // 摘要优先取正文预览，其次用描述兜底；压缩空白并截断，避免长文撑爆行高
+    const preview = (note.previewText || note.description || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
 
     return (
       <div
         key={note.id}
-        onClick={() => onSelectNote(note)}
+        onClick={e => handleRowClick(note, noteIndex, e.shiftKey)}
         onContextMenu={(e) => handleContextMenu(e, 'note', note.id)}
-        className={`group flex items-center gap-2.5 px-3 py-2.5 md:py-2 cursor-pointer rounded-lg mx-1 transition-all ${
-          isSelected
-            ? (isDark ? 'bg-orange-900/30' : 'bg-orange-50')
-            : (isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50')
+        className={`group flex items-center gap-2 px-3 py-2.5 md:py-2 cursor-pointer rounded-lg mx-1 transition-all ${
+          isChecked
+            ? (isDark ? 'bg-orange-900/25' : 'bg-orange-50/70')
+            : isSelected
+              ? (isDark ? 'bg-orange-900/30' : 'bg-orange-50')
+              : (isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50')
         }`}
         style={{ paddingLeft: `${paddingLeft}px` }}
       >
+        {/* 多选勾选框：桌面端悬停显现，进入多选态后常驻 */}
+        {showCheckboxes && (
+          <span
+            onClick={e => {
+              e.stopPropagation();
+              toggleNoteChecked(note.id, noteIndex, e.shiftKey);
+            }}
+            title={isChecked ? '取消选中' : '选中（Shift 连选）'}
+            className={`shrink-0 cursor-pointer transition-opacity ${
+              checkedIds.length > 0 || isMobile
+                ? 'opacity-100'
+                : 'opacity-0 group-hover:opacity-100'
+            }`}
+          >
+            <span
+              className={`flex items-center justify-center w-3.5 h-3.5 rounded border transition-colors ${
+                isChecked
+                  ? 'bg-orange-600 border-orange-600'
+                  : (isDark ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white')
+              }`}
+            >
+              {isChecked && <Check size={11} className="text-white" strokeWidth={3} />}
+            </span>
+          </span>
+        )}
         {/* Type icon badge */}
         <div className={`shrink-0 p-1.5 rounded-md ${typeCfg.bgColor}`}>
           <span className={typeCfg.color}>{typeCfg.icon}</span>
         </div>
-        {/* 两行布局：第一行标题，第二行标签与时间同行；省略简介以压缩条目高度 */}
+        {/* 三行布局：标题 / 预览摘要 / 标签+时间。
+            预览摘要让用户不必逐条点开即可判断内容，弥补列表缺少正文线索的短板。 */}
         <div className="flex-1 min-w-0">
           <span className={`block text-sm truncate ${
             isSelected
@@ -442,6 +619,15 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             {note.isFavorite && <Star size={10} className="inline mr-1 text-amber-400 fill-amber-400" />}
             {note.title || '无标题'}
           </span>
+          {/* 正文摘要：仅在有内容且有足够宽度时显示，避免窄栏挤占标题空间 */}
+          {preview && (
+            <span
+              className={`block text-xs truncate mt-0.5 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}
+              title={preview}
+            >
+              {preview}
+            </span>
+          )}
           {/* 不换行：标签保持原宽，时间占据剩余空间并在溢出时省略 */}
           <div className="flex items-center gap-1 mt-0.5 min-w-0">
             {note.tags?.slice(0, 2).map(tag => (
@@ -475,15 +661,18 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   };
 
   /* ── Render a folder node ──────────────────────── */
-  const renderFolderNode = (node: TreeNode) => {
+  /**
+   * 渲染单个文件夹行（虚拟滚动单位）。
+   * 子节点不再在这里递归展开——拍平阶段（flatRows）已按展开状态输出全部可见行。
+   */
+  const renderFolderRow = (node: TreeNode) => {
     const folder = node.folder!;
     const isExpanded = expandedFolders.has(folder.id);
     const hasChildren = node.children.length > 0;
     const paddingLeft = node.level * 16 + 12;
 
     return (
-      <div key={folder.id}>
-        <div
+      <div
           onClick={() => toggleFolder(folder.id)}
           onContextMenu={(e) => handleContextMenu(e, 'folder', folder.id)}
           className={`group flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg cursor-pointer transition-all ${
@@ -491,7 +680,6 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
           }`}
           style={{ paddingLeft: `${paddingLeft}px` }}
         >
-          {/* Expand arrow */}
           <span className={`shrink-0 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
             {hasChildren
               ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)
@@ -538,37 +726,145 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             </button>
           </div>
         </div>
-        {/* Expand children */}
-        {isExpanded && (
-          <div>
-            {/* New subfolder input if creating under this folder */}
-            {newFolderParent === folder.id && (
-              <div className="flex items-center gap-2 px-3 py-1 mx-1" style={{ paddingLeft: `${(node.level + 1) * 16 + 12}px` }}>
-                <Folder size={14} className="text-amber-400 shrink-0" />
-                <input
-                  ref={newFolderInputRef}
-                  value={newFolderName}
-                  onChange={e => setNewFolderName(e.target.value)}
-                  onBlur={submitNewFolder}
-                  onKeyDown={e => { if (e.key === 'Enter') submitNewFolder(); if (e.key === 'Escape') setNewFolderParent(undefined); }}
-                  placeholder="文件夹名称"
-                  className={`flex-1 text-sm px-1 py-0.5 border-b outline-none ${isDark ? 'bg-transparent border-gray-600 text-white placeholder-gray-500' : 'bg-transparent border-gray-300 text-gray-800 placeholder-gray-400'}`}
-                />
-              </div>
-            )}
-            {node.children.map(child => renderTreeNode(child))}
-          </div>
-        )}
+    );
+  };
+
+  /**
+   * 新建文件夹输入框：作为独立行插在目标位置之前。
+   * 虚拟滚动下行高固定，混在 renderFolderRow 里会破坏 measure 测高，故抽出。
+   */
+  const renderNewFolderRow = (parentId: string | null, level: number) => (
+    <div className="flex items-center gap-2 px-4 py-1 mx-1" style={{ paddingLeft: `${level * 16 + 12}px` }}>
+      <Folder size={14} className="text-amber-400 shrink-0" />
+      <input
+        ref={newFolderInputRef}
+        value={newFolderName}
+        onChange={e => setNewFolderName(e.target.value)}
+        onBlur={submitNewFolder}
+        onKeyDown={e => { if (e.key === 'Enter') submitNewFolder(); if (e.key === 'Escape') setNewFolderParent(undefined); }}
+        placeholder="文件夹名称"
+        className={`flex-1 text-sm px-1 py-0.5 border-b outline-none ${isDark ? 'bg-transparent border-gray-600 text-white placeholder-gray-500' : 'bg-transparent border-gray-300 text-gray-800 placeholder-gray-400'}`}
+      />
+    </div>
+  );
+
+  /* ── 空状态（按场景差异化，而非统一「暂无笔记」）── */
+  const renderEmptyState = () => {
+    const muted2 = isDark ? 'text-gray-400' : 'text-gray-500';
+    const box = `flex flex-col items-center justify-center py-10 px-4 text-center ${muted2}`;
+
+    // 回收站为空
+    if (isTrashView) {
+      return (
+        <div className={box}>
+          <Trash2 size={26} className="mb-2 opacity-40" />
+          <p className="text-xs">回收站是空的</p>
+          <p className="text-[11px] mt-1 opacity-70">删除的笔记会在这里保留，可随时恢复</p>
+        </div>
+      );
+    }
+
+    // 有筛选条件但无结果 —— 引导清除筛选
+    const hasFilter = Boolean(searchQuery)
+      || filterType !== 'all'
+      || selectedTagIds.length > 0
+      || selectedCategory.type !== 'all';
+    if (hasFilter) {
+      return (
+        <div className={box}>
+          <Search size={26} className="mb-2 opacity-40" />
+          <p className="text-xs">没有匹配的笔记</p>
+          <p className="text-[11px] mt-1 opacity-70">试试调整搜索词或筛选条件</p>
+          <button
+            type="button"
+            onClick={() => {
+              onSearchChange('');
+              setFilterType('all');
+              onSelectedTagIdsChange?.([]);
+              setSelectedCategory({ type: 'all' });
+            }}
+            className={`mt-3 text-[11px] px-2.5 py-1 rounded border transition-colors ${
+              isDark ? 'border-gray-700 text-gray-300 hover:bg-gray-800' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            清除筛选条件
+          </button>
+        </div>
+      );
+    }
+
+    // 全新用户 —— 引导新建
+    return (
+      <div className={box}>
+        <FileText size={26} className="mb-2 opacity-40" />
+        <p className="text-xs">还没有笔记</p>
+        <p className="text-[11px] mt-1 opacity-70">新建第一篇，开始记录想法</p>
+        <button
+          type="button"
+          onClick={() => onCreateNote('rich_text')}
+          className="mt-3 text-[11px] px-2.5 py-1 rounded bg-orange-600 text-white hover:bg-orange-700 transition-colors"
+        >
+          新建笔记 {!isMobile && '⌘N'}
+        </button>
       </div>
     );
   };
 
-  /* ── Render tree node dispatcher ───────────────── */
-  const renderTreeNode = (node: TreeNode): React.ReactNode => {
-    if (node.type === 'folder') return renderFolderNode(node);
-    if (node.type === 'note' && node.note) return renderNoteItem(node.note, node.level);
-    return null;
-  };
+  /* ── 虚拟滚动 ──────────────────────────────────
+   * 文件夹树与笔记混排在一个滚动容器里，直接虚拟化需要先把树拍平成一维行数组。
+   * 行高不固定（文件夹行与笔记行不同、笔记行有两行文本），故用 measureElement 实测高度。 */
+  const [scrollContainer, setScrollContainer] = useState<HTMLDivElement | null>(null);
+
+  /**
+   * 把「文件夹树 + 笔记」拍平成一维行数组。
+   * 「全部笔记」视图按树的展示顺序输出；其余分类（最近/置顶/收藏/回收站）
+   * 是一维笔记列表，无需拍平。折叠的文件夹及其子行不进入结果。
+   */
+  const flatRows = useMemo<FlatRow[]>(() => {
+    if (selectedCategory.type !== 'all' || isTrashView) {
+      return sortedNotes.map(note => ({ kind: 'note' as const, key: note.id, note, level: 0 }));
+    }
+    const rows: FlatRow[] = [];
+    const walk = (node: TreeNode) => {
+      // 正在新建子文件夹：输入框作为该文件夹的下一行
+      if (node.type === 'folder' && node.folder && newFolderParent === node.folder.id) {
+        rows.push({ kind: 'newFolder', key: `nf:${node.folder.id}`, level: node.level + 1 });
+      }
+      if (node.type === 'folder' && node.folder) {
+        rows.push({ kind: 'folder', key: `f:${node.folder.id}`, node });
+        if (expandedFolders.has(node.folder.id)) {
+          node.children.forEach(walk);
+        }
+        return;
+      }
+      if (node.type === 'note' && node.note) {
+        rows.push({ kind: 'note', key: `n:${node.note.id}`, note: node.note, level: node.level });
+      }
+    };
+    // 根目录新建输入框固定排在最前
+    if (newFolderParent === null) rows.push({ kind: 'newFolder', key: 'nf:root', level: 0 });
+    tree.forEach(walk);
+    return rows;
+  }, [tree, sortedNotes, selectedCategory.type, isTrashView, expandedFolders, newFolderParent]);
+
+  /** 行高随内容（是否重命名中、是否两行标签）变化，需实测后回写 */
+  const rowVirtualizer = useVirtualizer({
+    count: flatRows.length,
+    getScrollElement: () => scrollContainer,
+    // 行高预估：文件夹行 34px；笔记行三行（标题/摘要/标签+时间）约 74px。
+    // 预估值只影响首屏滚动条长度，measureElement 会在渲染后校正为真实高度。
+    estimateSize: index => (flatRows[index]?.kind === 'folder' ? 34 : 74),
+    overscan: 12,
+    getItemKey: index => flatRows[index]?.key ?? index,
+  });
+
+  /** 把实测行高回写给虚拟器 */
+  const measureRow = useCallback((el: Element | null) => {
+    if (el) rowVirtualizer.measureElement(el);
+  }, [rowVirtualizer]);
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
 
   /* ── Move-to-folder modal ──────────────────────── */
   const renderMoveModal = () => {
@@ -709,7 +1005,6 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             {showAddMenu && (
               <div className={`absolute right-0 top-full mt-1 w-44 rounded-lg shadow-lg border z-50 py-1 ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
                 {Object.entries(TYPE_ICON).map(([key, { icon, color }]) => {
-                  const labels: Record<string, string> = { rich_text: '富文本', markdown: 'Markdown', mindmap: '思维导图', flowchart: '流程图' };
                   return (
                     <button
                       key={key}
@@ -717,7 +1012,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                       className={`w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
                     >
                       <span className={color}>{icon}</span>
-                      {labels[key]}
+                      {TYPE_LABEL[key]}
                     </button>
                   );
                 })}
@@ -793,92 +1088,209 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             已搜索标题、描述及笔记内容
           </p>
         )}
-        {/* Type filter tabs */}
-        <div className="flex gap-0.5 mt-2 flex-wrap">
-          {[
-            { key: 'all', label: '全部' },
-            { key: 'rich_text', label: '富文本' },
-            { key: 'markdown', label: 'MD' },
-            { key: 'mindmap', label: '导图' },
-            { key: 'flowchart', label: '流程图' },
-          ].map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => setFilterType(tab.key)}
-              className={`px-2 py-0.5 text-xs rounded-full transition-colors ${
-                filterType === tab.key
-                  ? (isDark ? 'bg-orange-600 text-white' : 'bg-orange-600 text-white')
-                  : (isDark ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100')
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-        {/* Tag filter：标签较多时全部平铺会占满筛选区，改为下拉选择 */}
-        {!isTrashView && allTags.length > 0 && (
-          <div ref={tagMenuRef} className="relative mt-1.5">
-            <div className="flex flex-wrap items-center gap-1">
+        {/* 类型筛选与标签筛选同处一行：全部改为图标按钮，横向占用最小，把宽度留给笔记列表 */}
+        <div className="flex items-center gap-1 mt-2">
+          {/* 「全部」无专属类型图标，用 LayoutGrid 表示全量 */}
+          <button
+            onClick={() => setFilterType('all')}
+            title="全部类型"
+            aria-label="全部类型"
+            aria-pressed={filterType === 'all'}
+            className={`p-1 rounded-md transition-colors ${
+              filterType === 'all'
+                ? 'bg-orange-600 text-white'
+                : (isDark ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100')
+            }`}
+          >
+            <LayoutGrid size={14} />
+          </button>
+          {(['rich_text', 'markdown', 'mindmap', 'flowchart'] as const).map(key => {
+            const cfg = TYPE_ICON[key];
+            const active = filterType === key;
+            return (
               <button
-                type="button"
-                onClick={() => setShowTagMenu(v => !v)}
-                className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border transition-colors ${
-                  selectedTagIds.length > 0
-                    ? 'border-orange-500 text-orange-600 dark:text-orange-400'
-                    : isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                key={key}
+                onClick={() => setFilterType(key)}
+                title={`只看${TYPE_LABEL[key]}`}
+                aria-label={`只看${TYPE_LABEL[key]}`}
+                aria-pressed={active}
+                className={`p-1 rounded-md transition-colors ${
+                  active
+                    ? 'bg-orange-600 text-white'
+                    : `${cfg.color} ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`
                 }`}
               >
-                <Tag size={12} />
-                <span>标签</span>
-                {selectedTagIds.length > 0 && (
-                  <span className="inline-flex items-center justify-center min-w-[14px] h-[14px] px-1 rounded-full bg-orange-600 text-white text-[10px] leading-none">
-                    {selectedTagIds.length}
-                  </span>
-                )}
-                <ChevronDown size={12} className={`transition-transform ${showTagMenu ? 'rotate-180' : ''}`} />
+                {cfg.icon}
               </button>
-              {/* 已选标签以 chip 呈现，点击即可移除 */}
-              {allTags.filter(t => selectedTagIds.includes(t.id)).map(tag => (
+            );
+          })}
+          {/* Tag filter：同样收为单个图标按钮 */}
+          {!isTrashView && allTags.length > 0 && (
+            <div ref={tagMenuRef} className="relative shrink-0 ml-auto">
+              <div className="flex items-center justify-end gap-1">
                 <button
-                  key={tag.id}
                   type="button"
-                  onClick={() => toggleTagFilter(tag.id)}
-                  title={`移除标签：${tag.name}`}
-                  className="inline-flex items-center gap-0.5 px-2 py-0.5 text-xs rounded-full border border-transparent text-white"
-                  style={{ backgroundColor: tag.color }}
+                  onClick={() => setShowTagMenu(v => !v)}
+                  title="按标签筛选"
+                  aria-label="按标签筛选"
+                  aria-expanded={showTagMenu}
+                  className={`relative p-1 rounded-md transition-colors ${
+                    selectedTagIds.length > 0
+                      ? 'bg-orange-600 text-white'
+                      : (isDark ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100')
+                  }`}
                 >
-                  <span className="max-w-[72px] truncate">{tag.name}</span>
-                  <X size={12} />
+                  <Tag size={14} />
+                  {selectedTagIds.length > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-[13px] h-[13px] px-0.5 rounded-full bg-orange-600 text-white text-[9px] leading-none ring-1 ring-white dark:ring-gray-800">
+                      {selectedTagIds.length}
+                    </span>
+                  )}
+                  <ChevronDown size={9} className={`absolute -bottom-0.5 -right-0.5 transition-transform ${showTagMenu ? 'rotate-180' : ''}`} />
                 </button>
-              ))}
-            </div>
-            {showTagMenu && (
-              <div className={`absolute left-0 top-full z-30 mt-1 max-h-56 overflow-y-auto p-2 flex flex-wrap gap-1 rounded-lg shadow-lg border ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
-                {allTags.map(tag => {
-                  const active = selectedTagIds.includes(tag.id);
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      onClick={() => toggleTagFilter(tag.id)}
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border transition-colors ${
-                        active
-                          ? 'border-transparent text-white'
-                          : isDark ? 'border-gray-600 text-gray-400 hover:bg-gray-700' : 'border-gray-200 text-gray-500 hover:bg-gray-100'
-                      }`}
-                      style={active
-                        ? { backgroundColor: tag.color }
-                        : { borderColor: `${tag.color}40`, color: tag.color }}
-                    >
-                      {active && <Check size={12} />}
-                      {tag.name}
-                    </button>
-                  );
-                })}
+                {/* 已选标签以 chip 呈现，点击即可移除 */}
+                {allTags.filter(t => selectedTagIds.includes(t.id)).map(tag => (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() => toggleTagFilter(tag.id)}
+                    title={`移除标签：${tag.name}`}
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs rounded-full border border-transparent text-white"
+                    style={{ backgroundColor: tag.color }}
+                  >
+                    <span className="max-w-[72px] truncate">{tag.name}</span>
+                    <X size={12} />
+                  </button>
+                ))}
               </div>
+              {showTagMenu && (
+                /* 右对齐 + 固定宽度：标签按钮位于筛选行最右，下拉向左展开并与侧边栏右缘对齐，不会溢出面板 */
+                <div className={`absolute right-0 top-full z-30 mt-1 w-56 max-w-[calc(100vw-2rem)] max-h-56 overflow-y-auto p-2 flex flex-wrap content-start gap-1 rounded-lg shadow-lg border ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                  {allTags.map(tag => {
+                    const active = selectedTagIds.includes(tag.id);
+                    return (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        onClick={() => toggleTagFilter(tag.id)}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border transition-colors ${
+                          active
+                            ? 'border-transparent text-white'
+                            : isDark ? 'border-gray-600 text-gray-400 hover:bg-gray-700' : 'border-gray-200 text-gray-500 hover:bg-gray-100'
+                        }`}
+                        style={active
+                          ? { backgroundColor: tag.color }
+                          : { borderColor: `${tag.color}40`, color: tag.color }}
+                      >
+                        {active && <Check size={12} />}
+                        {tag.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 批量操作条：勾选任意笔记后浮现，替代逐条右键操作 */}
+        {showCheckboxes && checkedIds.length > 0 && (
+          <div className={`flex flex-wrap items-center gap-1.5 mx-2 mt-2 px-2 py-1.5 rounded-lg border ${
+            isDark ? 'border-gray-700 bg-gray-800' : 'border-orange-200 bg-orange-50'
+          }`}>
+            <span className={`text-xs font-medium ${isDark ? 'text-orange-300' : 'text-orange-700'}`}>
+              已选 {checkedIds.length}
+            </span>
+
+            {/* 全选 / 取消全选 */}
+            <button
+              type="button"
+              onClick={toggleCheckAll}
+              title={checkedIds.length === sortedNotes.length ? '取消全选' : '全选当前结果'}
+              className={`p-1 rounded transition-colors ${isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-white'}`}
+            >
+              {checkedIds.length === sortedNotes.length ? <CheckSquare size={13} /> : <Square size={13} />}
+            </button>
+
+            <span className={`w-px h-3.5 ${isDark ? 'bg-gray-700' : 'bg-orange-200'}`} />
+
+            {/* 置顶 */}
+            {onPinNote && (
+              <button
+                type="button"
+                onClick={() => handleBatchPin(true)}
+                title="批量置顶"
+                className={`p-1 rounded transition-colors ${isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-white'}`}
+              >
+                <Pin size={13} />
+              </button>
             )}
+            {/* 收藏 */}
+            {onToggleFavorite && (
+              <button
+                type="button"
+                onClick={() => handleBatchFavorite(true)}
+                title="批量收藏"
+                className={`p-1 rounded transition-colors ${isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-white'}`}
+              >
+                <Star size={13} />
+              </button>
+            )}
+            {/* 移动到文件夹 */}
+            <div className="relative" ref={batchMenuRef}>
+              <button
+                type="button"
+                onClick={() => setShowBatchMenu(v => !v)}
+                title="批量移动到文件夹"
+                className={`p-1 rounded transition-colors ${isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-white'}`}
+              >
+                <FolderInput size={13} />
+              </button>
+              {showBatchMenu && (
+                <div className={`absolute left-0 top-full z-40 mt-1 w-44 max-h-56 overflow-y-auto rounded-lg shadow-lg border py-1 ${
+                  isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+                }`}>
+                  <button
+                    onClick={() => { setShowBatchMenu(false); handleBatchMove(null); }}
+                    className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                  >
+                    根目录
+                  </button>
+                  {folderOptions.map(f => (
+                    <button
+                      key={f.id}
+                      onClick={() => { setShowBatchMenu(false); handleBatchMove(f.id); }}
+                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                    >
+                      {f.depth > 0 && <span className="opacity-50">{'\u00a0\u00a0'.repeat(f.depth)}</span>}
+                      {f.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* 删除 */}
+            <button
+              type="button"
+              onClick={handleBatchDelete}
+              title="批量删除"
+              className={`p-1 rounded transition-colors ${isDark ? 'text-red-400 hover:bg-red-950/40' : 'text-red-500 hover:bg-red-50'}`}
+            >
+              <Trash2 size={13} />
+            </button>
+
+            <span className="flex-1" />
+            <button
+              type="button"
+              onClick={clearChecked}
+              title="取消选择"
+              className={`p-1 rounded transition-colors ${isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-white'}`}
+            >
+              <X size={13} />
+            </button>
           </div>
         )}
+
         {/* Project filter */}
         {!isTrashView && projects.length > 0 && onFilterProjectIdChange && (
           <select
@@ -896,44 +1308,43 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         )}
       </div>
 
-      {/* Tree / flat list */}
-      <div className="flex-1 overflow-y-auto py-1">
+      {/* Tree / flat list —— 虚拟滚动：只渲染可视区的行，避免 500+ 笔记全量渲染卡顿 */}
+      <div ref={setScrollContainer} className="flex-1 overflow-y-auto py-1">
         {loading ? (
           <div className="flex items-center justify-center h-32">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-orange-600"></div>
           </div>
-        ) : selectedCategory.type !== 'all' ? (
-          sortedNotes.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-32 text-gray-400">
-              <FileText size={24} className="mb-2 opacity-50" />
-              <p className="text-xs">暂无笔记</p>
-            </div>
-          ) : (
-            sortedNotes.map(note => renderNoteItem(note, 0))
-          )
-        ) : tree.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 text-gray-400">
-            <FileText size={24} className="mb-2 opacity-50" />
-            <p className="text-xs">暂无笔记</p>
-          </div>
+        ) : flatRows.length === 0 ? (
+          renderEmptyState()
         ) : (
           <>
-            {/* Root new folder input */}
-            {newFolderParent === null && (
-              <div className="flex items-center gap-2 px-4 py-1 mx-1">
-                <Folder size={14} className="text-amber-400 shrink-0" />
-                <input
-                  ref={newFolderInputRef}
-                  value={newFolderName}
-                  onChange={e => setNewFolderName(e.target.value)}
-                  onBlur={submitNewFolder}
-                  onKeyDown={e => { if (e.key === 'Enter') submitNewFolder(); if (e.key === 'Escape') setNewFolderParent(undefined); }}
-                  placeholder="文件夹名称"
-                  className={`flex-1 text-sm px-1 py-0.5 border-b outline-none ${isDark ? 'bg-transparent border-gray-600 text-white placeholder-gray-500' : 'bg-transparent border-gray-300 text-gray-800 placeholder-gray-400'}`}
-                />
-              </div>
-            )}
-            {tree.map(node => renderTreeNode(node))}
+            {/* 用一个等高占位容器撑开滚动高度，内部按 virtualItems 绝对定位渲染 */}
+            <div style={{ height: `${totalSize}px`, position: 'relative', width: '100%' }}>
+              {virtualItems.map(vItem => {
+                const row = flatRows[vItem.index];
+                if (!row) return null;
+                return (
+                  <div
+                    key={vItem.key}
+                    ref={measureRow}
+                    data-index={vItem.index}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${vItem.start}px)`,
+                    }}
+                  >
+                    {row.kind === 'folder'
+                      ? renderFolderRow(row.node)
+                      : row.kind === 'newFolder'
+                        ? renderNewFolderRow(newFolderParent ?? null, row.level)
+                        : renderNoteItem(row.note, row.level)}
+                  </div>
+                );
+              })}
+            </div>
           </>
         )}
       </div>
