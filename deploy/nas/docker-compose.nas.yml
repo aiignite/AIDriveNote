@@ -1,0 +1,139 @@
+# AIDriveNote — 绿联 DXP4800 Plus (NAS 侧) 编排
+#
+# 对应文档：方案 C 混合部署
+#   - 笔记核心（frontend/backend/postgres）跑在 NAS，数据利用大硬盘
+#   - AI 算力（Ollama / asr_gateway）跑在腾讯云，经 WireGuard 访问
+#
+# 使用：
+#   cp .env.nas.example .env   # 填入真实密码
+#   docker compose -f docker-compose.nas.yml up -d --build
+#
+# 注意：本文件不含 asr_gateway 容器。若要「全上 NAS」（方案 B），
+#      请复制 prod 中的 asr_gateway 段到本文件并设 ASR_MEM_LIMIT/ASR_CPUS。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    container_name: note_postgres
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      POSTGRES_DB: "${POSTGRES_DB:-ai_drive_note}"
+    volumes:
+      # ⚠️ 必须落在 NAS 本地卷（Btrfs/ext4）。
+      #    绝对不要指向 NFS/SMB 共享——PostgreSQL 依赖文件锁，NFS 锁不可靠会导致数据损坏。
+      - ${NAS_DATA_ROOT:-/volume1/apps/aidrive}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_drive_note}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - appnet
+
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    container_name: note_backend
+    environment:
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL is required}"
+      DATABASE_URL_SYNC: "${DATABASE_URL_SYNC:?DATABASE_URL_SYNC is required}"
+      SECRET_KEY: "${SECRET_KEY:?SECRET_KEY is required}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-https://www.aiignite.com.cn,https://aiignite.com.cn}"
+
+      # ── AI 指向云端（经 WireGuard 隧道）──
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://10.10.0.1:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5}"
+
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-}"
+      SSO_ENABLED: "${SSO_ENABLED:-true}"
+      SSO_SECRET_KEY: "${SSO_SECRET_KEY:-}"
+      SSO_ISSUER: "${SSO_ISSUER:-aidriveall}"
+      SSO_COOKIE_NAME: "${SSO_COOKIE_NAME:-aidrive_token}"
+
+      # ── 语音转写：远程模式，指向云端 asr_gateway ──
+      # 若要本地兜底，需在 NAS 上加回 asr_gateway 段并将此项设为 local
+      NOTE_ASR_MODE: "${NOTE_ASR_MODE:-remote}"
+      NOTE_ASR_REMOTE_URL: "${NOTE_ASR_REMOTE_URL:-http://10.10.0.1:8090/api/v1/transcribe}"
+      NOTE_ASR_REMOTE_API_KEY: "${NOTE_ASR_REMOTE_API_KEY:-}"
+      NOTE_ASR_REMOTE_TIMEOUT: "${NOTE_ASR_REMOTE_TIMEOUT:-3600}"
+      NOTE_ASR_FALLBACK_LOCAL: "${NOTE_ASR_FALLBACK_LOCAL:-false}"
+
+      # 本地兜底参数（仅 NOTE_ASR_FALLBACK_LOCAL=true 时生效）
+      NOTE_WHISPER_MODEL: "${NOTE_WHISPER_MODEL:-small}"
+      NOTE_WHISPER_LANGUAGE: "${NOTE_WHISPER_LANGUAGE:-zh}"
+      NOTE_WHISPER_DEVICE: "${NOTE_WHISPER_DEVICE:-cpu}"
+      NOTE_WHISPER_COMPUTE_TYPE: "${NOTE_WHISPER_COMPUTE_TYPE:-int8}"
+
+      # ── 邮件 ──
+      EMAIL_HOST: "${EMAIL_HOST:-smtp.qq.com}"
+      EMAIL_PORT: "${EMAIL_PORT:-465}"
+      EMAIL_USER: "${EMAIL_USER:-}"
+      EMAIL_PASS: "${EMAIL_PASS:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      EMAIL_USE_SSL: "${EMAIL_USE_SSL:-true}"
+      EMAIL_MOCK: "${EMAIL_MOCK:-true}"
+
+      # ── AI 联网搜索 ──
+      AI_WEB_SEARCH_ENABLED: "${AI_WEB_SEARCH_ENABLED:-true}"
+      AI_WEB_SEARCH_TIMEOUT: "${AI_WEB_SEARCH_TIMEOUT:-10}"
+      AI_WEB_SEARCH_MAX_RESULTS: "${AI_WEB_SEARCH_MAX_RESULTS:-5}"
+    # 仅绑回环：由云端 nginx 经 WireGuard 访问，不直接暴露到 LAN/公网
+    ports:
+      - "127.0.0.1:3275:3275"
+    volumes:
+      - ${NAS_DATA_ROOT:-/volume1/apps/aidrive}/uploads:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - appnet
+
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/note/}
+        VITE_API_URL: ${VITE_API_URL:-/note/api/v1}
+        NGINX_SUBPATH: 1
+    restart: unless-stopped
+    container_name: note_frontend
+    ports:
+      - "3270:80"
+    depends_on:
+      - backend
+    networks:
+      - appnet
+
+  # ── WireGuard 客户端：与腾讯云组成 10.10.0.0/24 内网 ──
+  # 用途：NAS 访问云端 AI/ASR；云端 nginx 反代访问 NAS 应用
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: note_wireguard
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=0
+      - PGID=0
+      - TZ=Asia/Shanghai
+    volumes:
+      - ${NAS_DATA_ROOT:-/volume1/apps/aidrive}/wireguard:/config
+      - /lib/modules:/lib/modules:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    driver: bridge
