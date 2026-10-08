@@ -8,6 +8,8 @@ ARG VITE_BASE_PATH=/
 ARG VITE_API_URL=/api/v1
 ENV VITE_BASE_PATH=$VITE_BASE_PATH
 ENV VITE_API_URL=$VITE_API_URL
+# 目标服务器内存较小（约 3.7G），Node 默认 2G 堆上限会让 vite 构建 OOM
+ENV NODE_OPTIONS=--max-old-space-size=3072
 RUN npm run build
 
 FROM nginx:alpine
