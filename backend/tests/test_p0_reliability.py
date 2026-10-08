@@ -89,9 +89,15 @@ async def test_prune_revisions_keeps_pinned(note_db) -> None:
     await NoteRevisionService.prune_revisions(note_db, note_id, keep=2)
     await note_db.commit()
 
-    rows = (
-        await note_db.query(NoteRevision)
-        .filter(NoteRevision.note_id == note_id)
+    from sqlalchemy import select
+
+    rows = list(
+        (
+            await note_db.execute(
+                select(NoteRevision).where(NoteRevision.note_id == note_id)
+            )
+        )
+        .scalars()
         .all()
     )
     pinned = [r for r in rows if r.is_pinned]
@@ -141,11 +147,16 @@ async def test_update_note_prunes_revisions(note_db) -> None:
             "content": {"text": f"v{i}"}, "updated_by": user.id,
         })
 
+    from sqlalchemy import select
     from app.models.note.note import NoteRevision
 
-    rows = (
-        await note_db.query(NoteRevision)
-        .filter(NoteRevision.note_id == note.id)
+    rows = list(
+        (
+            await note_db.execute(
+                select(NoteRevision).where(NoteRevision.note_id == note.id)
+            )
+        )
+        .scalars()
         .all()
     )
     assert len(rows) <= keep
