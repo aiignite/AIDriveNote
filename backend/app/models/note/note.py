@@ -272,10 +272,15 @@ class NoteRevision(Base):
         UUID(as_uuid=True), ForeignKey("note_notes.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
+    # 单调递增序号：created_at 由 server_default 生成，同一秒内创建的修订时间戳
+    # 会相同，无法作为「保留最新 N 条」的可靠排序键（UUIDv4 亦不可排序）。
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     content_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     description: Mapped[str | None] = mapped_column(Text)
     change_summary: Mapped[str | None] = mapped_column(String(500))
+    # 置位后不参与「保留最近 N 条」的淘汰（用于保留恢复前快照等关键节点）
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     changed_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
     )

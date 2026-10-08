@@ -34,6 +34,10 @@ services:
       SSO_ENABLED: "${SSO_ENABLED:-false}"
       SSO_SECRET_KEY: "${SSO_SECRET_KEY:-}"
       SSO_ISSUER: "${SSO_ISSUER:-aidriveall}"
+      # 生产环境关闭 /docs /redoc /openapi.json，避免对外暴露完整接口结构
+      API_DOCS_ENABLED: "${API_DOCS_ENABLED:-false}"
+      # 版本历史保留条数；恢复前快照不参与淘汰
+      NOTE_REVISION_KEEP: "${NOTE_REVISION_KEEP:-50}"
       # 语音转写：remote 模式指向本 compose 内的 asr_gateway 容器
       NOTE_ASR_MODE: "${NOTE_ASR_MODE:-remote}"
       NOTE_ASR_REMOTE_URL: "${NOTE_ASR_REMOTE_URL:-http://asr_gateway:8090/api/v1/transcribe}"

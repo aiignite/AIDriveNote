@@ -1,13 +1,17 @@
 """Note Service – business logic for notes."""
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.note import Note, NoteFavorite, NoteFolder, NoteNoteTag, NoteTemplate
 from app.services.note.rich_text_blocks import merge_rich_text_blocks
+
+logger = logging.getLogger(__name__)
 
 
 class NoteFolderService:
@@ -99,13 +103,29 @@ class NoteService:
 
     @staticmethod
     async def _next_note_no(db: AsyncSession, year: int | None = None) -> str:
+        """生成下一个笔记编号。
+
+        历史实现是 ``SELECT MAX(note_no) + 1``，并发创建会拿到**相同编号**并撞
+        唯一约束。这里改为调用数据库函数 ``app_next_note_no(year)``——它内部用
+        ``pg_advisory_xact_lock`` 把「查最大值 + 占号」串行化。
+
+        数据库未安装该函数时（本地 SQLite / 未执行迁移）退回到原先的
+        MAX+1 逻辑，保证开发与测试环境可用。
+        """
         y = year or datetime.now().year
+        try:
+            result = await db.execute(text("SELECT app_next_note_no(:y)"), {"y": y})
+            return str(result.scalar())
+        except Exception:
+            logger.debug("app_next_note_no 不可用，退回 MAX+1", exc_info=True)
+
         prefix = f"NT{y}"
         result = await db.execute(
             select(func.max(Note.note_no)).where(Note.note_no.like(f"{prefix}%"))
         )
         max_no = result.scalar()
-        seq = int(max_no[-6:]) + 1 if max_no else 1
+        digits = max_no[len(prefix):] if max_no and max_no.startswith(prefix) else ""
+        seq = (int(digits) + 1) if digits.isdigit() else 1
         return f"{prefix}{seq:06d}"
 
     @staticmethod
@@ -246,14 +266,33 @@ class NoteService:
 
     @staticmethod
     async def create_note(db: AsyncSession, data: dict) -> Note:
-        if not data.get("note_no"):
-            data["note_no"] = await NoteService._next_note_no(db)
-        note = Note(**data)
-        db.add(note)
-        await db.commit()
+        """创建笔记。
+
+        编号由 ``_next_note_no`` 生成；极端并发下（数据库函数不可用且退回
+        MAX+1）仍可能撞唯一约束，这里捕获后重试数次，避免 500 直接失败。
+        """
+        from app.services.note.note_enhance_service import NoteLinkService, NoteSearchService
+
+        last_error: IntegrityError | None = None
+        for attempt in range(3):
+            payload = dict(data)
+            if not payload.get("note_no"):
+                payload["note_no"] = await NoteService._next_note_no(db)
+            try:
+                note = Note(**payload)
+                db.add(note)
+                await db.commit()
+            except IntegrityError as exc:  # 编号冲突 → 回滚后重试
+                await db.rollback()
+                last_error = exc
+                logger.warning("创建笔记编号冲突，第 %s 次重试", attempt + 1)
+                continue
+            break
+        else:
+            raise last_error  # type: ignore[misc]
+
         note_id = note.id
         if note_id:
-            from app.services.note.note_enhance_service import NoteLinkService, NoteSearchService
             refreshed = await NoteService.get_note(db, note_id)
             if refreshed:
                 await NoteSearchService.update_search_fields(db, refreshed)
@@ -297,6 +336,8 @@ class NoteService:
             await NoteRevisionService.create_revision(
                 db, note, changed_by, change_summary or "内容更新",
             )
+            # 修订表容量治理：只保留最近 N 条，避免长寿命笔记的历史无限增长
+            await NoteRevisionService.prune_revisions(db, note.id)
         for k, v in data.items():
             if hasattr(note, k):
                 setattr(note, k, v)

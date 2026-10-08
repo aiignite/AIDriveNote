@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     SSO_ISSUER: str = "aidriveall"
     SSO_COOKIE_NAME: str = "aidrive_token"
 
+    # ── 笔记版本历史 ──
+    # 每篇笔记保留的修订条数上限；超出后按时间淘汰最旧的（恢复前快照不参与淘汰）
+    NOTE_REVISION_KEEP: int = 50
+
     # ── 笔记录音语音转写（faster-whisper / 远程 asr_gateway）──
     # Whisper 模型规格；机器较弱可改为 small
     NOTE_WHISPER_MODEL: str = "medium"

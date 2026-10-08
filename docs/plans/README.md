@@ -14,3 +14,6 @@
 | [笔记原格式批量导出](./笔记原格式批量导出.md) | completed | 2026-07-06 | 全部笔记原格式导出，保留文件夹层级 |
 | [AI助手优化方案](./AI助手优化方案.md) | completed | 2026-07-06 | 笔记类型 AI 能力、技能路由、RAG、编辑器 AI 入口 |
 | [笔记MCP集成方案](../../.trae/documents/笔记MCP集成方案.md) | completed | 2026-10-01 | PAT 认证 + 访问令牌页 + mcp-server 独立包 |
+| [AIDriveNote 优化方向分析](./AIDriveNote-优化方向分析.md) | draft | 2026-10-06 | 工程层：架构、性能、安全、CI 门禁 |
+| [AIDriveNote 全量优化方案](./AIDriveNote-全量优化方案.md) | draft | 2026-10-06 | 会话起草稿：现状/差距诊断 + 五项系统级优化 + 路线图 |
+| [AIDriveNote 产品能力演进方案](./AIDriveNote-产品能力演进方案.md) | draft | 2026-10-06 | **代码核实版**：13 项新发现缺陷 + 块级双链/图谱/画布/属性/CRDT/Graph-RAG 分级方案 |

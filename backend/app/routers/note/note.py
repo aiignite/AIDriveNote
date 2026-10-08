@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional, get_args
 from uuid import UUID
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -14,6 +15,7 @@ from app.auth import get_current_user
 from app.models.user import User
 from app.models.note.note import Note, NoteFolder
 from app.services.note.note_service import NoteService, NoteFolderService, NoteTemplateService
+from app.services.note.note_asset_service import MAX_IMAGE_BYTES, NoteAssetService, read_asset
 from app.services.note.note_enhance_service import (
     NoteFavoriteService,
     NoteLinkService,
@@ -26,6 +28,10 @@ from app.services.note.note_enhance_service import (
 from app.exceptions import BadRequestException, ConflictException, ForbiddenException, NotFoundException
 
 router = APIRouter(prefix="/notes", tags=["Notes"])
+
+# 笔记类型的唯一合法取值；与数据库 CHECK 约束 ck_note_notes_note_type 保持一致。
+NoteType = Literal["rich_text", "markdown", "mindmap", "flowchart"]
+NOTE_TYPES: tuple[str, ...] = get_args(NoteType)
 
 
 def _assert_note_owner(note: Note, user: User) -> None:
@@ -54,7 +60,7 @@ def _assert_folder_owner(folder: NoteFolder, user: User) -> None:
 
 class NoteCreate(BaseModel):
     title: str
-    note_type: str
+    note_type: NoteType
     content: Optional[dict] = None
     folder_id: Optional[UUID] = None
     description: Optional[str] = None
@@ -72,7 +78,7 @@ class NoteAppend(BaseModel):
 
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
-    note_type: Optional[str] = None
+    note_type: Optional[NoteType] = None
     content: Optional[dict] = None
     folder_id: Optional[UUID] = None
     description: Optional[str] = None
@@ -526,6 +532,47 @@ async def create_note_from_template(
     if not note:
         raise NotFoundException("Template")
     return await _enrich_note_out(db, note, user)
+
+
+# ── 图片资产（Base64 内嵌 → Hash 寻址落盘）──
+# 注意：必须注册在 `@router.get("/{note_id}")` 之前，否则会被 UUID 路径参数吞掉。
+
+class AssetOut(BaseModel):
+    url: str
+    hash: str
+    size: int
+
+
+@router.post("/assets", response_model=AssetOut, status_code=status.HTTP_201_CREATED)
+async def upload_note_asset(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """上传图片资产，返回可写入正文的相对 URL。
+
+    同一张图重复上传会命中相同 SHA-256，直接复用磁盘文件（内容寻址去重）。
+    """
+    payload = await file.read()
+    if len(payload) > MAX_IMAGE_BYTES:
+        raise BadRequestException(
+            f"图片过大（{len(payload) // 1024 // 1024}MB > {MAX_IMAGE_BYTES // 1024 // 1024}MB）",
+        )
+    result = await NoteAssetService.store_image(
+        db, user.id, payload, file.content_type or "",
+    )
+    return AssetOut(**result)
+
+
+@router.get("/assets/{asset_name}")
+async def get_note_asset(asset_name: str):
+    """读取图片资产。
+
+    资产为内容寻址的公共只读资源，文件名即 SHA-256，无需登录；
+    但严格校验 64 位十六进制文件名，杜绝任意路径读取。
+    """
+    path, mime = await read_asset(f"/notes/assets/{asset_name}")
+    return FileResponse(path, media_type=mime)
 
 
 @router.get("/{note_id}", response_model=NoteOut)

@@ -55,6 +55,37 @@ async def test_user(db_session):
     return user
 
 
+# 最小笔记 schema（仅 note 相关表）。完整 schema 在 SQLite 下会碰到
+# PG 专有类型（TSVECTOR 等）的问题，因此服务层测试单独用这一组表。
+note_test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+NoteTestSession = async_sessionmaker(note_test_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest_asyncio.fixture
+async def note_db():
+    """仅创建 user / folder / note / link / revision 五张表的会话。"""
+    import app.models.note.note as note_models
+    from app.models.user import User
+
+    tables = [
+        User.__table__,
+        note_models.NoteFolder.__table__,
+        note_models.Note.__table__,
+        note_models.NoteLink.__table__,
+        note_models.NoteRevision.__table__,
+    ]
+    async with note_test_engine.begin() as conn:
+        for table in tables:
+            await conn.run_sync(lambda sync, t=table: t.create(sync, checkfirst=True))
+
+    async with NoteTestSession() as session:
+        yield session
+
+    async with note_test_engine.begin() as conn:
+        for table in reversed(tables):
+            await conn.run_sync(lambda sync, t=table: t.drop(sync, checkfirst=True))
+
+
 @pytest_asyncio.fixture
 async def client(db_session):
     from app.main import app
@@ -75,15 +106,10 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
 
     async def _dispose() -> None:
         await engine.dispose()
+        await note_test_engine.dispose()
         from app.database import engine as app_engine
 
         await app_engine.dispose()
-        try:
-            from tests.test_note_router import note_test_engine
-
-            await note_test_engine.dispose()
-        except Exception:
-            pass
 
     try:
         asyncio.run(_dispose())
