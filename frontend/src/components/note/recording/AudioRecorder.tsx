@@ -12,9 +12,26 @@
  * 必须在录音期间进行；停止时若识别不可用或无结果，回调里 transcript 为空数组，
  * 由上层决定走服务端转写或跳过。
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Mic, Square, AlertTriangle, Upload } from 'lucide-react';
 import type { BrowserTranscriptSegment } from '../../../services/note/recording';
+
+/**
+ * AudioRecorder 命令式句柄。
+ *
+ * 供「按钮与录音实例分离」的场景使用：录音实例常驻（不随 UI 布局变化卸载），
+ * 由外部自绘按钮通过 start() / stop() 驱动，保证布局切换不会打断正在进行的录音。
+ */
+export interface AudioRecorderHandle {
+  /** 开始录音（申请麦克风） */
+  start: () => Promise<void>;
+  /** 停止录音并出片 */
+  stop: () => void;
+  /** 当前是否正在录音 */
+  readonly isRecording: boolean;
+  /** 当前已录制时长（毫秒） */
+  readonly elapsedMs: number;
+}
 
 // ── Web Speech API 最小类型声明（TS DOM lib 未包含）────────────────────
 
@@ -85,28 +102,51 @@ interface AudioRecorderProps {
   iconOnly?: boolean;
   /** 不支持录音时触发，用于打开文件上传入口 */
   onFallbackUpload?: () => void;
+  /** 录音状态变化回调（开始 / 停止），供外部自绘按钮同步 UI */
+  onRecordingChange?: (recording: boolean) => void;
+  /** 录音环境可用性回调，供外部自绘降级入口（隐藏本组件按钮时使用） */
+  onSupportedChange?: (supported: boolean) => void;
+  /** 隐藏内置按钮（外部自绘 UI，通过 ref 命令式驱动） */
+  hideButtons?: boolean;
+  /** 录音启动失败回调（如麦克风被拒绝），供外部自绘 UI 提示 */
+  onError?: (message: string) => void;
 }
 
 /**
  * 浏览器原生录音组件（内嵌 Web Speech API 实时转写）。
  * @param props 组件属性
+ * @param ref 命令式句柄（start / stop / isRecording / elapsedMs）
  * @returns 录音 / 停止按钮，或在不可用时的上传降级入口
  */
-export const AudioRecorder: React.FC<AudioRecorderProps> = ({
-  disabled,
-  onCaptured,
-  maxDurationMs = 60 * 60 * 1000,
-  className,
-  variant = 'default',
-  iconOnly = false,
-  onFallbackUpload,
-}) => {
+export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>(
+  ({
+    disabled,
+    onCaptured,
+    maxDurationMs = 60 * 60 * 1000,
+    className,
+    variant = 'default',
+    iconOnly = false,
+    onFallbackUpload,
+    onRecordingChange,
+    onSupportedChange,
+    hideButtons,
+    onError,
+  }, ref) => {
   /** 当前环境是否支持录音 */
   const [supported, setSupported] = useState<boolean>(true);
+  /** 不支持录音时隐藏内置按钮（由外部自绘降级入口） */
+  const [hideBuiltInButtons, setHideBuiltInButtons] = useState(false);
   /** 是否正在录音 */
   const [recording, setRecording] = useState<boolean>(false);
   /** 已录制时长（毫秒） */
   const [elapsed, setElapsed] = useState<number>(0);
+  /** recording / elapsed 的 ref 镜像，供命令式句柄的 getter 读取最新值 */
+  const recordingRef = useRef<boolean>(false);
+  const elapsedRef = useRef<number>(0);
+  recordingRef.current = recording;
+  elapsedRef.current = elapsed;
+  /** 录音启动中标记（防止异步申请麦克风期间重复触发开始，避免叠加多个 MediaRecorder） */
+  const startingRef = useRef<boolean>(false);
   /** 错误提示 */
   const [error, setError] = useState<string | null>(null);
   /** MediaRecorder 实例 */
@@ -134,7 +174,8 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
       && typeof window !== 'undefined'
       && window.isSecureContext;
     setSupported(hasMedia);
-  }, []);
+    onSupportedChange?.(hasMedia);
+  }, [onSupportedChange]);
 
   /** 环境里是否可用 Web Speech API */
   const speechSupported = (): boolean => {
@@ -175,6 +216,8 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
       setError('当前浏览器不支持录音，请改用文件上传。');
       return;
     }
+    if (recordingRef.current || startingRef.current) return;
+    startingRef.current = true;
     setError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -259,7 +302,10 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '无法访问麦克风';
       setError(msg);
+      onError?.(msg);
       setRecording(false);
+    } finally {
+      startingRef.current = false;
     }
   };
 
@@ -268,6 +314,7 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
    * @returns void
    */
   const stopCapture = () => {
+    startingRef.current = false;
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') {
       try { rec.stop(); } catch { /* noop */ }
@@ -280,12 +327,32 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
     setRecording(false);
   };
 
+  // 录音状态变化时同步给外部（供外部自绘按钮 / 状态点使用）
+  useEffect(() => {
+    onRecordingChange?.(recording);
+  }, [recording, onRecordingChange]);
+
+  // 暴露命令式句柄：start / stop / isRecording / elapsedMs
+  useImperativeHandle(ref, () => ({
+    start: startCapture,
+    stop: stopCapture,
+    get isRecording() {
+      return recordingRef.current;
+    },
+    get elapsedMs() {
+      return elapsedRef.current;
+    },
+  }), [startCapture, stopCapture]);
+
   // 不支持录音：compact 降级为上传入口（绝不返回 null）
   if (!supported) {
     const isHttp = typeof window !== 'undefined' && !window.isSecureContext;
     const hint = isHttp
       ? 'HTTP 环境无法浏览器录音，请上传音频或改用 HTTPS'
       : '当前浏览器不支持录音，请上传音频';
+
+    // 隐藏内置按钮：外部自绘降级入口，本组件仅作为录音实例宿主
+    if (hideButtons) return null;
 
     if (variant === 'compact') {
       return (
@@ -328,6 +395,9 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
 
   const compactIcon = variant === 'compact' && iconOnly;
 
+  // 隐藏内置按钮：外部自绘 UI，本组件仅作为录音实例宿主
+  if (hideButtons) return null;
+
   return (
     <div className={`flex items-center gap-2 ${className || ''}`}>
       {!recording ? (
@@ -365,6 +435,9 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
       {error && <span className="text-xs text-rose-600">{error}</span>}
     </div>
   );
-};
+  },
+);
+
+AudioRecorder.displayName = 'AudioRecorder';
 
 export default AudioRecorder;

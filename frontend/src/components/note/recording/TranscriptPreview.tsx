@@ -2,10 +2,10 @@
  * TranscriptPreview.tsx — 转写分段预览
  *
  * 由会议版 TranscriptView 精简移植：按章节分组展示时间戳 / 说话人 / 正文，
- * 并在顶部提供「AI 整理」「重转写」「重润色」三个操作入口。
+ * 并在顶部提供「AI 整理润色」「重转写」两个操作入口。
  */
 import React, { useMemo } from 'react';
-import { Hash, Loader2, RefreshCw, Sparkles, Wand2, UserCircle2 } from 'lucide-react';
+import { Hash, Loader2, RefreshCw, Sparkles, UserCircle2 } from 'lucide-react';
 import type { TranscriptSegment } from '../../../services/note/recording';
 
 interface TranscriptPreviewProps {
@@ -17,10 +17,8 @@ interface TranscriptPreviewProps {
   busyAction?: 'retranscribe' | 'refine' | null;
   /** 重新转写回调 */
   onRetranscribe?: () => void;
-  /** AI 整理回调（缺省时回落到 onRepolish） */
+  /** AI 整理 / 润色回调（合并后的单一入口） */
   onAiOrganize?: () => void;
-  /** 重润色回调 */
-  onRepolish?: () => void;
   /** 自定义类名 */
   className?: string;
 }
@@ -79,7 +77,6 @@ export const TranscriptPreview: React.FC<TranscriptPreviewProps> = ({
   busyAction = null,
   onRetranscribe,
   onAiOrganize,
-  onRepolish,
   className,
 }) => {
   const sorted = useMemo(
@@ -115,23 +112,13 @@ export const TranscriptPreview: React.FC<TranscriptPreviewProps> = ({
       <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
-          onClick={onAiOrganize ?? onRepolish}
+          onClick={onAiOrganize}
           disabled={!segments.length || busyAction !== null}
           className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border transition-colors disabled:opacity-60 disabled:cursor-not-allowed border-violet-200 text-violet-700 hover:bg-violet-50`}
-          title="调用大模型整理错别字 / 标点 / 分段"
+          title="调用大模型整理：修复错别字 / 加标点 / 顺句 / 润色 / 重新分段（使用当前笔记对应助手的模型）"
         >
           {busyAction === 'refine' ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-          AI 整理
-        </button>
-        <button
-          type="button"
-          onClick={onRepolish}
-          disabled={!segments.length || busyAction !== null}
-          className={btnCls}
-          title="重新润色转写文本"
-        >
-          {busyAction === 'refine' ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
-          重润色
+          AI 整理润色
         </button>
         <button
           type="button"

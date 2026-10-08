@@ -216,7 +216,9 @@ class NoteTranscriptionService:
                 if not self._fallback_local:
                     if isinstance(exc, NoteTranscriptionError):
                         raise
-                    raise NoteTranscriptionError(f"remote ASR failed: {exc}") from exc
+                    raise NoteTranscriptionError(
+                        f"语音转写服务暂时不可用（{exc}），请稍后重试；编辑器的浏览器语音输入不受影响"
+                    ) from exc
                 logger.warning(
                     "remote ASR failed, falling back to local: %s", exc
                 )
@@ -327,7 +329,9 @@ class NoteTranscriptionService:
             if str(item.get("text") or "").strip()
         ]
         if not segments:
-            raise NoteTranscriptionError("remote ASR returned no text segments")
+            raise NoteTranscriptionError(
+                "未识别到语音内容：录音可能是静音、音量过低或时长过短，请靠近麦克风重录"
+            )
         _pct(100)
         logger.info(
             "remote ASR done: %d segments (file=%s)",

@@ -33,6 +33,7 @@ from app.models.note import (
     NoteRecording,
     NoteTranscript,
 )
+from app.models.ai import AIAssistant
 
 logger = logging.getLogger(__name__)
 
@@ -761,14 +762,89 @@ async def _load_refinement_context(
     )
 
 
+# 笔记类型 → 对应助手名称（与前端 NotesPage 的 recommendedAssistant 保持一致）
+NOTE_TYPE_ASSISTANT_NAMES: dict[str, str] = {
+    "mindmap": "思维导图设计助手",
+    "flowchart": "流程图设计助手",
+}
+
+# 未命中专用设计助手时使用的默认笔记助手名称
+DEFAULT_NOTE_ASSISTANT_NAME = "笔记助手"
+
+
+async def resolve_note_assistant_model(
+    db: AsyncSession,
+    recording_id: Any,
+    user_id: Any | None = None,
+) -> str | None:
+    """解析录音所属笔记对应的助手模型名。
+
+    选择规则：先按笔记类型匹配专用设计助手（思维导图 / 流程图），否则用「笔记助手」；
+    同名助手优先取当前用户自建的，其次取系统内置（user_id 为空）的。
+    助手不存在或未配置模型时返回 None，交由 LLMRouter 回退到系统默认模型。
+
+    @param db 数据库会话
+    @param recording_id 录音 id
+    @param user_id 当前请求用户 id（可选，缺省用录音归属用户）
+    @returns 助手配置的模型名；无法确定时为 None
+    """
+    row = (
+        await db.execute(
+            select(Note.note_type, NoteRecording.user_id)
+            .outerjoin(Note, NoteRecording.note_id == Note.id)
+            .where(
+                NoteRecording.id == recording_id,
+                NoteRecording.is_deleted == False,  # noqa: E712
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    note_type, owner_id = row
+    assistant_name = NOTE_TYPE_ASSISTANT_NAMES.get(
+        (note_type or "").lower(), DEFAULT_NOTE_ASSISTANT_NAME
+    )
+
+    candidates = list(
+        (
+            await db.execute(
+                select(AIAssistant)
+                .where(
+                    AIAssistant.name == assistant_name,
+                    AIAssistant.is_deleted == False,  # noqa: E712
+                )
+                .order_by(AIAssistant.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not candidates:
+        return None
+
+    owner = user_id or owner_id
+    chosen = None
+    if owner:
+        chosen = next((a for a in candidates if a.user_id == owner), None)
+    if chosen is None:
+        chosen = next((a for a in candidates if a.user_id is None), None)
+    if chosen is None:
+        chosen = candidates[0]
+    return chosen.model or None
+
+
 async def apply_refinement_to_recording(
     db: AsyncSession,
     recording_id: Any,
     *,
     provider: str | None = None,
     model: str | None = None,
+    user_id: Any | None = None,
 ) -> int:
     """重新拉取录音分段并把润色文本写回 ``text`` 列（替换原始 Whisper 文本）。
+
+    未显式指定 ``model`` 时，取当前笔记对应助手配置的模型；取不到则由 LLMRouter
+    回退到系统默认模型。
 
     返回被润色的分段数量。
     """
@@ -786,7 +862,14 @@ async def apply_refinement_to_recording(
     if not rows:
         return 0
 
-    svc = TranscriptRefinementService(provider=provider, model=model)
+    resolved_model = model
+    if not resolved_model:
+        try:
+            resolved_model = await resolve_note_assistant_model(db, recording_id, user_id)
+        except Exception as exc:  # noqa: BLE001 — 解析助手模型失败不阻断润色
+            logger.warning("resolve note assistant model failed: %s", exc)
+
+    svc = TranscriptRefinementService(provider=provider, model=resolved_model)
     context = await _load_refinement_context(db, recording_id)
     refined = await svc.refine(rows, context=context, db=db)
     if not refined:

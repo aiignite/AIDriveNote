@@ -396,7 +396,8 @@ async def refine_recording(
     _assert_recording_access(recording, user)
 
     try:
-        await apply_refinement_to_recording(db, recording_id)
+        # 使用当前笔记对应助手配置的模型；解析不到时回退系统默认模型
+        await apply_refinement_to_recording(db, recording_id, user_id=user.id)
     except Exception as exc:  # noqa: BLE001 — 对外统一为可读的 400
         logger.warning("转写润色失败: %s", exc)
         raise BadRequestException(f"润色失败：{exc}") from exc
