@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.ai import AIModel, UserAISettings
 from app.services.ai_providers.base import AIProviderConfig
+from app.services.secret_crypto import decrypt_secret
 
 
 @dataclass
@@ -77,7 +78,8 @@ class LLMRouter:
                 model_id=ai_model.model_id,
                 model_name=ai_model.name,
                 endpoint=ai_model.endpoint,
-                api_key=ai_model.api_key,
+                # 落库为密文（enc:: 前缀），出站调用前解密；存量明文自动兼容
+                api_key=decrypt_secret(ai_model.api_key),
                 temperature=temperature,
                 supports_image=bool(ai_model.supports_image) or vision_name_hint,
             )

@@ -38,6 +38,11 @@ from app.services.ai.ai_service import AIService
 from app.services.ai.attachment_service import AttachmentService
 from app.services.ai.seed_service import AISeedService
 from app.services.ai_providers.factory import AIProviderFactory
+from app.services.secret_crypto import (
+    decrypt_secret,
+    encrypt_secret,
+    is_masked_secret_placeholder,
+)
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -334,6 +339,8 @@ async def create_model(
     user: User = Depends(get_current_user),
 ):
     payload = body.model_dump(exclude={"set_as_default"})
+    # API Key 落库前加密（复用 secret_crypto：已加密值幂等，存量明文自动识别）
+    payload["api_key"] = encrypt_secret(payload.get("api_key"))
     m = AIModel(**payload, user_id=user.id)
     db.add(m)
     await db.flush()
@@ -359,7 +366,11 @@ async def update_model(
     updates = body.model_dump(exclude_unset=True)
     set_as_default = updates.pop("set_as_default", None)
     for k, v in updates.items():
-        if k == "api_key" and not v:
+        if k == "api_key":
+            # 留空 / 掩码占位符表示「保持原值不变」；非空则加密落库
+            if not v or is_masked_secret_placeholder(str(v)):
+                continue
+            setattr(m, k, encrypt_secret(str(v)))
             continue
         setattr(m, k, v)
     if set_as_default is True:
@@ -387,7 +398,12 @@ async def delete_model(
 
 
 def _resolve_api_key(model_key: str | None, env_key: str | None) -> str | None:
-    key = (model_key or "").strip() or (env_key or "").strip()
+    """取模型配置或环境变量中的 API Key。
+
+    模型侧落库的是密文（``enc::`` 前缀），这里解密后再用于出站请求；
+    存量明文会自动原样返回，无需迁移即可继续工作。
+    """
+    key = (decrypt_secret(model_key) or "").strip() or (env_key or "").strip()
     return key or None
 
 
@@ -431,6 +447,9 @@ async def test_model_connection(
 
             if provider == "LMSTUDIO":
                 url = (m.endpoint or "http://localhost:1234").rstrip("/")
+                # endpoint 可能带 /v1（聊天补全需要），测试时去重避免 /v1/v1/models
+                if url.endswith("/v1"):
+                    url = url[: -len("/v1")]
                 resp = await client.get(f"{url}/v1/models")
                 resp.raise_for_status()
                 return _result(True, "LM Studio 连接成功")
@@ -994,25 +1013,55 @@ async def download_attachment(
 
 # ── Chat stream ──
 
+# SSE 响应头：禁用缓冲，避免 nginx 下内容被攒到流结束才吐出
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
 @router.post("/chat/stream")
 async def chat_stream(
     body: ChatStreamRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """SSE 流式对话。
+
+    关键点：**流式输出阶段不持有请求作用域的 DB 连接**。
+    所有准备工作（助手/模型/会话解析、技能路由、RAG、历史、附件、落库 user 消息）
+    在 :meth:`AIService.prepare_chat` 的短事务内完成；随后构造响应即让 FastAPI
+    结束 ``get_db`` 依赖、把连接归还池中。后续 LLM 等待与工具执行各自开短事务。
+
+    这样并发聊天数不再被连接池（pool_size + max_overflow）卡死。
+    """
+    from app.services.ai.ai_service import AIService, ChatPreparationError
+
+    try:
+        prepared = await AIService.prepare_chat(
+            db, user.id, body.message,
+            assistant_name=body.assistant_name,
+            conversation_id=body.conversation_id,
+            page_context=body.page_context,
+            model_id=body.model_id,
+            attachment_ids=body.attachment_ids,
+            force_skills=body.force_skills,
+        )
+    except ChatPreparationError as exc:
+        async def _prep_error():
+            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            _prep_error(),
+            media_type="text/event-stream",
+            headers=_SSE_HEADERS,
+        )
+
     async def event_generator():
         try:
-            async for chunk in AIService.chat_stream(
-                db,
-                user.id,
-                body.message,
-                assistant_name=body.assistant_name,
-                conversation_id=body.conversation_id,
-                page_context=body.page_context,
-                model_id=body.model_id,
-                attachment_ids=body.attachment_ids,
-                force_skills=body.force_skills,
-            ):
+            async for chunk in AIService.stream_chat(prepared, body.message):
                 yield chunk
         except Exception as exc:
             logger.exception("AI chat stream failed")
@@ -1022,9 +1071,5 @@ async def chat_stream(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=_SSE_HEADERS,
     )
