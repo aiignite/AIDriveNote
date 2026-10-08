@@ -22,8 +22,10 @@ import {
   Expand, Shrink,
 } from 'lucide-react';
 import { parseBlockNoteContent } from '../../utils/blocknoteContent';
-import { uploadImageAsDataUrl } from '../../utils/blocknoteImageUpload';
+import { uploadNoteImage } from '../../utils/blocknoteImageUpload';
 import { useSpeechInput } from '../../hooks/useSpeechInput';
+import NoteRecordingPanel, { type NoteRecordingPanelHandle } from './recording/NoteRecordingPanel';
+import { RecordingStatusDot, type RecordingDotState } from './recording/RecordingStatusDot';
 import type {
   NoteCommand,
   NoteEditorRegistry,
@@ -97,10 +99,8 @@ interface NoteRichTextEditorProps {
   isDark?: boolean;
   /** 上报可用命令与菜单分组 */
   onRegistryChange?: (registry: NoteEditorRegistry) => void;
-  /** 上报大纲数据（只读或无标题时上报 null） */
+    /** 上报大纲数据（只读或无标题时上报 null） */
   onOutlineChange?: (state: NoteOutlineState | null) => void;
-  /** 请求打开录音转写面板（由上层面板渲染并管理其开关） */
-  onOpenRecording?: () => void;
 }
 
 /**
@@ -188,13 +188,17 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   isDark = false,
   onRegistryChange,
   onOutlineChange,
-  onOpenRecording,
 }) => {
   const editor: BlockNoteEditor = useCreateBlockNote({
     initialContent: parseBlockNoteContent(content) ?? DEFAULT_BLOCKS,
     uploadFile: async (file) => {
       try {
-        return await uploadImageAsDataUrl(file);
+        const result = await uploadNoteImage(file);
+        if (result.pending) {
+          // 离线：已退回 Base64 内嵌，避免丢图；联网后可用迁移脚本资产化
+          toast('当前离线，图片先以本地形式保存', { icon: '📶' });
+        }
+        return result.url;
       } catch (err) {
         toast.error(err instanceof Error ? err.message : '图片粘贴失败');
         throw err;
@@ -222,21 +226,68 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const onOutlineChangeRef = useRef(onOutlineChange);
   onOutlineChangeRef.current = onOutlineChange;
 
-  /**
-   * 最新的录音面板打开回调引用。
-   * 父组件常以内联箭头传入该回调，若直接作为 registry useMemo 的依赖会导致
-   * registry 每次渲染都重新生成 → 上报 effect 触发父组件 setState → 无限更新循环。
-   * 因此这里改为 ref 透传，彻底切断对回调身份的依赖。
-   */
-  const onOpenRecordingRef = useRef(onOpenRecording);
-  onOpenRecordingRef.current = onOpenRecording;
-
   /** 当前光标所在块的类型（驱动工具栏块类型下拉的选中值） */
   const [currentBlockType, setCurrentBlockType] = useState<string>('paragraph');
   /** 当前大纲条目（仅在变化时更新，保证上报引用稳定） */
   const [outlineItems, setOutlineItems] = useState<NoteOutlineItem[]>([]);
   /** 是否处于全屏编辑（固定定位铺满视口，行为与 Markdown 编辑器一致） */
   const [isFullscreen, setIsFullscreen] = useState(false);
+  /** 录音浮窗是否展开（工具栏麦克风按钮就地弹出小面板） */
+  const [recordingOpen, setRecordingOpen] = useState(false);
+  /** 录音浮窗锚点：工具栏麦克风按钮 */
+  const recordingAnchorRef = useRef<HTMLButtonElement | null>(null);
+  /** 录音按钮状态标记（由录音浮窗上报，供工具栏小圆点显示） */
+  const [recordingDot, setRecordingDot] = useState<RecordingDotState>('idle');
+  /** insertBlocksAfterCursor 的稳定引用（供录音浮窗插入转写内容） */
+  const insertBlocksAfterCursorRef = useRef<((blocks: PartialBlock[]) => void) | null>(null);
+
+  /** 录音浮窗命令式句柄：工具栏麦克风按钮直接驱动开始 / 停止录音 */
+  const recordingPanelRef = useRef<NoteRecordingPanelHandle>(null);
+  /** 是否正在录音（ref 镜像，供按钮点击同步判断，避免依赖异步状态更新） */
+  const isRecordingRef = useRef(false);
+
+  /**
+   * 录音状态变化：同步镜像标记；停止后自动弹出处理面板。
+   * @param recording 是否正在录音
+   * @returns void
+   */
+  const handleRecordingStateChange = useCallback((recording: boolean) => {
+    const wasRecording = isRecordingRef.current;
+    isRecordingRef.current = recording;
+    if (wasRecording && !recording) setRecordingOpen(true);
+  }, []);
+
+  /**
+   * 工具栏麦克风按钮：未录音时直接开始录音（不弹出面板，仅显示按钮上的小红点）；
+   * 录音中再次点击则停止，停止后自动弹出处理面板。
+   * @returns void
+   */
+  const handleMicClick = useCallback(() => {
+    if (isRecordingRef.current) {
+      recordingPanelRef.current?.stop();
+    } else {
+      // 开始录音前先收起面板，保证录音期间界面上只保留按钮小红点
+      setRecordingOpen(false);
+      recordingPanelRef.current?.start();
+    }
+  }, []);
+
+  /**
+   * 命令面板「录音转写」入口：录音中则停止，否则切换面板开关（用于上传 / 管理录音）。
+   * @returns void
+   */
+  const toggleRecording = useCallback(() => {
+    if (isRecordingRef.current) {
+      recordingPanelRef.current?.stop();
+    } else {
+      setRecordingOpen(v => !v);
+    }
+  }, []);
+
+  /** 录音状态标记变化回调（稳定引用，避免浮窗 effect 依赖抖动） */
+  const handleRecordingStatusChange = useCallback((state: RecordingDotState) => {
+    setRecordingDot(prev => (prev === state ? prev : state));
+  }, []);
 
   /** 全屏时按 Esc 退出 */
   useEffect(() => {
@@ -586,6 +637,9 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   /** 语音输入：识别结果作为新段落插入 */
   const speech = useSpeechInput({ onFinal: insertSpeechText });
 
+  // 同步插入回调的稳定引用（录音浮窗通过它把音频 / 转写写入光标处）
+  insertBlocksAfterCursorRef.current = insertBlocksAfterCursor;
+
   /**
    * 插入图片：先询问网络地址，留空则打开本地文件选择
    * @returns 无
@@ -601,7 +655,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   }, [insertImageBlock]);
 
   /**
-   * 本地图片文件选择回调：转 dataURL 后插入
+   * 本地图片文件选择回调：上传为服务端资产后插入
    * @param e 文件输入变化事件
    * @returns Promise<void>
    */
@@ -610,8 +664,11 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
     e.target.value = '';
     if (!file) return;
     try {
-      const dataUrl = await uploadImageAsDataUrl(file);
-      insertImageBlock(dataUrl, file.name);
+      const result = await uploadNoteImage(file);
+      if (result.pending) {
+        toast('当前离线，图片先以本地形式保存', { icon: '📶' });
+      }
+      insertImageBlock(result.url, file.name);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '插入图片失败');
     }
@@ -731,7 +788,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       cmd('insert.divider', '分隔线', insertDivider, undefined, 'divider hr 分割线 水平线'),
       cmd('insert.table', '表格', insertTable, undefined, 'table 表格 插入'),
       cmd('insert.image', '插入图片', insertImage, undefined, 'image picture 图片 上传'),
-      cmd('insert.recording', '录音转写', () => onOpenRecordingRef.current?.(), undefined, 'record audio mic 录音 语音 转写'),
+      cmd('insert.recording', '录音转写', toggleRecording, undefined, 'record audio mic 录音 语音 转写'),
       {
         id: 'insert.speech',
         label: speech.listening ? '停止语音输入' : '语音输入',
@@ -893,7 +950,17 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={insertTable} title="插入表格"><Table size={16} /></button>
           <button type="button" className={btnCls} onClick={insertDivider} title="插入分隔线"><Minus size={16} /></button>
           <button type="button" className={btnCls} onClick={insertImage} title="插入图片"><ImagePlus size={16} /></button>
-          <button type="button" className={btnCls} onClick={() => onOpenRecording?.()} title="录音转写"><Mic size={16} /></button>
+          <button
+            ref={recordingAnchorRef}
+            type="button"
+            className={`${btnCls} relative`}
+            onClick={handleMicClick}
+            aria-expanded={recordingOpen}
+            title={recordingDot === 'recording' ? '停止录音' : '录音转写'}
+          >
+            <Mic size={16} />
+            <RecordingStatusDot state={recordingDot} />
+          </button>
           <button
             type="button"
             className={`${btnCls} ${speech.listening ? 'text-red-500' : ''}`}
@@ -937,6 +1004,20 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
         className="hidden"
         onChange={handleImageFileChange}
       />
+      {/* 录音浮窗：锚定在工具栏麦克风按钮下方的小面板（非全屏抽屉） */}
+      {!readOnly && (
+        <NoteRecordingPanel
+          ref={recordingPanelRef}
+          open={recordingOpen}
+          noteId={noteId}
+          isDark={isDark}
+          anchorRef={recordingAnchorRef}
+          onClose={() => setRecordingOpen(false)}
+          onInsert={blocks => insertBlocksAfterCursorRef.current?.(blocks)}
+          onStatusChange={handleRecordingStatusChange}
+          onRecordingStateChange={handleRecordingStateChange}
+        />
+      )}
     </div>
   );
 };

@@ -27,8 +27,6 @@ interface NoteEditorContainerProps {
   onRegistryChange?: (registry: NoteEditorRegistry) => void;
   /** 大纲上报：编辑器上报大纲数据（无大纲能力时上报 null） */
   onOutlineChange?: (state: NoteOutlineState | null) => void;
-  /** 请求打开录音转写面板（仅富文本编辑器支持） */
-  onOpenRecording?: () => void;
 }
 
 function unwrapContent(noteType: NoteType, raw: unknown): unknown {
@@ -61,7 +59,6 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
   isDark = false,
   onRegistryChange,
   onOutlineChange,
-  onOpenRecording,
 }, ref) => {
   const editorContent = useMemo(() => unwrapContent(noteType, content), [noteType, content]);
 
@@ -83,7 +80,6 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
             isDark={isDark}
             onRegistryChange={onRegistryChange}
             onOutlineChange={onOutlineChange}
-            onOpenRecording={onOpenRecording}
           />
         </Suspense>
       );

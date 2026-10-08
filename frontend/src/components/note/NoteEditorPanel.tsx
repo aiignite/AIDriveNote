@@ -19,7 +19,6 @@ import NoteCommandPalette from './NoteCommandPalette';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import NoteOutlinePanel from './NoteOutlinePanel';
 import NoteEmailDialog from './NoteEmailDialog';
-import NoteRecordingPanel from './recording/NoteRecordingPanel';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
 import {
   noteApi, noteTagApi, noteTemplateApi, noteTitleApi,
@@ -254,7 +253,6 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   /** 是否显示大纲侧栏 */
   const [showOutline, setShowOutline] = useState(false);
   /** 是否打开录音转写面板（仅富文本） */
-  const [showRecording, setShowRecording] = useState(false);
   /** 命令面板开关 */
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** 快捷键帮助弹窗 */
@@ -958,9 +956,6 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     ));
   }, []);
 
-  /** 打开录音转写面板（稳定引用，避免子编辑器 registry 依赖抖动） */
-  const handleOpenRecording = useCallback(() => setShowRecording(true), []);
-
   /** 编辑器的大纲上报回调（稳定引用） */
   const handleOutlineChange = useCallback((next: NoteOutlineState | null) => {
     setOutlineSlot({ type: noteTypeRef.current, state: next });
@@ -1362,7 +1357,6 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               isDark={isDark}
               onRegistryChange={handleRegistryChange}
               onOutlineChange={handleOutlineChange}
-              onOpenRecording={handleOpenRecording}
             />
           )}
         </div>
@@ -1408,17 +1402,6 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         commands={paletteCommands}
         isDark={isDark}
       />
-
-      {/* 录音转写面板（仅富文本；插入能力复用编辑器注册的 insertBlocksAfterCursor） */}
-      {note.noteType === 'rich_text' && (
-        <NoteRecordingPanel
-          open={showRecording}
-          noteId={note.id}
-          isDark={isDark}
-          onClose={() => setShowRecording(false)}
-          onInsert={blocks => registry?.insertBlocksAfterCursor?.(blocks)}
-        />
-      )}
 
       {/* 发送到邮箱弹窗 */}
       {showEmailDialog && (
