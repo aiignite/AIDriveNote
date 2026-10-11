@@ -19,21 +19,25 @@ sudo usermod -aG docker "$USER"
 # 重新登录 SSH 会话
 ```
 
-### 2. 创建生产 `.env`
+### 2. 生产 `.env`（本地为源，rsync 自动同步）
 
-在服务器 `~/AIDriveNote/.env`（**不要**从本机 rsync 覆盖）。注意 `asr_gateway` 服务还会额外要求
-`NOTE_ASR_REMOTE_API_KEY`（[docker-compose.prod.yml](../../docker-compose.prod.yml) 中以 `:?` 标注的必填项）：
+生产配置的**源在本地仓库根目录 `.env`**（gitignored）。`deploy-remote.sh` 的 rsync 会把它覆盖到服务器
+`~/AIDriveNote/.env`，并在覆盖前按"键名 + 值哈希"做漂移预检（只报键名不回显值）。不要直接在服务器上改
+`.env`——下次发布会被本地版本覆盖。
+
+首次部署前确认本地 `.env` 至少包含（`asr_gateway` 还以 `:?` 强制要求 `NOTE_ASR_REMOTE_API_KEY`）：
 
 ```bash
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=<强密码>
 POSTGRES_DB=ai_drive_note
 
+# 主机名必须是 compose 服务名 postgres，不是 127.0.0.1
 DATABASE_URL=postgresql+asyncpg://postgres:<强密码>@postgres:5432/ai_drive_note
 DATABASE_URL_SYNC=postgresql://postgres:<强密码>@postgres:5432/ai_drive_note
 
 SECRET_KEY=<openssl rand -hex 32>
-CORS_ORIGINS=http://<DEPLOY_HOST>:3270,http://localhost:3270
+CORS_ORIGINS=https://aiignite.com.cn,https://www.aiignite.com.cn
 
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen2.5
@@ -41,6 +45,20 @@ OLLAMA_MODEL=qwen2.5
 # asr_gateway 必填
 NOTE_ASR_REMOTE_API_KEY=<与 enable-sso / 语音服务约定的密钥>
 NOTE_ASR_MODE=remote
+
+# 子路径部署
+VITE_BASE_PATH=/note/
+VITE_API_URL=/note/api/v1
+NGINX_SUBPATH=1
+APP_HEALTH_PATH=/note/health
+
+# 注册验证码真实发信（EMAIL_MOCK=true 时验证码只进后端日志，用户无法注册）
+EMAIL_HOST=smtp.qq.com
+EMAIL_PORT=465
+EMAIL_USER=<发信邮箱>
+EMAIL_PASS=<授权码>
+EMAIL_FROM="AIDriveNote <发信邮箱>"
+EMAIL_MOCK=false
 ```
 
 生成 SECRET_KEY：
@@ -86,9 +104,9 @@ APP_HEALTH_PATH=/note/health
 
 **SSH 认证优先级：**
 
-1. SSH 密钥（推荐）：`ssh-copy-id ubuntu@<HOST>` — 之后所有 ssh/rsync 命令都无需额外包装
-2. 密码：在 `deploy.env` 设置 `AIDRIVENOTE_SSH_PASS`（勿提交 git）
-   - 沙箱环境禁止分配 pty 时 `sshpass` 不可用，改用 `SSH_ASKPASS`（见 SKILL.md「凭据处理」）
+1. SSH 密钥（**当前已配置**，2026-10-11 验证）：`ssh ubuntu@<DEPLOY_HOST>` 免密直连，所有 ssh/rsync 无需额外包装
+2. 密码（无密钥的机器才需要）：在 `deploy.env` 设置 `AIDRIVENOTE_SSH_PASS`（勿提交 git）
+   - 沙箱环境禁止分配 pty 时 `sshpass` 不可用，改用 `SSH_ASKPASS` 包装；优先 `ssh-copy-id` 配密钥
 
 `scripts/deploy.env` 已加入 `.gitignore`。
 
@@ -101,20 +119,30 @@ APP_HEALTH_PATH=/note/health
 | URL | 期望 | 说明 |
 |-----|------|------|
 | `http://HOST:3270/` | 301 | 根路径重定向，**正常** |
-| `http://HOST:3270/health` | 404 | **正常**，health 不在子路径下 |
+| `http://HOST:3270/health` | 404 | **正常**，health 不在子路径下（2026-10-11 起 `deploy-remote.sh` 已改查带前缀路径） |
 | `http://HOST:3270/note/` | 200 + index.html | 前端正常 |
-| `http://HOST:3270/note/health` | 200 + index.html | 被 SPA 兜底，**不能**据此判断 API 健康 |
-
-API 健康的权威判据是远程 `deploy.sh` 在服务器本机执行的结果（[deploy.sh](../../deploy.sh) 用
-`${APP_HEALTH_PATH:-/health}` 拼路径，故子路径部署时应把它设为 `/note/health`）：
+| `http://HOST:3270/note/health` | 200 + **JSON** | frontend nginx 将 `/note/health` 代理到 backend `/health`，是**真实健康端点** |
+| `https://aiignite.com.cn/note/health` | 200 + **JSON** | 同上（经宿主机 nginx），外网验证首选 |
 
 ```bash
-# 在服务器上执行，deploy.sh 已自动完成
-curl -sf "http://127.0.0.1:3270${APP_HEALTH_PATH:-/health}"
+curl -s https://aiignite.com.cn/note/health
 # → {"status":"ok","app":"AIDriveNote"}
 ```
 
-**验证改动生效**时，别只 curl 状态码（旧产物也是 200），要 grep 容器内产物：
+SPA 深链（如 `/note/settings`）返回 200 + index.html 属正常，但只能证明前端在服务，
+**不能**证明 API 健康——判断 API 一律用 `/note/health` 的 JSON。
+
+**验证改动生效**时，别只 curl 状态码（旧产物也是 200），要 grep 构建产物中的标识字符串。
+
+本机直查线上 bundle（无需登服务器，首选）：
+
+```bash
+HTML=$(curl -s https://aiignite.com.cn/note/)
+JS=$(echo "$HTML" | grep -o '/note/assets/index-[^"]*\.js' | head -1)
+curl -s "https://aiignite.com.cn$JS" | grep -c '<标识串>'
+```
+
+或登服务器 grep 容器内产物：
 
 ```bash
 docker exec aidrivenote-frontend-1 sh -c \
@@ -143,19 +171,26 @@ docker compose -f docker-compose.prod.yml restart frontend
 # 完全重建
 docker compose -f docker-compose.prod.yml up -d --build
 
-# 数据库备份
+# 当前迁移版本（发布含 schema 变更后确认 = 本地 head）
 docker compose -f docker-compose.prod.yml exec -T postgres \
-  pg_dump -U postgres ai_drive_note > backup_$(date +%F).sql
+  psql -U postgres -d ai_drive_note -c "SELECT version_num FROM alembic_version;"
+
+# 数据库备份（发布含迁移前必做）
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U postgres ai_drive_note > backup_$(date +%F-%H%M).sql
 ```
 
 ---
 
 ## 性能相关
 
-生产 frontend 镜像内置 nginx gzip（见 `frontend/nginx.conf`）。部署后确认：
+生产 frontend 镜像内置 nginx gzip（见 `frontend/nginx.conf` 与 `frontend/nginx.subpath.conf`）。
+部署后确认（子路径部署资源挂在 `/note/assets/` 下）：
 
 ```bash
-curl -sI -H "Accept-Encoding: gzip" "http://<HOST>:3270/assets/index-*.js" | grep -i content-encoding
+HTML=$(curl -s http://<HOST>:3270/note/)
+JS=$(echo "$HTML" | grep -o '/note/assets/index-[^"]*\.js' | head -1)
+curl -sI -H "Accept-Encoding: gzip" "http://<HOST>:3270$JS" | grep -i content-encoding
 # 应看到 Content-Encoding: gzip
 ```
 
