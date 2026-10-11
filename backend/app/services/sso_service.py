@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.exceptions import ForbiddenException
 from app.models.user import User
 from app.services.auth_service import AuthService
 
@@ -49,6 +50,10 @@ class SSOService:
         user = result.scalar_one_or_none()
 
         if user is None:
+            # 公网测试部署防护：portal 上的陌生账号不自动落库，
+            # 仅允许管理员预先创建的测试用户经 SSO 登录
+            if not settings.SSO_AUTO_CREATE_USERS:
+                raise ForbiddenException("账号未开通，请联系管理员开通后使用")
             user = User(
                 email=email,
                 name=name,

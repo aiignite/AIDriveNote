@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { authApi } from '../services/auth';
 import Logo from '../components/Logo';
 
 const LoginPage: React.FC = () => {
@@ -9,6 +10,14 @@ const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  /** 后端未开放自助注册时隐藏「注册」入口（公网测试部署仅管理员建号） */
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
+
+  useEffect(() => {
+    authApi.getConfig()
+      .then(cfg => setRegistrationEnabled(Boolean(cfg.registrationEnabled)))
+      .catch(() => { /* 查询失败按默认展示，注册页仍会被后端拦截 */ });
+  }, []);
 
   if (!isLoading && user) {
     return <Navigate to="/" replace />;
@@ -57,9 +66,11 @@ const LoginPage: React.FC = () => {
         >
           {loading ? '登录中…' : '登录'}
         </button>
-        <p className="text-sm text-center mt-4 text-gray-500">
-          没有账号？ <Link to="/register" className="text-orange-600 hover:underline">注册</Link>
-        </p>
+        {registrationEnabled && (
+          <p className="text-sm text-center mt-4 text-gray-500">
+            没有账号？ <Link to="/register" className="text-orange-600 hover:underline">注册</Link>
+          </p>
+        )}
       </form>
     </div>
   );

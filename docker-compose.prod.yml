@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -34,6 +32,14 @@ services:
       SSO_ENABLED: "${SSO_ENABLED:-false}"
       SSO_SECRET_KEY: "${SSO_SECRET_KEY:-}"
       SSO_ISSUER: "${SSO_ISSUER:-aidriveall}"
+      # SSO 首次出现的账号不自动建号，仅管理员预建的测试用户可登录
+      SSO_AUTO_CREATE_USERS: "${SSO_AUTO_CREATE_USERS:-false}"
+      # 公网测试部署防护：默认关闭自助注册、限制单用户笔记数与上传体积
+      SELF_REGISTRATION_ENABLED: "${SELF_REGISTRATION_ENABLED:-false}"
+      USER_MAX_NOTES: "${USER_MAX_NOTES:-100}"
+      USER_MAX_UPLOAD_BYTES: "${USER_MAX_UPLOAD_BYTES:-2097152}"
+      # 单条录音上限 25MB；nginx 各层 client_max_body_size 须 ≥ 此值 + 1MB
+      NOTE_MAX_RECORDING_BYTES: "${NOTE_MAX_RECORDING_BYTES:-26214400}"
       # 生产环境关闭 /docs /redoc /openapi.json，避免对外暴露完整接口结构
       API_DOCS_ENABLED: "${API_DOCS_ENABLED:-false}"
       # 版本历史保留条数；恢复前快照不参与淘汰

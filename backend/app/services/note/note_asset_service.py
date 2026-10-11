@@ -28,6 +28,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.exceptions import BadRequestException, NotFoundException
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,9 @@ _ALLOWED_MIME = {
     "image/svg+xml": ".svg",
 }
 
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
+# 单图上限：与前端 blocknoteImageUpload.ts 的 MAX_IMAGE_BYTES 保持一致。
+# 公网测试部署按 2MB 收口，防止大图拖垮小机（历史上限 5MB）。
+MAX_IMAGE_BYTES = get_settings().USER_MAX_UPLOAD_BYTES
 
 # data URL 解析：允许 base64 与百分号编码两种形态
 _DATA_URL_RE = re.compile(r"^data:(?P<mime>[\w.+-]+/[\w.+-]+)?(?P<b64>;base64)?,(?P<data>.*)$", re.DOTALL)
@@ -117,7 +120,7 @@ class NoteAssetService:
             raise BadRequestException("图片内容为空")
         if len(data) > MAX_IMAGE_BYTES:
             raise BadRequestException(
-                f"图片过大（{len(data) // 1024 // 1024}MB > {MAX_IMAGE_BYTES // 1024 // 1024}MB）",
+                f"图片过大（{len(data) / 1024 / 1024:.1f}MB > {MAX_IMAGE_BYTES / 1024 / 1024:.0f}MB）",
             )
         digest = hashlib.sha256(data).hexdigest()
         url = NoteAssetService._persist(data, ext)

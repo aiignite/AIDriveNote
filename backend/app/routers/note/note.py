@@ -6,7 +6,7 @@ from typing import Literal, Optional, get_args
 from uuid import UUID
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, File, Header, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -384,8 +384,8 @@ class CreateFromTemplateBody(BaseModel):
 
 @router.get("", response_model=NoteListOut)
 async def list_notes(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
     search: Optional[str] = None,
     note_type: Optional[str] = None,
     folder_id: Optional[str] = None,
@@ -419,8 +419,8 @@ async def list_notes(
 
 @router.get("/trash/list", response_model=NoteListOut)
 async def list_trash_notes(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
     search: Optional[str] = None,
     include_content: bool = False,
     db: AsyncSession = Depends(get_db),
@@ -440,8 +440,8 @@ async def list_trash_notes(
 @router.get("/search/fulltext", response_model=SearchResultOut)
 async def search_notes_fulltext(
     q: str,
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     include_content: bool = False,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -729,7 +729,7 @@ async def upload_note_asset(
     payload = await file.read()
     if len(payload) > MAX_IMAGE_BYTES:
         raise BadRequestException(
-            f"图片过大（{len(payload) // 1024 // 1024}MB > {MAX_IMAGE_BYTES // 1024 // 1024}MB）",
+            f"图片过大（{len(payload) / 1024 / 1024:.1f}MB > {MAX_IMAGE_BYTES / 1024 / 1024:.0f}MB）",
         )
     result = await NoteAssetService.store_image(
         db, user.id, payload, file.content_type or "",

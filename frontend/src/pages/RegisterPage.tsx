@@ -21,8 +21,13 @@ const RegisterPage: React.FC = () => {
   const [alreadyRegistered, setAlreadyRegistered] = useState(false);
   /** 重发倒计时；发送成功才启动 */
   const [cooldown, setCooldown] = useState(0);
+  /** 后端未开放自助注册时展示引导而非表单（公网测试部署仅管理员建号） */
+  const [registrationClosed, setRegistrationClosed] = useState<boolean | null>(null);
 
   useEffect(() => {
+    authApi.getConfig()
+      .then(cfg => setRegistrationClosed(!cfg.registrationEnabled))
+      .catch(() => setRegistrationClosed(false));
     if (cooldown <= 0) return;
     const timer = setInterval(() => setCooldown(c => (c > 0 ? c - 1 : 0)), 1000);
     return () => clearInterval(timer);
@@ -123,7 +128,14 @@ const RegisterPage: React.FC = () => {
           )}
         </p>
 
-        {alreadyRegistered ? (
+        {registrationClosed ? (
+          <div className="mb-6 rounded-lg bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 p-4 text-sm text-amber-800 dark:text-amber-200">
+            <p className="mb-3">当前为测试环境，未开放自助注册。测试账号请联系管理员开通。</p>
+            <Link to="/login" className="inline-block rounded-lg bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 font-medium">
+              去登录
+            </Link>
+          </div>
+        ) : alreadyRegistered ? (
           <div className="mb-6 rounded-lg bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 p-4 text-sm text-amber-800 dark:text-amber-200">
             <p className="mb-3">该邮箱已注册，可直接登录，或找回密码。</p>
             <div className="flex gap-3">

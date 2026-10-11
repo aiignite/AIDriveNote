@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     SSO_SECRET_KEY: str | None = None
     SSO_ISSUER: str = "aidriveall"
     SSO_COOKIE_NAME: str = "aidrive_token"
+    # SSO 登录是否为首次出现的用户自动建号；公网测试部署应关闭，
+    # 仅允许管理员预先创建的账号通过 portal 登录
+    SSO_AUTO_CREATE_USERS: bool = True
+
+    # ── 公网测试部署防护 ──
+    # 是否开放自助注册（邮箱验证码三步流程）；测试部署建议 false，
+    # 账号一律由管理员在后台创建，未开放时前端隐藏注册入口
+    SELF_REGISTRATION_ENABLED: bool = True
+    # 每个用户笔记数量上限（含回收站）；0 表示不限制
+    USER_MAX_NOTES: int = 100
+    # 单个上传文件大小上限（笔记图片资产 / AI 对话附件）
+    USER_MAX_UPLOAD_BYTES: int = 2 * 1024 * 1024
 
     # ── 笔记版本历史 ──
     # 每篇笔记保留的修订条数上限；超出后按时间淘汰最旧的（恢复前快照不参与淘汰）
@@ -75,8 +87,8 @@ class Settings(BaseSettings):
     NOTE_SPLIT_MAX_SEGMENT_SECONDS: int = 60
     # 最小分块秒数：silencedetect 切出的 < 该值的窗口会合并到上一个
     NOTE_SPLIT_MIN_SEGMENT_SECONDS: float = 3.0
-    # 单个录音文件大小上限 (bytes) — 默认 500MB
-    NOTE_MAX_RECORDING_BYTES: int = 524_288_000
+    # 单个录音文件大小上限 (bytes) — 默认 25MB（500MB 可在 2 核小机上被滥用拖垮转写与磁盘）
+    NOTE_MAX_RECORDING_BYTES: int = 26_214_400
     # 说话人分离（默认关闭）
     NOTE_ENABLE_SPEAKER_DIARIZATION: bool = False
     # 转写段落合并参数（规则层，LLM 润色前后各执行一次）

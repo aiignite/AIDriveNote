@@ -11,8 +11,8 @@
 
 import { fetchWithAuth, isNetworkError, NetworkError, resolveAssetUrl } from '../services/client';
 
-/** 服务端硬上限，与后端 MAX_IMAGE_BYTES 保持一致 */
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** 服务端硬上限，与后端 USER_MAX_UPLOAD_BYTES 保持一致 */
+export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
 /** 客户端更严格的目标体积：超出则先压缩，尽量少传大图 */
 const TARGET_MAX_BYTES = 1.5 * 1024 * 1024;
@@ -89,7 +89,7 @@ export async function uploadNoteImage(file: File): Promise<ImageUploadResult> {
     throw new Error('仅支持图片文件');
   }
   if (file.size > MAX_IMAGE_BYTES) {
-    throw new Error('图片大小不能超过 5MB');
+    throw new Error('图片大小不能超过 2MB');
   }
 
   const payload = await compressImage(file);

@@ -11,13 +11,15 @@ from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.ai import AIAttachment
 
 logger = logging.getLogger(__name__)
 
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 _UPLOAD_DIR = os.path.join(_BACKEND_DIR, "uploads")
-_MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+# 单附件上限：公网测试部署按 2MB 收口（历史上限 20MB）
+_MAX_UPLOAD_SIZE = get_settings().USER_MAX_UPLOAD_BYTES
 _MAX_VISION_IMAGE_BYTES = 10 * 1024 * 1024
 _FALLBACK_MIME = "application/octet-stream"
 _MAX_EXTRACT_CHARS = 50_000

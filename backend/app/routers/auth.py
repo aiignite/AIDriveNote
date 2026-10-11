@@ -9,14 +9,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
+from app.config import get_settings
 from app.database import get_db
-from app.exceptions import BadRequestException, ConflictException
+from app.exceptions import BadRequestException, ConflictException, ForbiddenException
 from app.models.user import User
 from app.services.admin_bootstrap import AdminBootstrap
 from app.services.auth_service import AuthService
 from app.services.email_verification_service import EmailVerificationService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+def _require_registration_enabled() -> None:
+    """公网测试部署防护：未开放自助注册时拒绝注册三步流程。
+
+    账号一律由管理员在后台创建；前端通过 ``GET /auth/config`` 隐藏注册入口。
+    """
+    if not get_settings().SELF_REGISTRATION_ENABLED:
+        raise ForbiddenException("当前未开放注册，请联系管理员开通账号")
 
 
 class RegisterCodeRequest(BaseModel):
@@ -63,7 +73,13 @@ class TokenResponse(BaseModel):
     user: UserOut | None = None
 
 
-@router.post("/register/request")
+@router.get("/config")
+async def auth_config():
+    """公开的认证配置：前端据此显示/隐藏注册入口（无需登录）。"""
+    return {"registration_enabled": get_settings().SELF_REGISTRATION_ENABLED}
+
+
+@router.post("/register/request", dependencies=[Depends(_require_registration_enabled)])
 async def register_request(body: RegisterCodeRequest, db: AsyncSession = Depends(get_db)):
     """第一步：校验邮箱并发送注册验证码。
 
@@ -100,7 +116,7 @@ async def register_request(body: RegisterCodeRequest, db: AsyncSession = Depends
     return {"message": "验证码已发送，请查收邮件"}
 
 
-@router.post("/register/verify-code")
+@router.post("/register/verify-code", dependencies=[Depends(_require_registration_enabled)])
 async def register_verify_code(body: VerifyCodeRequest, db: AsyncSession = Depends(get_db)):
     """第二步：独立验码（不消费），供前端在设置密码前确认。"""
     await EmailVerificationService.verify_code(
@@ -110,7 +126,7 @@ async def register_verify_code(body: VerifyCodeRequest, db: AsyncSession = Depen
     return {"valid": True}
 
 
-@router.post("/register/complete", response_model=UserOut)
+@router.post("/register/complete", response_model=UserOut, dependencies=[Depends(_require_registration_enabled)])
 async def register_complete(body: CompleteRegisterRequest, db: AsyncSession = Depends(get_db)):
     """第三步：验码并消费，设置密码后激活账号。"""
     email = EmailVerificationService.normalize_email(body.email)

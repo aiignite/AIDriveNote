@@ -8,6 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
+from app.exceptions import BadRequestException
 from app.models.note import Note, NoteFavorite, NoteFolder, NoteNoteTag, NoteTemplate
 from app.services.note.rich_text_blocks import merge_rich_text_blocks
 
@@ -270,7 +272,23 @@ class NoteService:
 
         编号由 ``_next_note_no`` 生成；极端并发下（数据库函数不可用且退回
         MAX+1）仍可能撞唯一约束，这里捕获后重试数次，避免 500 直接失败。
+
+        单用户笔记总量受 ``USER_MAX_NOTES`` 约束（含回收站）：所有创建路径
+        （路由 / 复制 / 模板 / AI 工具 / MCP）都汇聚到这里，超限一律拒绝。
         """
+        max_notes = get_settings().USER_MAX_NOTES
+        owner_id = data.get("created_by")
+        if max_notes > 0 and owner_id:
+            total = (
+                await db.execute(
+                    select(func.count()).select_from(Note).where(Note.created_by == owner_id)
+                )
+            ).scalar() or 0
+            if total >= max_notes:
+                raise BadRequestException(
+                    f"笔记数量已达上限（{max_notes} 篇，含回收站），请先删除或清理部分笔记",
+                )
+
         from app.services.note.note_enhance_service import NoteLinkService, NoteSearchService
 
         last_error: IntegrityError | None = None
