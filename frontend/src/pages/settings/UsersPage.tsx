@@ -1,6 +1,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Pencil, RefreshCw, Search, Users } from 'lucide-react';
+import { Pencil, RefreshCw, Search, Trash2, TriangleAlert, Users, X } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
 import { adminUsersApi, type AdminUser, type AdminUserUpdate } from '../../services/admin/users';
 import { UserEditForm } from '../../components/admin/UserEditForm';
 
@@ -43,6 +44,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
 );
 
 const UsersPage: React.FC = () => {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -50,6 +52,8 @@ const UsersPage: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
+  const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const deferredSearch = useDeferredValue(searchTerm);
 
   const loadUsers = useCallback(async () => {
@@ -91,6 +95,21 @@ const UsersPage: React.FC = () => {
     },
     [editingUser, loadUsers],
   );
+
+  const handleDelete = useCallback(async () => {
+    if (!deletingUser) return;
+    setDeleting(true);
+    try {
+      await adminUsersApi.deleteUser(deletingUser.id);
+      toast.success(`用户 ${deletingUser.name || deletingUser.email} 已删除`);
+      setDeletingUser(null);
+      await loadUsers();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '删除失败');
+    } finally {
+      setDeleting(false);
+    }
+  }, [deletingUser, loadUsers]);
 
   const summary = useMemo(
     () => `${users.length} / ${total} 个用户`,
@@ -197,14 +216,26 @@ const UsersPage: React.FC = () => {
                         {formatDate(user.createdAt)}
                       </td>
                       <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          onClick={() => setEditingUser(user)}
-                          className="rounded-lg p-1.5 text-gray-400 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-950 dark:hover:text-indigo-400"
-                          title="编辑"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setEditingUser(user)}
+                            className="rounded-lg p-1.5 text-gray-400 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-950 dark:hover:text-indigo-400"
+                            title="编辑"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </button>
+                          {currentUser?.id !== user.id && (
+                            <button
+                              type="button"
+                              onClick={() => setDeletingUser(user)}
+                              className="rounded-lg p-1.5 text-gray-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950 dark:hover:text-rose-400"
+                              title="删除用户"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -221,6 +252,63 @@ const UsersPage: React.FC = () => {
           onSave={handleSave}
           onClose={() => setEditingUser(null)}
         />
+      )}
+
+      {deletingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900"
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-100 dark:bg-rose-950">
+                  <TriangleAlert className="h-4 w-4 text-rose-600 dark:text-rose-400" />
+                </div>
+                <h2 className="text-base font-semibold text-slate-900 dark:text-white">删除用户</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeletingUser(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-3 p-5 text-sm text-slate-600 dark:text-slate-300">
+              <p>
+                确定删除用户{' '}
+                <span className="font-medium text-slate-900 dark:text-white">
+                  {deletingUser.name || deletingUser.email}
+                </span>{' '}
+                <span className="text-slate-400">（{deletingUser.email}）</span>吗？
+              </p>
+              <ul className="list-inside list-disc space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                <li>该用户将立即无法登录，个人 API 令牌全部失效</li>
+                <li>其笔记等数据会保留，不做物理删除</li>
+                <li>邮箱将被释放，之后可用同一邮箱重新注册</li>
+              </ul>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setDeletingUser(null)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDelete()}
+                disabled={deleting}
+                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-rose-700 disabled:opacity-50"
+              >
+                {deleting ? '删除中…' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

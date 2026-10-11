@@ -34,4 +34,7 @@ export const adminUsersApi = {
 
   updateUser: (userId: string, data: AdminUserUpdate) =>
     api.patch<AdminUser>(`/admin/users/${userId}`, data),
+
+  /** 软删除：登录与令牌立即失效，笔记数据保留，邮箱释放供重新注册 */
+  deleteUser: (userId: string) => api.delete<{ ok: boolean }>(`/admin/users/${userId}`),
 };

@@ -82,3 +82,16 @@ async def update_user(
     await db.commit()
     await db.refresh(updated)
     return _to_out(updated)
+
+
+@router.delete("/{user_id}")
+async def delete_user(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin),
+):
+    """软删除用户：立即失效登录与 API 令牌，数据保留，邮箱释放供重新注册。"""
+    target = await UserAdminService.get_user(db, user_id)
+    await UserAdminService.delete_user(db, target=target, actor=admin)
+    await db.commit()
+    return {"ok": True}

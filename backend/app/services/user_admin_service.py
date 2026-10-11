@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import BadRequestException, ForbiddenException, NotFoundException
+from app.models.api_token import UserApiToken
 from app.models.user import User
 
 VALID_STATUSES = {"Active", "Inactive"}
@@ -100,5 +101,38 @@ class UserAdminService:
         if role is not None:
             target.role = role
 
+        await db.flush()
+        return target
+
+    @staticmethod
+    async def delete_user(db: AsyncSession, *, target: User, actor: User) -> User:
+        """软删除用户。
+
+        - 保留笔记等数据与审计痕迹（is_deleted 标记，不做物理删除）；
+        - 撤销其全部个人 API 令牌；
+        - 改写邮箱释放唯一约束（原地址可重新注册），改写后形态含
+          ".deleted.<id前8位>" 便于审计追溯。
+        """
+        if target.id == actor.id:
+            raise ForbiddenException("Cannot delete your own account")
+        if target.role == "admin":
+            admin_count = await UserAdminService.count_admins(db)
+            if admin_count <= 1:
+                raise BadRequestException("Cannot delete the last admin")
+
+        target.is_deleted = True
+        target.status = "Inactive"
+        await db.execute(
+            update(UserApiToken)
+            .where(
+                UserApiToken.user_id == target.id,
+                UserApiToken.is_revoked == False,  # noqa: E712
+            )
+            .values(is_revoked=True)
+        )
+        suffix = f".deleted.{str(target.id)[:8]}"
+        local, _, domain = target.email.partition("@")
+        max_local = max(1, 255 - len(suffix) - len(domain) - 1)
+        target.email = f"{local[:max_local]}{suffix}@{domain}"
         await db.flush()
         return target
