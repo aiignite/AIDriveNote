@@ -441,6 +441,7 @@ const SyncSettingsPage: React.FC = () => {
                 <Stat label="本地删除同步" value={report.localDeleted.length} isDark={isDark} />
                 <Stat label="远端删除移入回收站" value={report.remoteDeleted.length} isDark={isDark} />
                 <Stat label="新建文件夹" value={report.uploadedFolders.length} isDark={isDark} />
+                <Stat label="跳过加密文档" value={report.skippedEncrypted} isDark={isDark} />
               </div>
 
               {report.conflicts.length > 0 && (

@@ -1,5 +1,6 @@
 import type { AuthUser } from './auth';
 import { keysToCamel, keysToSnake } from '../utils/caseConverter';
+import { clearAllUnlock } from './note/unlockStore';
 
 export const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1';
 
@@ -71,6 +72,8 @@ export function setAuthTokens(tokens: {
     writeCachedUser(null);
     // 离线缓存同样要清，否则换账号登录会读到上一个用户的笔记
     clearOfflineData();
+    // 加密文档的解锁票据也必须在登出时清空，避免会话残留导致越权读取
+    clearAllUnlock();
   }
 }
 
@@ -212,14 +215,29 @@ async function request<T>(
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'POST', body: body ? JSON.stringify(keysToSnake(body)) : undefined }),
-  patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(keysToSnake(body)) : undefined }),
-  put: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'PUT', body: body ? JSON.stringify(keysToSnake(body)) : undefined }),
-  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  // headers 用于加密文档的 X-Note-Unlock 票据透传
+  get: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>(path, { headers }),
+  post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>(path, {
+      method: 'POST',
+      body: body ? JSON.stringify(keysToSnake(body)) : undefined,
+      headers,
+    }),
+  patch: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>(path, {
+      method: 'PATCH',
+      body: body ? JSON.stringify(keysToSnake(body)) : undefined,
+      headers,
+    }),
+  put: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>(path, {
+      method: 'PUT',
+      body: body ? JSON.stringify(keysToSnake(body)) : undefined,
+      headers,
+    }),
+  delete: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>(path, { method: 'DELETE', headers }),
 };
 
 export async function fetchWithAuth(path: string, options: RequestInit = {}, retried = false): Promise<Response> {

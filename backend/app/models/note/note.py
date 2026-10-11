@@ -29,6 +29,12 @@ class NoteFolder(Base):
     )
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 是否启用文件夹级加密（加密后子树内笔记正文用文件夹密钥重新加密）
+    is_encrypted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 密钥派生盐（base64），仅加密时存在
+    enc_salt: Mapped[str | None] = mapped_column(String(64))
+    # 密码校验器（bcrypt 哈希），仅加密时存在；明文密码不落库
+    enc_verifier: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(),
     )
@@ -72,6 +78,12 @@ class Note(Base):
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 是否启用笔记级加密（正文以 {"__enc__": token} 密文存储）
+    is_encrypted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 密钥派生盐（base64），仅加密时存在
+    enc_salt: Mapped[str | None] = mapped_column(String(64))
+    # 密码校验器（bcrypt 哈希），仅加密时存在；明文密码不落库
+    enc_verifier: Mapped[str | None] = mapped_column(String(255))
     search_text: Mapped[str | None] = mapped_column(Text)
     search_vector: Mapped[str | None] = mapped_column(TSVECTOR)
     content_embedding: Mapped[list | None] = mapped_column(JSONB)

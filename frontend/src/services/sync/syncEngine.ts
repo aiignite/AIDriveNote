@@ -121,6 +121,8 @@ export interface SyncReport {
   skippedOrphans: string[];
   /** 初始同步阶段检测到本地与远端不一致、但未写入的路径列表 */
   skippedLocalChanges: string[];
+  /** 因加密/锁定而跳过的笔记条数（正文不下发，不参与本地同步） */
+  skippedEncrypted: number;
   /** 是否处于 hash 降级模式（非安全上下文） */
   hashDegraded: boolean;
   /** 单条失败记录，不影响整体流程 */
@@ -290,6 +292,17 @@ async function fetchAllNotes(): Promise<Note[]> {
 }
 
 /**
+ * 判断一条服务端笔记是否受加密保护（自身加密，或受加密祖先文件夹保护）。
+ * 列表接口不携带解锁票据，加密笔记的正文恒为 null，
+ * 因此绝不允许其参与「写入本地文件」的同步流程，避免产生空文件或明文落盘。
+ * @param note 服务端笔记
+ * @returns 是否受保护
+ */
+function isProtectedNote(note: Note): boolean {
+  return Boolean(note.isEncrypted || note.isLocked || note.lockedScope);
+}
+
+/**
  * 计算每个远端笔记对应的相对文件路径。
  * 复用 `notesToNativeFiles` 的路径规则（非法字符处理、重名加 `__noteNo` 后缀），
  * 并按 `noteNo` 排序保证多次运行的路径稳定。
@@ -303,6 +316,8 @@ function computeRemotePaths(notes: Note[], folders: NoteFolder[]): Map<string, s
   const map = new Map<string, string>();
 
   for (const note of sorted) {
+    // 加密/锁定笔记不参与本地同步：既不下发正文，也不写入本地文件
+    if (isProtectedNote(note)) continue;
     if (isEmptyContent(note.noteType, note.content)) continue;
     const folderPath = buildFolderPath(note.folderId, folders);
     const ext = getNativeExtension(note.noteType);
@@ -547,6 +562,7 @@ export async function runSync(
     uploadedFolders: [],
     skippedOrphans: [],
     skippedLocalChanges: [],
+    skippedEncrypted: 0,
     hashDegraded: isHashDegraded(),
     errors: [],
     durationMs: 0,
@@ -578,6 +594,8 @@ export async function runSync(
     noteTagApi.list(),
   ]);
   const noteById = new Map(notes.map((n) => [n.id, n]));
+  // 加密/锁定笔记一律跳过本地同步，并在报告中计数
+  report.skippedEncrypted = notes.filter(isProtectedNote).length;
   const remotePaths = computeRemotePaths(notes, folders);
   const folderMaps = computeFolderMaps(folders);
   const tagNameToId = new Map(tags.map((t) => [t.name, t.id]));

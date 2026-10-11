@@ -11,7 +11,7 @@
  * 同时承载：⌘S 手动保存、⌘K 命令面板、文件导入、导出、移动到文件夹等面板级命令。
  */
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft, AlertCircle, Sparkles, Loader2, Check } from 'lucide-react';
+import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft, AlertCircle, Sparkles, Loader2, Check, Lock } from 'lucide-react';
 import toast from 'react-hot-toast';
 import NoteEditorContainer from './NoteEditorContainer';
 import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';
@@ -19,11 +19,13 @@ import NoteCommandPalette from './NoteCommandPalette';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import NoteOutlinePanel from './NoteOutlinePanel';
 import NoteEmailDialog from './NoteEmailDialog';
+import PasswordDialog from './PasswordDialog';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
 import {
-  noteApi, noteTagApi, noteTemplateApi, noteTitleApi,
+  noteApi, noteTagApi, noteTemplateApi, noteTitleApi, noteLockApi,
+  getUnlockToken, setUnlockToken,
   type Note, type NoteUpdate, type NoteFolder, type NoteTag,
-  type NoteBacklink, type NoteRevision, type NoteShare,
+  type NoteBacklink, type NoteRevision, type NoteShare, type LockScope,
 } from '../../services/note';
 import { getExportOptions, type ExportFormat } from '../../utils/noteExportOptions';
 import { useAuth } from '../../contexts/AuthContext';
@@ -236,6 +238,33 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   const [description, setDescription] = useState(note.description ?? '');
   const [saving, setSaving] = useState(false);
   /**
+   * 当前笔记的保护域（加密来源）。null 表示未加密。
+   * 即便已解锁，仍需保留该信息以便后续保存请求带上 X-Note-Unlock 票据。
+   */
+  const [lockTarget, setLockTarget] = useState<{ scope: LockScope; id: string } | null>(
+    note.lockedScope ? { scope: note.lockedScope as LockScope, id: note.lockedId ?? note.id } : null,
+  );
+  /** 是否处于锁定态（未持有有效票据）；锁定时渲染解锁页而非编辑器 */
+  const [locked, setLocked] = useState<boolean>(() => {
+    if (!note.lockedScope) return false;
+    return !getUnlockToken(note.lockedScope as LockScope, note.lockedId ?? note.id);
+  });
+  /** lockTarget 的 ref 镜像，供异步回调读取最新值 */
+  const lockTargetRef = useRef(lockTarget);
+  lockTargetRef.current = lockTarget;
+  /** 是否显示解锁对话框 */
+  const [showUnlockDialog, setShowUnlockDialog] = useState(false);
+
+  /**
+   * 取当前笔记应携带的解锁票据。
+   * 未加密（lockTarget 为空）或尚未解锁时返回 null。
+   */
+  const currentUnlockToken = useCallback((): string | null => {
+    const info = lockTargetRef.current;
+    if (!info) return null;
+    return getUnlockToken(info.scope, info.id);
+  }, []);
+  /**
    * 正文保存失败时的待保存载荷。
    * 非 null 表示「有内容没能存进服务端」，标题栏会显示可重试的红色提示，
    * 切换笔记 / 关闭页面前会尝试补存，避免用户白写内容。
@@ -293,11 +322,30 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
    * @returns 是否成功入队
    */
   const persistOffline = useCallback(async (payload: OutboxPayload): Promise<boolean> => {
+    // 加密文档不支持离线暂存：本地不缓存明文，队列也无法携带解锁票据回传，
+    // 因此直接返回失败，由调用方提示「保存失败」并让用户联网后重试。
+    if (lockTargetRef.current) return false;
     const cached = await readNote(note.id);
     if (!cached) return false;
     await saveOfflineEdit({ note: cached, payload });
     return true;
   }, [note.id]);
+
+  /**
+   * 依据服务端返回同步锁定状态（保护域 + 是否锁定）。
+   * 已解锁时 lockedScope/lockedId 仍会返回，因此保存请求能继续带上票据。
+   * @param full 服务端返回的笔记
+   * @returns 是否处于锁定态
+   */
+  const syncLockState = useCallback((full: Note): boolean => {
+    const target = full.lockedScope
+      ? { scope: full.lockedScope as LockScope, id: full.lockedId ?? full.id }
+      : null;
+    setLockTarget(target);
+    const isLocked = Boolean(full.isLocked);
+    setLocked(isLocked);
+    return isLocked;
+  }, []);
 
   // 切换笔记：先用列表缓存内容即时渲染，后台拉取最新数据
   useEffect(() => {
@@ -327,20 +375,31 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     setContentLoaded(Boolean(note.content));
     contentLoadAtRef.current = Date.now();
 
-    noteApi.get(note.id).then(full => {
+    noteApi.get(note.id, currentUnlockToken()).then(full => {
       if (noteIdRef.current !== note.id || contentDirtyRef.current) return;
+      // 锁定态：不写入正文、不落缓存，交由解锁页处理
+      if (syncLockState(full)) {
+        setContent(null);
+        return;
+      }
+      // 加密文档的明文由 noteCache 统一剥离，不会落盘
       if (userId) void cacheFullNote(full, userId);
       setContent(full.content ?? null);
       setContentLoaded(true);
       setNoteTags(full.tags ?? []);
     }).catch(async () => {
+      // 离线：加密文档本地无明文可回退，保持锁定态并提示解锁
+      if (lockTargetRef.current) {
+        if (noteIdRef.current === note.id) { setLocked(true); setContentLoaded(false); }
+        return;
+      }
       // 离线：回退本地缓存正文，保证断网时仍可查看与编辑
       const cached = await readNote(note.id);
       if (!cached || noteIdRef.current !== note.id || contentDirtyRef.current) return;
       setContent(cached.content ?? null);
       setContentLoaded(true);
     });
-  }, [note.id, userId]);
+  }, [note.id, userId, currentUnlockToken, syncLockState]);
 
   // 离开页面前拦截：有未落库的内容时让浏览器弹确认框。
   // 防抖保存最长有 2s 延迟，直接关标签页/刷新会让这段输入无处可寻。
@@ -374,8 +433,13 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     }
 
     contentDirtyRef.current = false;
-    noteApi.get(note.id).then(full => {
+    noteApi.get(note.id, currentUnlockToken()).then(full => {
       if (noteIdRef.current !== note.id) return;
+      if (syncLockState(full)) {
+        setContent(null);
+        setContentResetKey(k => k + 1);
+        return;
+      }
       if (userId) void cacheFullNote(full, userId);
       setContent(full.content ?? null);
       setContentLoaded(true);
@@ -385,6 +449,11 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       setContentResetKey(k => k + 1);
       contentLoadAtRef.current = Date.now();
     }).catch(async () => {
+      // 离线：加密文档刷新失败时同样保持锁定态，避免空白编辑器
+      if (lockTargetRef.current) {
+        if (noteIdRef.current === note.id) { setLocked(true); setContentLoaded(false); }
+        return;
+      }
       // 离线：刷新失败时回退本地缓存，避免编辑器被清空
       const cached = await readNote(note.id);
       if (!cached || noteIdRef.current !== note.id) return;
@@ -396,7 +465,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       setContentResetKey(k => k + 1);
       contentLoadAtRef.current = Date.now();
     });
-  }, [refreshTrigger, note.id, userId]);
+  }, [refreshTrigger, note.id, userId, currentUnlockToken, syncLockState]);
 
   useEffect(() => {
     const load = () => {
@@ -504,9 +573,9 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     titleTimerRef.current = setTimeout(async () => {
       if (!newTitle.trim()) return;
       try {
-        const updated = await noteApi.update(note.id, { title: newTitle } as NoteUpdate);
+        const updated = await noteApi.update(note.id, { title: newTitle } as NoteUpdate, currentUnlockToken());
         onNoteUpdated?.(updated);
-        if (userId) void cacheFullNote(updated, userId);
+        if (userId && !lockTargetRef.current) void cacheFullNote(updated, userId);
       } catch (err) {
         // 离线：标题变更入队，联网后自动回传
         if (isNetworkError(err) && await persistOffline({ title: newTitle })) {
@@ -514,7 +583,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         }
       }
     }, 1000);
-  }, [note.id, onNoteUpdated, persistOffline, userId]);
+  }, [note.id, onNoteUpdated, persistOffline, userId, currentUnlockToken]);
 
   /* ── AI 标题 ──────────────────────────────────────
    * 与自动推导分工：后端在保存内容时会用「中心主题 / 首行 / 首节点」填充占位标题；
@@ -579,13 +648,13 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     if (descTimerRef.current) clearTimeout(descTimerRef.current);
     descTimerRef.current = setTimeout(async () => {
       try {
-        await noteApi.update(note.id, { description: newDesc } as NoteUpdate);
+        await noteApi.update(note.id, { description: newDesc } as NoteUpdate, currentUnlockToken());
       } catch (err) {
         // 离线：描述变更静默入队（保持原有静默语义，避免频繁打扰）
         if (isNetworkError(err)) await persistOffline({ description: newDesc });
       }
     }, 1000);
-  }, [note.id, persistOffline]);
+  }, [note.id, persistOffline, currentUnlockToken]);
 
   // Click outside to close tag menu
   useEffect(() => {
@@ -619,7 +688,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     const targetId = noteIdRef.current;
     try {
       setSaving(true);
-      await noteApi.update(targetId, { content: payload.content as Record<string, unknown> } as NoteUpdate);
+      await noteApi.update(targetId, { content: payload.content as Record<string, unknown> } as NoteUpdate, currentUnlockToken());
       setSaving(false);
       setSaveError(null);
       if (targetId === noteIdRef.current) contentDirtyRef.current = false;
@@ -635,7 +704,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       if (targetId === noteIdRef.current) setSaveError(payload);
       toast.error('保存失败，内容未保存', { id: 'save-failed' });
     }
-  }, [persistOffline]);
+  }, [persistOffline, currentUnlockToken]);
 
   // Auto-save content (debounce 2s) — AI 刷新后 1.5s 内忽略编辑器初始化 onChange
   const handleContentChange = useCallback((newContent: unknown) => {
@@ -660,9 +729,9 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     if (content !== null) data.content = content as Record<string, unknown>;
     try {
       setSaving(true);
-      const updated = await noteApi.update(note.id, data);
+      const updated = await noteApi.update(note.id, data, currentUnlockToken());
       onNoteUpdated?.(updated);
-      if (userId) void cacheFullNote(updated, userId);
+      if (userId && !lockTargetRef.current) void cacheFullNote(updated, userId);
       toast.success('已保存');
     } catch (err) {
       // 离线：手动保存走队列，明确告知用户数据已落到本机
@@ -674,7 +743,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [note.id, title, content, onNoteUpdated, persistOffline, userId]);
+  }, [note.id, title, content, onNoteUpdated, persistOffline, userId, currentUnlockToken]);
 
   const handleSaveAsTemplate = useCallback(async () => {
     const name = prompt('模板名称', `${title || '无标题'} 模板`);
@@ -725,9 +794,9 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     contentDirtyRef.current = true;
     try {
       setSaving(true);
-      const updated = await noteApi.update(note.id, payload);
+      const updated = await noteApi.update(note.id, payload, currentUnlockToken());
       onNoteUpdated?.(updated);
-      if (userId) void cacheFullNote(updated, userId);
+      if (userId && !lockTargetRef.current) void cacheFullNote(updated, userId);
       toast.success('导入完成');
     } catch (err) {
       if (isNetworkError(err) && await persistOffline(payload)) {
@@ -738,7 +807,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [note.id, onNoteUpdated, persistOffline, userId]);
+  }, [note.id, onNoteUpdated, persistOffline, userId, currentUnlockToken]);
 
   /**
    * 触发导入：思维导图 / 流程图交给各自编辑器的导入命令，其余类型走隐藏文件输入。
@@ -788,6 +857,29 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     setShowMoveDialog(false);
     onMoveNote?.(note.id, moveFolderId || null);
   }, [note.id, moveFolderId, onMoveNote]);
+
+  /**
+   * 提交解锁密码：校验通过后落地票据并载入明文正文。
+   * 异常由 PasswordDialog 内部展示，对话框保持打开。
+   * @param password 用户输入的密码
+   */
+  const handleUnlockSubmit = useCallback(async (password: string) => {
+    const res = await noteLockApi.unlock(note.id, password);
+    const scope = (res.note.lockedScope ?? lockTargetRef.current?.scope ?? 'note') as LockScope;
+    const id = res.note.lockedId ?? lockTargetRef.current?.id ?? note.id;
+    setUnlockToken(scope, id, res.unlockToken ?? null);
+    setLockTarget({ scope, id });
+    setLocked(false);
+    setTitle(res.note.title);
+    setNoteTags(res.note.tags ?? []);
+    setDescription(res.note.description ?? '');
+    setContent(res.note.content ?? null);
+    setContentLoaded(true);
+    setContentResetKey(k => k + 1);
+    contentLoadAtRef.current = Date.now();
+    onNoteUpdated?.(res.note);
+    toast.success('已解锁');
+  }, [note.id, onNoteUpdated]);
 
   /* ────── 命令与菜单装配 ────── */
 
@@ -997,6 +1089,61 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   }, [handleManualSave]);
 
   const typeMeta = TYPE_META[note.noteType] || TYPE_META.rich_text;
+
+  // 锁定态：不渲染编辑器，只展示解锁页（标题可见、正文不可见）
+  if (locked) {
+    const lockedByFolder = lockTarget?.scope === 'folder';
+    return (
+      <div className={`h-full flex flex-col ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
+        {/* 顶部返回条（移动端用于回到列表） */}
+        <div className={`flex items-center gap-2 px-3 py-1.5 border-b shrink-0 safe-x ${
+          isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'
+        }`}>
+          {onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              className={`shrink-0 p-1 -ml-1 rounded-md transition-colors ${
+                isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+              title="返回列表"
+            >
+              <ChevronLeft size={18} />
+            </button>
+          ) : null}
+          <span className={`text-sm truncate ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>{note.title}</span>
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500/10 to-amber-500/10 flex items-center justify-center mb-4">
+            <Lock size={28} className="text-orange-500" />
+          </div>
+          <h3 className={`text-lg font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+            该文档已加密
+          </h3>
+          <p className={`text-sm mb-6 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+            {lockedByFolder ? '此文档位于加密文件夹中，输入密码后即可查看内容' : '输入密码后即可查看内容'}
+          </p>
+          <button
+            type="button"
+            onClick={() => setShowUnlockDialog(true)}
+            className="px-5 py-2 text-sm rounded-lg bg-orange-600 text-white hover:bg-orange-700 transition-colors"
+          >
+            解锁查看
+          </button>
+        </div>
+
+        <PasswordDialog
+          open={showUnlockDialog}
+          mode="unlock"
+          title="解锁文档"
+          isDark={isDark}
+          onClose={() => setShowUnlockDialog(false)}
+          onSubmit={handleUnlockSubmit}
+        />
+      </div>
+    );
+  }
 
   // content state 在 useEffect 中更新会滞后一帧；切换笔记时先用 prop 缓存
   const contentForEditor = syncedContentNoteIdRef.current !== note.id

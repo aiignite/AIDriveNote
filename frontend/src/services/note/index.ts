@@ -5,6 +5,7 @@ export {
   noteTagApi,
   noteEmailApi,
   noteTitleApi,
+  noteLockApi,
   type Note,
   type NoteTitleSuggestResult,
   type NoteCreate,
@@ -23,4 +24,15 @@ export {
   type NoteListParams,
   type NoteEmailSendPayload,
   type NoteEmailSendResult,
+  type NoteLockResult,
+  type FolderLockResult,
 } from './note';
+
+export {
+  setUnlockToken,
+  getUnlockToken,
+  clearUnlockToken,
+  clearAllUnlock,
+  buildUnlockHeader,
+  type LockScope,
+} from './unlockStore';

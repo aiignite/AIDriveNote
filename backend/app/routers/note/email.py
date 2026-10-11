@@ -14,6 +14,7 @@ from app.exceptions import ForbiddenException, NotFoundException
 from app.models.user import User
 from app.services.email_service import EmailService
 from app.services.note.mail_render import build_note_html
+from app.services.note.note_lock_service import NoteLockService
 from app.services.note.note_service import NoteService
 
 router = APIRouter(prefix="/notes/email", tags=["Note Email"])
@@ -58,6 +59,10 @@ async def send_note_email(
         can_edit = await NoteShareService.user_can_edit(db, note, current_user.id)
         if not can_edit:
             raise ForbiddenException("无权发送该笔记")
+
+    # 加密文档正文为密文，禁止外发，避免导出乱码或意外泄露
+    if await NoteLockService.resolve_lock(db, note):
+        raise ForbiddenException("加密文档不支持发送邮件")
 
     subject = (payload.subject or "").strip() or note.title or "AIDriveNote 笔记"
 

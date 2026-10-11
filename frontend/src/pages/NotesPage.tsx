@@ -22,11 +22,12 @@ import {
 import { buildNoteQuickActions } from '../utils/noteAIActions';
 import { isNetworkError } from '../services/client';
 import {
-  noteApi, noteFolderApi, noteTemplateApi, noteTagApi,
-  type Note, type NoteCreate, type NoteUpdate, type NoteFolder, type NoteTag,
+  noteApi, noteFolderApi, noteTemplateApi, noteTagApi, noteLockApi,
+  setUnlockToken, clearUnlockToken,
+  type Note, type NoteCreate, type NoteUpdate, type NoteFolder, type NoteTag, type LockScope,
 } from '../services/note';
 import {
-  cacheList, cacheNoteMetas, dropCached, readAllNotes, readList, readNote, toNote,
+  cacheList, cacheNoteMetas, dropCached, readAllNotes, readList, readNote, stripCachedContent, toNote,
 } from '../services/offline/noteCache';
 import {
   createOfflineNote, deleteOfflineNote, saveOfflineEdit,
@@ -36,6 +37,27 @@ import NoteListPanel, { type NoteCategory } from '../components/note/NoteListPan
 import NoteEditorPanel from '../components/note/NoteEditorPanel';
 import NoteTemplateGallery from '../components/note/NoteTemplateGallery';
 import NoteQuickSwitcher from '../components/note/NoteQuickSwitcher';
+import PasswordDialog, { type PasswordDialogMode } from '../components/note/PasswordDialog';
+
+/**
+ * 加密文档对话框的上下文。
+ * kind 决定调用笔记接口还是文件夹接口；tokenScope/tokenId 决定解锁票据挂到哪个保护域
+ * （笔记自身加密时为 note，受文件夹保护时为空文件夹 ID）。
+ */
+interface LockDialogState {
+  /** 操作对象类型：笔记 / 文件夹 */
+  kind: 'note' | 'folder';
+  /** 触发的操作 */
+  action: 'encrypt' | 'unlock' | 'decrypt' | 'changePassword';
+  /** 接口目标 ID（笔记 ID 或文件夹 ID） */
+  targetId: string;
+  /** 解锁票据的 scope */
+  tokenScope: LockScope;
+  /** 解锁票据的对象 ID */
+  tokenId: string;
+  /** 对话框标题 */
+  title: string;
+}
 
 const NotesPage: React.FC = () => {
   const { theme, setPageAIContext, bumpNotesRefresh, notesRefreshToken } = useApp();
@@ -68,6 +90,8 @@ const NotesPage: React.FC = () => {
   /** 快速切换器（⌘P）开关：与命令面板（⌘K）职责分离，一个定位笔记，一个执行命令 */
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
+  /** 加密/解锁/取消加密/改密 对话框上下文；null 表示关闭 */
+  const [lockDialog, setLockDialog] = useState<LockDialogState | null>(null);
   // 当前分类页签持久化（folder 视图依赖具体 folderId，不持久化）
   const [storedCategoryType, setStoredCategoryType] = usePersistentState<NoteCategory['type']>(
     'note_category_type',
@@ -572,6 +596,119 @@ const NotesPage: React.FC = () => {
     localStorage.setItem('note_last_opened_id', note.id);
   }, []);
 
+  /* ────── 加密文档 / 加密文件夹 ────── */
+
+  /** 打开笔记级加解密对话框；解锁时需带上真实保护域（可能来自文件夹） */
+  const handleNoteLockAction = useCallback((
+    action: 'encrypt' | 'unlock' | 'decrypt' | 'changePassword',
+    noteId: string,
+  ) => {
+    const note = notes.find(n => n.id === noteId);
+    const tokenScope: LockScope = action === 'unlock'
+      ? ((note?.lockedScope ?? 'note') as LockScope)
+      : 'note';
+    const tokenId = action === 'unlock' ? (note?.lockedId ?? noteId) : noteId;
+    const titleMap: Record<typeof action, string> = {
+      encrypt: '加密文档',
+      unlock: '解锁文档',
+      decrypt: '取消文档加密',
+      changePassword: '修改文档密码',
+    };
+    setLockDialog({ kind: 'note', action, targetId: noteId, tokenScope, tokenId, title: titleMap[action] });
+  }, [notes]);
+
+  /** 打开文件夹级加解密对话框 */
+  const handleFolderLockAction = useCallback((
+    action: 'encrypt' | 'unlock' | 'decrypt',
+    folderId: string,
+  ) => {
+    const titleMap: Record<typeof action, string> = {
+      encrypt: '加密文件夹',
+      unlock: '解锁文件夹',
+      decrypt: '取消文件夹加密',
+    };
+    setLockDialog({
+      kind: 'folder', action, targetId: folderId,
+      tokenScope: 'folder', tokenId: folderId, title: titleMap[action],
+    });
+  }, []);
+
+  /**
+   * 清除某文件夹（含全部子文件夹）内已缓存笔记的正文。
+   * 文件夹加密后本地若仍留有这些笔记的明文，会形成绕过密码读取的漏洞。
+   * @param rootId 根文件夹 ID
+   */
+  const stripFolderPlaintext = useCallback(async (rootId: string) => {
+    const ids = new Set<string>([rootId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const f of folders) {
+        if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) {
+          ids.add(f.id);
+          changed = true;
+        }
+      }
+    }
+    const cached = await readAllNotes();
+    await stripCachedContent(cached.filter(n => n.folderId && ids.has(n.folderId)).map(n => n.id));
+  }, [folders]);
+
+  /**
+   * 提交密码对话框：按上下文调用对应接口并落地解锁票据。
+   * 抛出的异常交给 PasswordDialog 展示，保持对话框不关闭。
+   */
+  const handleLockSubmit = useCallback(async (password: string, newPassword?: string) => {
+    if (!lockDialog) return;
+    const { kind, action, targetId, tokenScope, tokenId } = lockDialog;
+    let updatedNote: Note | null = null;
+
+    if (kind === 'note') {
+      if (action === 'encrypt') {
+        const res = await noteLockApi.encrypt(targetId, password);
+        setUnlockToken('note', targetId, res.unlockToken ?? null);
+        updatedNote = res.note;
+        toast.success('文档已加密');
+      } else if (action === 'unlock') {
+        const res = await noteLockApi.unlock(targetId, password);
+        setUnlockToken(tokenScope, tokenId, res.unlockToken ?? null);
+        updatedNote = res.note;
+        toast.success('已解锁');
+      } else if (action === 'decrypt') {
+        const res = await noteLockApi.decrypt(targetId, password);
+        clearUnlockToken('note', targetId);
+        updatedNote = res.note;
+        toast.success('已取消加密');
+      } else {
+        const res = await noteLockApi.changePassword(targetId, password, newPassword ?? '');
+        setUnlockToken('note', targetId, res.unlockToken ?? null);
+        updatedNote = res.note;
+        toast.success('密码已修改');
+      }
+    } else if (action === 'encrypt') {
+      const res = await noteFolderApi.encrypt(targetId, password);
+      setUnlockToken('folder', targetId, res.unlockToken ?? null);
+      toast.success(res.affected > 0 ? `文件夹已加密（${res.affected} 篇文档）` : '文件夹已加密');
+    } else if (action === 'unlock') {
+      const res = await noteFolderApi.unlock(targetId, password);
+      setUnlockToken('folder', targetId, res.unlockToken ?? null);
+      toast.success('文件夹已解锁');
+    } else {
+      const res = await noteFolderApi.decrypt(targetId, password);
+      clearUnlockToken('folder', targetId);
+      toast.success(res.affected > 0 ? `已取消加密（${res.affected} 篇文档）` : '已取消加密');
+    }
+
+    fetchNotes();
+    if (updatedNote && selectedNote?.id === updatedNote.id) handleNoteUpdated(updatedNote);
+
+    // 加密成功后清除本地缓存的明文副本
+    if (action === 'encrypt') {
+      if (kind === 'note') void stripCachedContent([targetId]);
+      else void stripFolderPlaintext(targetId);
+    }
+  }, [lockDialog, fetchNotes, selectedNote, handleNoteUpdated, stripFolderPlaintext]);
+
   /**
    * 快速切换器选中笔记：目标可能不在当前筛选结果里（如在回收站视图切到一篇正常笔记），
    * 因此先重置为「全部笔记」，再打开，保证目标在列表中可见。
@@ -671,6 +808,8 @@ const NotesPage: React.FC = () => {
       onCreateFolder={handleCreateFolder}
       onRenameFolder={handleRenameFolder}
       onDeleteFolder={handleDeleteFolder}
+      onNoteLockAction={handleNoteLockAction}
+      onFolderLockAction={handleFolderLockAction}
       searchQuery={searchQuery}
       onSearchChange={setSearchQuery}
       filterType={filterType}
@@ -841,6 +980,28 @@ const NotesPage: React.FC = () => {
         onClose={() => setShowTemplateGallery(false)}
         onSelectTemplate={handleCreateFromTemplate}
         isDark={isDark}
+      />
+
+      {/* 加密文档 / 加密文件夹密码对话框 */}
+      <PasswordDialog
+        open={Boolean(lockDialog)}
+        mode={(({
+          encrypt: 'set',
+          unlock: 'unlock',
+          decrypt: 'decrypt',
+          changePassword: 'change',
+        }) as Record<LockDialogState['action'], PasswordDialogMode>)[lockDialog?.action ?? 'unlock']}
+        title={lockDialog?.title ?? ''}
+        description={
+          lockDialog?.kind === 'folder' && lockDialog.action === 'encrypt'
+            ? '文件夹内所有文档将使用该密码加密，打开时需输入密码'
+            : lockDialog?.kind === 'folder' && lockDialog.action === 'decrypt'
+              ? '将解除文件夹内所有文档的加密，恢复为明文存储'
+              : undefined
+        }
+        isDark={isDark}
+        onClose={() => setLockDialog(null)}
+        onSubmit={handleLockSubmit}
       />
     </div>
   );

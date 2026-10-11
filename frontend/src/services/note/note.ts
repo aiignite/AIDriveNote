@@ -1,4 +1,5 @@
 import { api, buildQuery } from '../client';
+import { buildUnlockHeader } from './unlockStore';
 
 // ── 类型定义 ──────────────────────────────────────────────
 
@@ -23,6 +24,14 @@ export interface Note {
   previewText?: string;
   isFavorite?: boolean;
   tags?: NoteTag[];
+  /** 该笔记是否启用了笔记级加密 */
+  isEncrypted?: boolean;
+  /** 当前请求是否处于锁定态（自身加密或受加密文件夹保护且未解锁） */
+  isLocked?: boolean;
+  /** 锁定来源：note（笔记自身）/ folder（加密文件夹） */
+  lockedScope?: 'note' | 'folder' | null;
+  /** 锁定对象 ID */
+  lockedId?: string | null;
   createdBy?: string;
   updatedBy?: string;
   createdAt?: string;
@@ -54,6 +63,8 @@ export interface NoteFolder {
   parentId?: string;
   userId: string;
   sortOrder: number;
+  /** 是否启用了文件夹级加密 */
+  isEncrypted?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -147,11 +158,13 @@ export const noteApi = {
   search: (q: string, params?: { skip?: number; limit?: number }) =>
     api.get<NoteSearchResponse>(`/notes/search/fulltext${buildQuery({ q, ...params })}`),
 
-  get: (id: string) => api.get<Note>(`/notes/${id}`),
+  get: (id: string, unlockToken?: string | null) =>
+    api.get<Note>(`/notes/${id}`, buildUnlockHeader(unlockToken)),
 
   create: (data: NoteCreate) => api.post<Note>('/notes', data),
 
-  update: (id: string, data: NoteUpdate) => api.patch<Note>(`/notes/${id}`, data),
+  update: (id: string, data: NoteUpdate, unlockToken?: string | null) =>
+    api.patch<Note>(`/notes/${id}`, data, buildUnlockHeader(unlockToken)),
 
   delete: (id: string) => api.delete(`/notes/${id}`),
 
@@ -182,6 +195,44 @@ export const noteApi = {
 
   removeShare: (noteId: string, userId: string) =>
     api.delete(`/notes/${noteId}/shares/${userId}`),
+};
+
+// ── 加密文档 API ──────────────────────────────────────
+
+/** 笔记加/解密、解锁响应 */
+export interface NoteLockResult {
+  note: Note;
+  /** 解锁票据；仅解锁 / 加密 / 改密成功时返回 */
+  unlockToken?: string;
+}
+
+/** 文件夹加/解密、解锁响应 */
+export interface FolderLockResult {
+  folder: NoteFolder;
+  unlockToken?: string;
+  /** 受影响的笔记数量（加密 / 解密时有效） */
+  affected: number;
+}
+
+export const noteLockApi = {
+  /** 给笔记设置密码并加密正文 */
+  encrypt: (id: string, password: string) =>
+    api.post<NoteLockResult>(`/notes/${id}/encrypt`, { password }),
+
+  /** 取消笔记加密（需正确密码） */
+  decrypt: (id: string, password: string) =>
+    api.post<NoteLockResult>(`/notes/${id}/decrypt`, { password }),
+
+  /** 校验密码并换取解锁票据 */
+  unlock: (id: string, password: string) =>
+    api.post<NoteLockResult>(`/notes/${id}/unlock`, { password }),
+
+  /** 修改加密密码 */
+  changePassword: (id: string, oldPassword: string, newPassword: string) =>
+    api.post<NoteLockResult>(`/notes/${id}/change-password`, {
+      old_password: oldPassword,
+      new_password: newPassword,
+    }),
 };
 
 // ── Tag API ──────────────────────────────────────────
@@ -215,6 +266,18 @@ export const noteFolderApi = {
     api.patch<NoteFolder>(`/notes/folders/${id}`, data),
 
   delete: (id: string) => api.delete(`/notes/folders/${id}`),
+
+  /** 加密文件夹：为其子树内笔记用文件夹密钥重新加密 */
+  encrypt: (id: string, password: string) =>
+    api.post<FolderLockResult>(`/notes/folders/${id}/encrypt`, { password }),
+
+  /** 校验文件夹密码并换取解锁票据 */
+  unlock: (id: string, password: string) =>
+    api.post<FolderLockResult>(`/notes/folders/${id}/unlock`, { password }),
+
+  /** 取消文件夹加密：还原子树内笔记正文 */
+  decrypt: (id: string, password: string) =>
+    api.post<FolderLockResult>(`/notes/folders/${id}/decrypt`, { password }),
 };
 
 // ── Note Email API ─────────────────────────────────────

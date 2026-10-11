@@ -50,22 +50,26 @@ export function getActiveUserId(): string | null {
 
 /**
  * 把服务端笔记转换为缓存记录。
+ * 加密文档（自身加密或受加密文件夹保护）一律不缓存正文，
+ * 且以其元数据覆盖旧记录，从而清除此前可能残留的明文副本。
  * @param note 服务端笔记
  * @param userId 归属用户 ID
  * @param withContent 是否保留正文（列表缓存时传 false）
  * @returns 缓存记录
  */
 function toCachedNote(note: Note, userId: string, withContent: boolean): CachedNote {
+  // 加密文档的明文绝不能落到本地缓存
+  const encrypted = Boolean(note.isEncrypted || note.lockedScope);
   return {
     id: note.id,
     userId,
     noteNo: note.noteNo ?? '',
     title: note.title ?? '',
     noteType: note.noteType,
-    content: withContent ? note.content : undefined,
+    content: withContent && !encrypted ? note.content : undefined,
     folderId: note.folderId,
     description: note.description,
-    previewText: note.previewText,
+    previewText: encrypted ? undefined : note.previewText,
     tags: note.tags,
     isFavorite: note.isFavorite,
     isPinned: note.isPinned,
@@ -74,6 +78,20 @@ function toCachedNote(note: Note, userId: string, withContent: boolean): CachedN
     updatedAt: note.updatedAt,
     cachedAt: Date.now(),
   };
+}
+
+/**
+ * 从本地缓存移除若干笔记的正文（加密后调用，清除可能的明文残留）。
+ * @param ids 笔记 ID 列表
+ */
+export async function stripCachedContent(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const records: CachedNote[] = [];
+  for (const id of ids) {
+    const existing = await getNote(id);
+    if (existing) records.push({ ...existing, content: undefined, previewText: undefined });
+  }
+  if (records.length > 0) await putNotes(records);
 }
 
 /**

@@ -309,12 +309,21 @@ class NoteService:
         *,
         save_revision: bool = True,
         change_summary: str | None = None,
+        skip_derived: bool = False,
     ) -> Note | None:
         note = await NoteService.get_note(db, note_id)
         if not note:
             return None
         content_changed = "content" in data and data["content"] != note.content
         title_changed = "title" in data and data["title"] != note.title
+
+        # 加密笔记：跳过一切会把明文写往别处的衍生流程（修订快照 / 检索 / 链接 / embedding）
+        if skip_derived:
+            for k, v in data.items():
+                if hasattr(note, k):
+                    setattr(note, k, v)
+            await db.commit()
+            return await NoteService.get_note(db, note_id)
 
         # 标题自动填充：仅当本次带回了新内容、且标题仍是占位值时才推导。
         # 用户手动起过的名字绝不覆盖（见 title_derive.should_autofill_title）。

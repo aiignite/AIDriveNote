@@ -11,6 +11,7 @@ import {
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
   BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, FolderSync, Clock,
   PanelLeftClose, Tag, X, Check, LayoutGrid, CheckSquare, Square,
+  Lock, Unlock, KeyRound, LockOpen,
 } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -19,7 +20,7 @@ import {
 } from '../../hooks/usePersistentState';
 import { ensurePermission, isSupported as isSyncSupported, loadHandleFromIndexedDB } from '../../services/sync/folderAccess';
 import { runSync } from '../../services/sync/syncEngine';
-import type { Note, NoteFolder, NoteTag } from '../../services/note';
+import { getUnlockToken, type Note, type NoteFolder, type NoteTag } from '../../services/note';
 
 /* ── helpers ────────────────────────────────────── */
 
@@ -164,6 +165,10 @@ export interface NoteListPanelProps {
   /** 打开「发送到邮箱」弹窗 */
   /** 当前登录用户 ID：本地同步写入 manifest 时需要用于账号绑定校验 */
   userId?: string | null;
+  /** 笔记加密相关操作：encrypt / unlock / decrypt / changePassword */
+  onNoteLockAction?: (action: 'encrypt' | 'unlock' | 'decrypt' | 'changePassword', noteId: string) => void;
+  /** 文件夹加密相关操作：encrypt / unlock / decrypt */
+  onFolderLockAction?: (action: 'encrypt' | 'unlock' | 'decrypt', folderId: string) => void;
 }
 
 const NoteListPanel: React.FC<NoteListPanelProps> = ({
@@ -205,6 +210,8 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   onToggleCollapse,
   isMobile = false,
   userId,
+  onNoteLockAction,
+  onFolderLockAction,
 }) => {
   const [internalCategory, setInternalCategory] = useState<NoteCategory>({ type: 'all' });
   const selectedCategory = selectedCategoryProp ?? internalCategory;
@@ -340,6 +347,27 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const newFolderInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * 受加密保护的文件夹 ID 集合（含「祖先已加密 → 子孙同样受保护」的传播）。
+   * 用于列表锁图标与右键菜单：判断某文件夹内笔记是否处于加密保护中。
+   */
+  const encryptedFolderIds = useMemo(() => {
+    const byId = new Map(folders.map(f => [f.id, f]));
+    const cache = new Map<string, boolean>();
+    const isProtected = (id: string): boolean => {
+      const cached = cache.get(id);
+      if (cached !== undefined) return cached;
+      const folder = byId.get(id);
+      if (!folder) return false;
+      const result = !!folder.isEncrypted || (folder.parentId ? isProtected(folder.parentId) : false);
+      cache.set(id, result);
+      return result;
+    };
+    const set = new Set<string>();
+    folders.forEach(f => { if (isProtected(f.id)) set.add(f.id); });
+    return set;
+  }, [folders]);
 
   // Close popups on outside click
   useEffect(() => {
@@ -727,6 +755,9 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
           }`}>
             {note.isPinned && <Pin size={10} className="inline mr-1 text-amber-500" />}
             {note.isFavorite && <Star size={10} className="inline mr-1 text-amber-400 fill-amber-400" />}
+            {(note.isEncrypted || (!!note.folderId && encryptedFolderIds.has(note.folderId))) && (
+              <Lock size={10} className="inline mr-1 text-orange-500" />
+            )}
             {note.title || '无标题'}
           </span>
           {/* 正文摘要：仅在有内容且有足够宽度时显示，避免窄栏挤占标题空间 */}
@@ -823,6 +854,9 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             />
           ) : (
             <span className={`flex-1 text-sm font-medium truncate ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+              {encryptedFolderIds.has(folder.id) && (
+                <Lock size={11} className="inline mr-1 -mt-0.5 text-orange-500" />
+              )}
               {folder.name}
             </span>
           )}
@@ -1594,6 +1628,57 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               >
                 <FolderInput size={13} /> 移动到文件夹
               </button>
+              {/* 加密文档相关操作：自身未加密且不受加密文件夹保护时才允许加密 */}
+              {(() => {
+                const note = notes.find(n => n.id === contextMenu.id);
+                if (!note) return null;
+                const selfEncrypted = !!note.isEncrypted;
+                const folderProtected = !!note.folderId && encryptedFolderIds.has(note.folderId);
+                // 已在本会话解锁则不再提示解锁（列表接口不带票据，需前端兜底判断）
+                const tokenScope: 'note' | 'folder' = selfEncrypted
+                  ? 'note'
+                  : (note.lockedScope === 'folder' ? 'folder' : 'folder');
+                const tokenId = selfEncrypted ? note.id : (note.lockedId ?? note.folderId ?? '');
+                const unlocked = (selfEncrypted || folderProtected)
+                  && !!tokenId
+                  && getUnlockToken(tokenScope, tokenId) !== null;
+                return (
+                  <>
+                    {!selfEncrypted && !folderProtected && (
+                      <button
+                        onClick={() => { onNoteLockAction?.('encrypt', contextMenu.id); setContextMenu(null); }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        <Lock size={13} /> 加密文档
+                      </button>
+                    )}
+                    {!unlocked && (selfEncrypted || folderProtected) && (
+                      <button
+                        onClick={() => { onNoteLockAction?.('unlock', contextMenu.id); setContextMenu(null); }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        <Unlock size={13} /> 解锁文档
+                      </button>
+                    )}
+                    {selfEncrypted && (
+                      <>
+                        <button
+                          onClick={() => { onNoteLockAction?.('changePassword', contextMenu.id); setContextMenu(null); }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                        >
+                          <KeyRound size={13} /> 修改密码
+                        </button>
+                        <button
+                          onClick={() => { onNoteLockAction?.('decrypt', contextMenu.id); setContextMenu(null); }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                        >
+                          <LockOpen size={13} /> 取消加密
+                        </button>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
               <div className={`h-px my-0.5 ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`} />
               <button
                 onClick={() => { onDeleteNote(contextMenu.id); setContextMenu(null); }}
@@ -1605,6 +1690,40 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
           )}
           {contextMenu.type === 'folder' && (
             <>
+              {/* 文件夹加密：祖先已加密时无需重复加密 */}
+              {(() => {
+                const folder = folders.find(f => f.id === contextMenu.id);
+                if (!folder) return null;
+                const protectedByAncestor = !!folder.parentId && encryptedFolderIds.has(folder.parentId);
+                return (
+                  <>
+                    {!folder.isEncrypted && !protectedByAncestor && (
+                      <button
+                        onClick={() => { onFolderLockAction?.('encrypt', contextMenu.id); setContextMenu(null); }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                      >
+                        <Lock size={13} /> 加密文件夹
+                      </button>
+                    )}
+                    {folder.isEncrypted && (
+                      <>
+                        <button
+                          onClick={() => { onFolderLockAction?.('unlock', contextMenu.id); setContextMenu(null); }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                        >
+                          <Unlock size={13} /> 解锁文件夹
+                        </button>
+                        <button
+                          onClick={() => { onFolderLockAction?.('decrypt', contextMenu.id); setContextMenu(null); }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                        >
+                          <LockOpen size={13} /> 取消加密
+                        </button>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
               <button
                 onClick={() => {
                   const folder = folders.find(f => f.id === contextMenu.id);
