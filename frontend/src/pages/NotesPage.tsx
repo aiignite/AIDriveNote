@@ -84,6 +84,81 @@ const NotesPage: React.FC = () => {
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
   const [notesTotal, setNotesTotal] = useState(0);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
+
+  /* ────── 浏览器历史集成：打开/关闭笔记 ↔ 返回/前进 ──────
+   *
+   * 打开笔记时 pushState 一条记录（URL 不变，仅在 state 里带笔记 id），
+   * 移动端返回手势与浏览器返回键就变成「回到列表」而不是退出应用；
+   * 前进键可重新打开刚关闭的笔记。笔记间直接切换（快速切换器等）
+   * 用 replaceState，避免历史里堆积多条笔记记录。
+   */
+  /** pushState 携带的标记：state 里有它即代表该历史条目对应一条打开的笔记 */
+  interface NoteHistoryState { aidrivenoteNoteId: string }
+  /** 已为当前打开笔记推入的历史条目 id；null 表示当前条目尚未推入 */
+  const pushedNoteIdRef = useRef<string | null>(null);
+  /** UI 关闭笔记触发了 history.back() 但 popstate 尚未落定；期间暂不 push 新条目 */
+  const pendingBackRef = useRef(false);
+  /** 当前打开笔记 id 镜像，供 popstate（异步事件）读取最新值 */
+  const selectedNoteIdRef = useRef<string | null>(null);
+  /** 笔记列表镜像，供 popstate 按 id 查找笔记 */
+  const notesRef = useRef<Note[]>(notes);
+  notesRef.current = notes;
+
+  /** 打开笔记时同步历史条目；同一 id 的对象更新（自动保存等）不会重复 push */
+  useEffect(() => {
+    selectedNoteIdRef.current = selectedNote?.id ?? null;
+    if (!selectedNote) return;
+    const id = selectedNote.id;
+    if (pushedNoteIdRef.current === id || pendingBackRef.current) return;
+    const state: NoteHistoryState = { aidrivenoteNoteId: id };
+    if (pushedNoteIdRef.current) {
+      window.history.replaceState(state, '');
+    } else {
+      window.history.pushState(state, '');
+    }
+    pushedNoteIdRef.current = id;
+  }, [selectedNote]);
+
+  /** 关闭当前笔记：消耗已推入的历史条目，使历史保持在列表一层 */
+  const handleCloseNote = useCallback(() => {
+    if (!selectedNoteIdRef.current) return;
+    if (pushedNoteIdRef.current) {
+      pendingBackRef.current = true;
+      pushedNoteIdRef.current = null;
+      window.history.back();
+    }
+    setSelectedNote(null);
+  }, []);
+
+  /** 返回/前进：按历史 state 关闭或恢复笔记 */
+  useEffect(() => {
+    const onPopState = (event: PopStateEvent) => {
+      pendingBackRef.current = false;
+      const state = event.state as NoteHistoryState | null;
+      const noteId = state?.aidrivenoteNoteId ?? null;
+      if (noteId) {
+        if (selectedNoteIdRef.current === noteId) return;
+        const target = notesRef.current.find(n => n.id === noteId);
+        if (target) {
+          pushedNoteIdRef.current = noteId; // 条目已存在，避免 effect 重复 push
+          setSelectedNote(target);
+          localStorage.setItem('note_last_opened_id', target.id);
+        }
+        return;
+      }
+      if (selectedNoteIdRef.current) {
+        pushedNoteIdRef.current = null;
+        setSelectedNote(null);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    // 从设置页等路由返回时，残留的历史 state 会让多按一次返回；直接清掉
+    if ((window.history.state as NoteHistoryState | null)?.aidrivenoteNoteId) {
+      window.history.replaceState(null, '');
+    }
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [editorRefreshTrigger, setEditorRefreshTrigger] = useState(0);
   const [showNewNotePopover, setShowNewNotePopover] = useState(false);
@@ -443,7 +518,7 @@ const NotesPage: React.FC = () => {
         toast.success('笔记已移入回收站');
       }
       void dropCached([id]);
-      if (selectedNote?.id === id) setSelectedNote(null);
+      if (selectedNote?.id === id) handleCloseNote();
       fetchNotes();
     } catch (err) {
       // 离线删除：本地立即移除，服务端删除排队等待回传
@@ -451,7 +526,7 @@ const NotesPage: React.FC = () => {
         const cached = await readNote(id);
         if (cached) {
           await deleteOfflineNote(cached);
-          if (selectedNote?.id === id) setSelectedNote(null);
+          if (selectedNote?.id === id) handleCloseNote();
           setNotes(prev => prev.filter(n => n.id !== id));
           setNotesTotal(t => Math.max(0, t - 1));
           toast.success('已离线删除，联网后将自动同步');
@@ -460,7 +535,7 @@ const NotesPage: React.FC = () => {
       }
       toast.error('删除失败');
     }
-  }, [selectedNote, fetchNotes, selectedCategory.type]);
+  }, [selectedNote, fetchNotes, selectedCategory.type, handleCloseNote]);
 
   const handleRestoreNote = useCallback(async (id: string) => {
     try {
@@ -479,13 +554,13 @@ const NotesPage: React.FC = () => {
     try {
       await noteApi.permanentDelete(id);
       toast.success('笔记已永久删除');
-      if (selectedNote?.id === id) setSelectedNote(null);
+      if (selectedNote?.id === id) handleCloseNote();
       fetchNotes();
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('删除失败');
     }
-  }, [selectedNote, fetchNotes, notifyIfOffline]);
+  }, [selectedNote, fetchNotes, notifyIfOffline, handleCloseNote]);
 
   const handleToggleFavorite = useCallback(async (id: string, favorited: boolean) => {
     try {
@@ -846,7 +921,7 @@ const NotesPage: React.FC = () => {
       isFullscreen={isFullscreen}
       isDark={isDark}
       refreshTrigger={combinedRefreshTrigger}
-      onBack={isMobile ? () => setSelectedNote(null) : undefined}
+      onBack={isMobile ? handleCloseNote : undefined}
     />
   ) : (
     <div className={`h-full flex flex-col items-center justify-center ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
