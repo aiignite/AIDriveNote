@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     # true 时只记日志不发信，用于本地验证流程
     EMAIL_MOCK: bool = True
 
+    # ── 邮箱验证码（注册确认，参照 AIIgnitePLM）──
+    # 验证码有效期（分钟）
+    EMAIL_CODE_TTL_MINUTES: int = 10
+    # 验证码位数
+    EMAIL_CODE_LENGTH: int = 6
+    # 同一邮箱同用途两次发码的最小间隔（秒）
+    EMAIL_CODE_SEND_COOLDOWN_SECONDS: int = 60
+    # 单个验证码允许的最大错误尝试次数，超过后作废需重新获取
+    EMAIL_CODE_MAX_VERIFY_ATTEMPTS: int = 5
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

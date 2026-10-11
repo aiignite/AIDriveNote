@@ -67,7 +67,12 @@ class AuthService:
     @staticmethod
     async def authenticate(db: AsyncSession, email: str, password: str) -> User | None:
         result = await db.execute(
-            select(User).where(User.email == email, User.is_deleted == False)  # noqa: E712
+            select(User).where(
+                User.email == email,
+                User.is_deleted == False,  # noqa: E712
+                # 仅 Active 可登录：拦截注册流程中的 Pending 占位账号与 SSO 映射的 Inactive 账号
+                User.status == "Active",
+            )
         )
         user = result.scalar_one_or_none()
         if user is None or not AuthService.verify_password(password, user.password_hash):

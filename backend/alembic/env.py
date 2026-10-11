@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.database import Base
 from app.models.user import User  # noqa: F401
 from app.models.api_token import UserApiToken  # noqa: F401
+from app.models.email_verification import EmailVerificationCode  # noqa: F401
 from app.models.note.note import (  # noqa: F401
     Note,
     NoteFolder,

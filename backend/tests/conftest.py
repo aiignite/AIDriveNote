@@ -25,6 +25,7 @@ _spec.loader.exec_module(_mod)
 # Register ORM models on Base.metadata before create_all
 import app.ai_tools  # noqa: F401 — register AI tools
 import app.models.ai.ai  # noqa: F401
+import app.models.email_verification  # noqa: F401
 import app.models.note.note  # noqa: F401
 import app.models.user  # noqa: F401
 
@@ -103,13 +104,25 @@ async def client(db_session):
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     """Dispose SQLAlchemy pools so pytest exits cleanly."""
     import asyncio
+    import sys
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    # 除 conftest 自带的引擎外，个别测试文件还有模块级引擎
+    # （rec_test_engine / asr_test_engine 等）。aiosqlite 连接的工作线程是非
+    # daemon 线程，引擎不 dispose 会让解释器在 threading._shutdown 永久挂起，
+    # 因此统一扫描已加载模块，把所有 AsyncEngine 一并关闭（dispose 幂等）。
+    engines: list[AsyncEngine] = []
+    for module in list(sys.modules.values()):
+        if module is None:
+            continue
+        for value in vars(module).values():
+            if isinstance(value, AsyncEngine):
+                engines.append(value)
 
     async def _dispose() -> None:
-        await engine.dispose()
-        await note_test_engine.dispose()
-        from app.database import engine as app_engine
-
-        await app_engine.dispose()
+        for eng in engines:
+            await eng.dispose()
 
     try:
         asyncio.run(_dispose())

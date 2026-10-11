@@ -16,7 +16,8 @@ interface AuthContextValue {
   user: { id: string; email: string; name: string; status: string; role: string } | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, name: string) => Promise<void>;
+  /** 三步式注册的最后一步：验码消费 + 激活账号，成功后自动登录 */
+  register: (email: string, password: string, code: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -100,8 +101,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     nav('/');
   }, [nav]);
 
-  const register = useCallback(async (email: string, password: string, name: string) => {
-    await authApi.register({ email, password, name });
+  const register = useCallback(async (email: string, password: string, code: string) => {
+    // 验证码在前两步已校验，此处完成注册（消费验证码 + 激活账号）后直接登录
+    await authApi.completeRegister(email, code, password);
     await login(email, password);
   }, [login]);
 

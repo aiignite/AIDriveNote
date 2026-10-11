@@ -1,10 +1,8 @@
-"""邮件发送服务 —— 把笔记以 HTML 正文发送到指定邮箱。
+"""邮件发送服务 —— 笔记分享邮件与邮箱验证码邮件。
 
-参照 AIDriveAll 的 ``email_service``（QQ SMTP + SMTP_SSL:465）实现，
-但本模块只负责「发笔记」，不含验证码用途。
-
-正文渲染委托给 :mod:`app.services.note.mail_render`，
-按笔记类型（Markdown / 富文本 / 思维导图 / 流程图）转成适合邮件客户端的 HTML。
+参照 AIDriveAll 的 ``email_service``（QQ SMTP + SMTP_SSL:465）实现。
+正文渲染分两路：笔记邮件委托 :mod:`app.services.note.mail_render`，
+验证码邮件由 :class:`EmailService.send_verification_code` 提供轻量模板。
 """
 from __future__ import annotations
 
@@ -110,7 +108,7 @@ async def _send_smtp(message: EmailMessage) -> None:
 
 
 class EmailService:
-    """笔记邮件发送。"""
+    """邮件发送：笔记分享与验证码。"""
 
     @staticmethod
     def is_configured() -> bool:
@@ -119,6 +117,93 @@ class EmailService:
         if settings.EMAIL_MOCK:
             return False
         return bool(settings.EMAIL_USER and settings.EMAIL_PASS)
+
+    @staticmethod
+    async def send_email(
+        *,
+        to_addrs: list[str],
+        subject: str,
+        text_body: str,
+        html_body: str,
+    ) -> None:
+        """发送一封邮件（通用入口）。
+
+        :param to_addrs: 已校验的收件人地址列表
+        :param subject: 邮件标题
+        :param text_body: 纯文本正文
+        :param html_body: HTML 正文
+        :raises AppException: 未配置 SMTP / 发送失败
+        """
+        settings = get_settings()
+
+        if not settings.EMAIL_USER or not settings.EMAIL_PASS:
+            logger.error("邮件服务未配置，无法发送邮件 subject=%s", subject)
+            raise AppException("邮件服务未配置，请联系管理员", status_code=503)
+
+        message = _build_message(
+            to_addrs=to_addrs,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+            mail_from=settings.EMAIL_FROM,
+            mail_user=settings.EMAIL_USER,
+        )
+
+        try:
+            await _send_smtp(message)
+        except Exception as exc:  # noqa: BLE001 - 统一转成 502 对外
+            logger.exception("邮件发送失败 to=%s subject=%s", to_addrs, subject)
+            raise AppException("邮件发送失败，请稍后重试", status_code=502) from exc
+
+        logger.info("邮件已发送 To=%s Subject=%s", to_addrs, subject)
+
+    @staticmethod
+    async def send_verification_code(*, email: str, code: str, ttl_minutes: int) -> None:
+        """发送注册验证码邮件。
+
+        EMAIL_MOCK 开启时不真发，仅以 WARNING 日志输出验证码，
+        便于本地走通完整注册流程（从日志取码）。
+        发送失败抛出 AppException，由调用方回滚事务避免残留无效验证码记录。
+
+        :param email: 收件邮箱
+        :param code: 明文验证码（仅在此处短暂使用，入库前另行哈希）
+        :param ttl_minutes: 验证码有效期（分钟），用于文案
+        """
+        settings = get_settings()
+
+        if settings.EMAIL_MOCK:
+            logger.warning(
+                "[EMAIL_MOCK] 验证码未真实发送 To=%s Code=%s（有效期 %s 分钟）",
+                email, code, ttl_minutes,
+            )
+            return
+
+        subject = "AIDriveNote 注册验证码"
+        text_body = (
+            "您好，\n\n"
+            f"您正在注册 AIDriveNote 账号。验证码为：{code}\n"
+            f"有效期 {ttl_minutes} 分钟，请勿泄露给他人。\n\n"
+            "如非本人操作，请忽略本邮件。\n"
+        )
+        html_body = (
+            '<div style="font-family:-apple-system,\'Segoe UI\',Arial,sans-serif;'
+            'max-width:480px;margin:0 auto;padding:24px;color:#333;">'
+            "<p>您好，</p>"
+            "<p>您正在注册 <strong>AIDriveNote</strong> 账号，验证码为：</p>"
+            '<p style="font-size:28px;font-weight:700;letter-spacing:6px;'
+            'color:#ea580c;margin:16px 0;">'
+            f"{code}</p>"
+            f"<p>有效期 <strong>{ttl_minutes}</strong> 分钟，请勿泄露给他人。</p>"
+            "<p style=\"color:#999;font-size:13px;\">如非本人操作，请忽略本邮件。</p>"
+            "</div>"
+        )
+
+        await EmailService.send_email(
+            to_addrs=[email],
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+        )
 
     @staticmethod
     async def send_note(
