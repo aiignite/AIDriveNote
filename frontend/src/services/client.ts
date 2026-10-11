@@ -150,6 +150,29 @@ function resolveUrl(path: string) {
   return `${API_BASE}${path}`;
 }
 
+/**
+ * 把后端返回的资源直链（图片资产 / 录音音频等）改写为当前部署可访问的地址。
+ *
+ * 后端正文里存的是根绝对路径（如 /api/v1/notes/assets/{hash}.jpg），子路径部署
+ * （VITE_BASE_PATH=/note/）下 <img>/<audio> 直接用它会被外层 nginx 判 404，
+ * 因为只有 /note/api/ 有路由。这里按部署前缀改写；已是绝对地址或 data URL 的
+ * 原样返回，幂等可重复调用。
+ */
+export function resolveAssetUrl(url: string): string {
+  const raw = (url || '').trim();
+  if (!raw || /^(https?:|data:|blob:)/i.test(raw) || !raw.startsWith('/api/')) return raw;
+  if (/^https?:/i.test(API_BASE)) {
+    // 跨域直连后端时按 API_BASE 解析出正确 origin
+    try {
+      return new URL(raw, API_BASE).toString();
+    } catch {
+      return raw;
+    }
+  }
+  const base = (import.meta.env.BASE_URL ?? '/').replace(/\/+$/, '');
+  return base ? `${base}${raw}` : raw;
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   const refresh = typeof window !== 'undefined'
     ? window.localStorage.getItem(REFRESH_KEY)

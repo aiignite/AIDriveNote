@@ -3,6 +3,8 @@
  */
 import type { PartialBlock } from '@blocknote/core';
 
+import { resolveAssetUrl } from '../services/client';
+
 const BASE_PROPS = {
   textColor: 'default',
   backgroundColor: 'default',
@@ -55,7 +57,8 @@ function normalizeImageProps(props: Record<string, unknown>): Record<string, unk
   const normalized: Record<string, unknown> = {
     ...BASE_PROPS,
     name: String(props.name ?? ''),
-    url: String(props.url ?? ''),
+    // 正文里存的可能是根绝对路径 /api/v1/...，渲染前按部署前缀改写（data URL 不受影响）
+    url: resolveAssetUrl(String(props.url ?? '')),
     caption: String(props.caption ?? ''),
     showPreview: props.showPreview !== false,
   };
@@ -69,7 +72,7 @@ function normalizeAudioProps(props: Record<string, unknown>): Record<string, unk
   return {
     backgroundColor: typeof props.backgroundColor === 'string' ? props.backgroundColor : 'default',
     name: String(props.name ?? ''),
-    url: String(props.url ?? ''),
+    url: resolveAssetUrl(String(props.url ?? '')),
     caption: String(props.caption ?? ''),
     showPreview: props.showPreview !== false,
   };

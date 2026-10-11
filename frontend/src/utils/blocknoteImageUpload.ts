@@ -9,7 +9,7 @@
  * 用户下次联网保存时可由迁移脚本统一资产化。
  */
 
-import { fetchWithAuth, isNetworkError, NetworkError } from '../services/client';
+import { fetchWithAuth, isNetworkError, NetworkError, resolveAssetUrl } from '../services/client';
 
 /** 服务端硬上限，与后端 MAX_IMAGE_BYTES 保持一致 */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -108,7 +108,9 @@ export async function uploadNoteImage(file: File): Promise<ImageUploadResult> {
     }
     const data = (await res.json()) as { url?: string };
     if (!data.url) throw new Error('图片上传失败：未返回地址');
-    return { url: data.url, pending: false };
+    // 后端返回根绝对路径（/api/v1/...），必须按部署前缀改写后才能进 <img src>；
+    // 子路径部署下不改写会导致图片 404（上传成功但不显示）
+    return { url: resolveAssetUrl(data.url), pending: false };
   } catch (err) {
     // 仅「网络不可达」才降级；401 / 业务错误必须暴露给用户
     if (!isNetworkError(err) && !(err instanceof NetworkError)) throw err;

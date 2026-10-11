@@ -14,7 +14,7 @@
  *   POST   /note-recordings/{id}/refine
  *   DELETE /note-recordings/{id}                { ok }
  */
-import { api, API_BASE, buildQuery, fetchWithAuth } from '../client';
+import { api, API_BASE, buildQuery, fetchWithAuth, resolveAssetUrl } from '../client';
 import { keysToCamel } from '../../utils/caseConverter';
 
 /** 录音状态机取值 */
@@ -233,20 +233,16 @@ export const noteRecordingApi = {
 /**
  * 解析可直接用于 <audio src> / 音频块的最终地址。
  *
- * 后端返回的 audioUrl 为根相对路径（`/api/v1/...`），在子路径部署模式下
- * 会指向站点根目录而非应用前缀，因此这里统一替换为 API_BASE 前缀。
+ * 后端返回的 audioUrl 为根绝对路径（`/api/v1/...`），前缀改写统一交给
+ * client.resolveAssetUrl（按部署 base 拼接，子路径部署下同样适用）。
  *
  * @param audioUrl 后端返回的 audioUrl（可能为空）
  * @param id 录音 id，用于缺失时兜底
- * @returns 可直接播放的绝对/带前缀地址
+ * @returns 可直接播放的带部署前缀地址
  */
 export function resolveAudioUrl(audioUrl: string | null | undefined, id: string): string {
   const raw = audioUrl || `${API_BASE}/note-recordings/${id}/audio`;
-  if (raw.startsWith('/api/v1/')) {
-    const base = API_BASE.replace(/\/+$/, '');
-    return `${base}${raw.slice('/api/v1'.length)}`;
-  }
-  return raw;
+  return resolveAssetUrl(raw);
 }
 
 export default noteRecordingApi;

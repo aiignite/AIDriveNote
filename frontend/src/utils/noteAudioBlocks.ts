@@ -7,6 +7,7 @@
  *  - transcriptToBlocks：按章节 / 段落生成 heading / paragraph 块。
  */
 import type { PartialBlock } from '@blocknote/core';
+import { resolveAssetUrl } from '../services/client';
 import type { TranscriptSegment } from '../services/note/recording';
 
 /** BlockNote 块公共默认 props */
@@ -24,7 +25,8 @@ export function buildAudioBlock(audioUrl: string, name = ''): PartialBlock {
     props: {
       backgroundColor: 'default',
       name,
-      url: audioUrl,
+      // 幂等改写：调用方未 resolve 时兜底补部署前缀
+      url: resolveAssetUrl(audioUrl),
       caption: '',
       showPreview: true,
     },
