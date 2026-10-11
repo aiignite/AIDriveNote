@@ -32,3 +32,6 @@ backend/uploads/
 *.swo
 .idea/
 .vscode/
+
+# ZCode workspace artifacts
+.zcode/
