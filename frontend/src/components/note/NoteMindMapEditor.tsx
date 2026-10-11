@@ -53,6 +53,7 @@ import NodeImgAdjustPlugin from 'simple-mind-map/src/plugins/NodeImgAdjust.js';
 import AssociativeLinePlugin from 'simple-mind-map/src/plugins/AssociativeLine.js';
 // @ts-expect-error no types available
 import TouchEventPlugin from 'simple-mind-map/src/plugins/TouchEvent.js';
+import { uploadNoteImage } from '../../utils/blocknoteImageUpload';
 import type {
   NoteCommand,
   NoteEditorRegistry,
@@ -220,6 +221,36 @@ function getActiveNodes(mindMap: any): any[] {
 }
 
 /**
+ * 读取图片原始尺寸；加载失败时退回 100×100 占位。
+ * @param url 图片地址（网络地址或 dataURL）
+ */
+function loadImageSize(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    img.onload = () => resolve({ width: img.naturalWidth || 100, height: img.naturalHeight || 100 });
+    img.onerror = () => resolve({ width: 100, height: 100 });
+    img.src = url;
+  });
+}
+
+/**
+ * 把一张图片上传为服务端资产，并整理成 simple-mind-map 节点图片所需的
+ * `{ url, size }` 形状。离线时 uploadNoteImage 自动退回 dataURL 兜底。
+ * @param img 图片数据（剪贴板 Blob 或本地选择的 File）
+ */
+async function uploadNodeImage(img: Blob) {
+  const file = img instanceof File
+    ? img
+    : new File([img], 'clipboard.png', { type: img.type || 'image/png' });
+  const result = await uploadNoteImage(file);
+  if (result.pending) {
+    toast('当前离线，图片先以本地形式保存', { icon: '📶' });
+  }
+  const size = await loadImageSize(result.url);
+  return { url: result.url, size };
+}
+
+/**
  * 递归把节点树中历史遗留的 emoji 图标值转换为 simple-mind-map 图标标识。
  * 早期版本直接把 emoji 存入 node.data.icon，库查表失败导致只留空白占位，
  * 这里统一转换为 `emoji_N` 以恢复显示。
@@ -384,6 +415,9 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
       layout: defaultLayout || 'logicalStructure',
       // 注册 emoji 图标，使节点图标能真正渲染出来
       iconList: buildIconListOption(),
+      // Mod+V 粘贴系统剪贴板里的图片时，上传为资产再设置到激活节点，
+      // 避免 base64 内嵌进笔记 JSON；无激活节点时库自身会跳过
+      handleNodePasteImg: uploadNodeImage,
     } as any);
 
     mindMapRef.current = mindMap;
@@ -671,14 +705,14 @@ const NoteMindMapEditor = forwardRef<NoteMindMapEditorHandle, NoteMindMapEditorP
     }
     imageInputRef.current?.click();
   }, [applyImageUrl]);
-  /** 本地图片选择完成：读取为 dataURL 后插入 */
+  /** 本地图片选择完成：上传为服务端资产后插入（离线自动退回 dataURL） */
   const handleImageFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => applyImageUrl(String(reader.result || ''));
-    reader.readAsDataURL(file);
+    void uploadNodeImage(file)
+      .then(({ url }) => applyImageUrl(url))
+      .catch((err) => toast.error(err instanceof Error ? err.message : '插入图片失败'));
   }, [applyImageUrl]);
   /** 插入超链接 */
   const insertHyperlink = useCallback(() => {

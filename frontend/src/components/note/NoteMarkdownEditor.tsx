@@ -12,6 +12,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import MDEditor, { type PreviewType } from '@uiw/react-md-editor';
 import { getCommands, getExtraCommands } from '@uiw/react-md-editor/commands';
+import toast from 'react-hot-toast';
+import { uploadNoteImage } from '../../utils/blocknoteImageUpload';
+import { pickImage } from '../../hooks/useImageCapture';
+import ImageCaptureButton from '../media/ImageCaptureButton';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -111,6 +115,16 @@ function findHeadingOffset(text: string, index: number): number {
   return text.length;
 }
 
+/**
+ * 构造 Markdown 图片语法；描述文本去掉会破坏语法的方括号与圆括号。
+ * @param url 图片地址
+ * @param name 备用描述（通常为文件名）
+ */
+function buildImageMarkdown(url: string, name?: string): string {
+  const alt = (name ?? '').replace(/[[\]()]/g, '').trim() || '图片';
+  return `![${alt}](${url})`;
+}
+
 const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
   noteId,
   content,
@@ -122,6 +136,8 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
 }) => {
   /** 最外层容器，用于定位 textarea 与预览容器 */
   const rootRef = useRef<HTMLDivElement | null>(null);
+  /** 隐藏的图片文件选择输入框（图片命令留空地址时的本地图片入口） */
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   /** 最新正文（避免闭包读到旧值） */
   const valueRef = useRef(content ?? '');
   /** 最新的 onChange 回调 */
@@ -250,6 +266,54 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
     [getTextarea],
   );
 
+  /**
+   * 上传一张图片并在光标处插入 Markdown 图片语法。
+   * 离线时 uploadNoteImage 自动退回 dataURL 兜底。
+   * @param file 图片文件
+   */
+  const insertImageFile = useCallback(async (file: File) => {
+    try {
+      const result = await uploadNoteImage(file);
+      if (result.pending) {
+        toast('当前离线，图片先以本地形式保存', { icon: '📶' });
+      }
+      insertTextAtCursor(buildImageMarkdown(result.url, file.name));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '图片插入失败');
+    }
+  }, [insertTextAtCursor]);
+
+  /**
+   * 粘贴事件：剪贴板里是图片时逐张上传并插入，其余内容交给默认文本粘贴。
+   * @param e textarea 的粘贴事件
+   */
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+    e.preventDefault();
+    void (async () => {
+      for (const file of files) {
+        await insertImageFile(file);
+      }
+    })();
+  }, [insertImageFile]);
+
+  /** 本地图片选择完成（图片命令留空地址时触发） */
+  const handleImageFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) void insertImageFile(file);
+  }, [insertImageFile]);
+
+  /**
+   * 拍照录入：调起系统相机（移动端）或文件选择器（桌面端），
+   * 拍完上传为服务端资产并插入光标处。
+   */
+  const handleCameraCapture = useCallback(async () => {
+    const file = await pickImage({ capture: 'environment' });
+    if (file) await insertImageFile(file);
+  }, [insertImageFile]);
+
   /** 语音输入：识别结果插入光标处 */
   const speech = useSpeechInput({ onFinal: insertTextAtCursor });
 
@@ -305,11 +369,15 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
   );
   /** 链接：用 []() 包裹选中文本 */
   const handleLink = useCallback(() => applyTextEdit('[', '](url)', '链接文本'), [applyTextEdit]);
-  /** 图片：先询问图片地址，取消则不插入 */
+  /** 图片：先询问图片地址，留空则选择本地图片上传（取消则放弃） */
   const handleImage = useCallback(() => {
-    const url = window.prompt('图片地址');
-    if (!url) return;
-    applyTextEdit('![', `](${url})`, '图片描述');
+    const url = window.prompt('图片地址（留空可选择本地图片）');
+    if (url === null) return;
+    if (url.trim()) {
+      applyTextEdit('![', `](${url.trim()})`, '图片描述');
+      return;
+    }
+    imageInputRef.current?.click();
   }, [applyTextEdit]);
 
   /** 切换到编辑模式 */
@@ -483,6 +551,13 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
       { id: 'format.link', label: '链接', run: handleLink, isEnabled: () => !readOnlyRef.current },
       { id: 'format.image', label: '图片', run: handleImage, isEnabled: () => !readOnlyRef.current },
       {
+        id: 'insert.camera',
+        label: '拍照录入',
+        keywords: 'camera photo 拍照 照相 摄像头',
+        run: handleCameraCapture,
+        isEnabled: () => !readOnlyRef.current,
+      },
+      {
         id: 'insert.speech',
         label: speech.listening ? '停止语音输入' : '语音输入',
         keywords: 'speech voice mic 语音 听写 输入',
@@ -522,6 +597,7 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
         items: [
           { commandId: 'format.link' },
           { commandId: 'format.image' },
+          { commandId: 'insert.camera' },
           { commandId: 'insert.speech' },
           { commandId: 'format.table' },
           { commandId: 'format.hr' },
@@ -574,6 +650,7 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
     handleTable,
     handleLink,
     handleImage,
+    handleCameraCapture,
     handlePreviewEdit,
     handlePreviewLive,
     handlePreviewPreview,
@@ -615,11 +692,33 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
           extraCommands={editorExtraCommands}
           enableScroll={false}
           className="flex-1 min-h-0"
-          textareaProps={{ placeholder: '输入 Markdown 内容，支持 GFM、公式与代码高亮' }}
+          textareaProps={{ placeholder: '输入 Markdown 内容，支持 GFM、公式与代码高亮', onPaste: handlePaste }}
           previewOptions={{
             remarkPlugins: previewPlugins,
             rehypePlugins: previewRehypePlugins,
           }}
+        />
+      )}
+      {/* 隐藏的图片选择输入：图片命令留空地址时触发 */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleImageFileChange}
+      />
+      {/* 拍照录入浮层按钮：调起系统相机，拍完上传并插入光标处 */}
+      {!readOnly && (
+        <ImageCaptureButton
+          className={`absolute bottom-1.5 left-3 z-10 inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-medium shadow-sm transition-colors ${
+            isDark
+              ? 'border-gray-700 bg-gray-800/80 text-gray-300 hover:bg-gray-700'
+              : 'border-gray-200 bg-white/80 text-gray-600 hover:bg-gray-100'
+          }`}
+          title="拍照录入"
+          label="拍照录入"
+          size={13}
+          onCaptured={insertImageFile}
         />
       )}
       {showStats && (

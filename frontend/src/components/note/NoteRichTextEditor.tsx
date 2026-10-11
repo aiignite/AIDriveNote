@@ -24,6 +24,8 @@ import {
 import { parseBlockNoteContent } from '../../utils/blocknoteContent';
 import { uploadNoteImage } from '../../utils/blocknoteImageUpload';
 import { useSpeechInput } from '../../hooks/useSpeechInput';
+import { pickImage } from '../../hooks/useImageCapture';
+import ImageCaptureButton from '../media/ImageCaptureButton';
 import NoteRecordingPanel, { type NoteRecordingPanelHandle } from './recording/NoteRecordingPanel';
 import { RecordingStatusDot, type RecordingDotState } from './recording/RecordingStatusDot';
 import type {
@@ -655,14 +657,10 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   }, [insertImageBlock]);
 
   /**
-   * 本地图片文件选择回调：上传为服务端资产后插入
-   * @param e 文件输入变化事件
-   * @returns Promise<void>
+   * 上传图片并在当前块后插入（本地文件选择与拍照录入共用）
+   * @param file 图片文件
    */
-  const handleImageFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
+  const uploadAndInsertImage = useCallback(async (file: File) => {
     try {
       const result = await uploadNoteImage(file);
       if (result.pending) {
@@ -673,6 +671,27 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       toast.error(err instanceof Error ? err.message : '插入图片失败');
     }
   }, [insertImageBlock]);
+
+  /**
+   * 本地图片文件选择回调：上传为服务端资产后插入
+   * @param e 文件输入变化事件
+   * @returns Promise<void>
+   */
+  const handleImageFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) await uploadAndInsertImage(file);
+  }, [uploadAndInsertImage]);
+
+  /**
+   * 拍照录入：调起系统相机（移动端）或文件选择器（桌面端），
+   * 拍完上传为服务端资产并在当前块后插入。
+   * @returns Promise<void>
+   */
+  const handleCameraCapture = useCallback(async () => {
+    const file = await pickImage({ capture: 'environment' });
+    if (file) await uploadAndInsertImage(file);
+  }, [uploadAndInsertImage]);
 
   /**
    * 插入 3×3 空表格
@@ -788,6 +807,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       cmd('insert.divider', '分隔线', insertDivider, undefined, 'divider hr 分割线 水平线'),
       cmd('insert.table', '表格', insertTable, undefined, 'table 表格 插入'),
       cmd('insert.image', '插入图片', insertImage, undefined, 'image picture 图片 上传'),
+      cmd('insert.camera', '拍照录入', handleCameraCapture, undefined, 'camera photo 拍照 照相 摄像头'),
       cmd('insert.recording', '录音转写', toggleRecording, undefined, 'record audio mic 录音 语音 转写'),
       {
         id: 'insert.speech',
@@ -835,6 +855,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           { commandId: 'insert.divider' },
           { commandId: 'insert.table' },
           { commandId: 'insert.image' },
+          { commandId: 'insert.camera' },
           { commandId: 'insert.recording' },
           { commandId: 'insert.speech' },
           { commandId: 'insert.link' },
@@ -879,6 +900,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
     undo, redo, selectAll,
     toggleStyle, clearFormatting, insertBlock, setAlignment,
     insertDivider, insertTable, insertImage, insertLink,
+    uploadAndInsertImage, handleCameraCapture,
     applyTextColor, applyBackgroundColor,
     insertBlocksAfterCursor,
     speech.toggle, speech.listening, speech.supported,
@@ -950,6 +972,11 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <button type="button" className={btnCls} onClick={insertTable} title="插入表格"><Table size={16} /></button>
           <button type="button" className={btnCls} onClick={insertDivider} title="插入分隔线"><Minus size={16} /></button>
           <button type="button" className={btnCls} onClick={insertImage} title="插入图片"><ImagePlus size={16} /></button>
+          <ImageCaptureButton
+            className={`${btnCls} inline-flex items-center`}
+            title="拍照录入"
+            onCaptured={handleCameraCapture}
+          />
           <button
             ref={recordingAnchorRef}
             type="button"
