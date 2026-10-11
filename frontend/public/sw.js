@@ -210,13 +210,16 @@ async function handleAsset(request) {
 /**
  * 预热非首屏资源，补齐离线可用性。
  *
- * 由页面在 load 之后的空闲时段发消息触发，因此不会与首屏请求争抢带宽。
+ * 由页面在 load 之后的延迟时段发消息触发，因此不会与首屏请求争抢带宽。
  * 刻意采用**串行**下载（逐个 await）而非并发：
  * 弱网下单条链路带宽本就被首屏占满，并发只会让两边都变慢。
- * 已缓存的条目直接跳过，重复触发无副作用。
+ * 页面还会传入 paceMs（资源间隔）：高延迟链路下每个大 chunk 下载完
+ * 再停顿片刻，把链路让给刷新后仍在排队的列表 / 正文 / 图片等交互请求，
+ * 避免页面「一节一节」地慢慢出来。已缓存的条目直接跳过，重复触发无副作用。
+ * @param {number} [paceMs=0] 每个资源下载完成后的等待间隔（毫秒）
  * @returns {Promise<void>}
  */
-async function warmCache() {
+async function warmCache(paceMs = 0) {
   const cache = await caches.open(SHELL_CACHE);
   const manifestUrl = new URL(REST_MANIFEST_FILE, self.registration.scope).toString();
   let assets;
@@ -229,10 +232,12 @@ async function warmCache() {
   }
   if (!Array.isArray(assets)) return;
 
+  const sleep = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : undefined);
   for (const url of assets) {
     try {
       if (await cache.match(url)) continue;
       await cache.add(url);
+      await sleep(paceMs);
     } catch {
       /* 忽略单个资源失败，不阻断后续预热 */
     }
@@ -249,8 +254,8 @@ self.addEventListener('message', (event) => {
     void self.skipWaiting();
     return;
   }
-  // 首屏加载完成、页面空闲后触发，后台串行预热非首屏资源
+  // 首屏加载完成、页面延迟一段时间后触发，后台串行预热非首屏资源
   if (data.type === 'WARM_CACHE') {
-    event.waitUntil(warmCache());
+    event.waitUntil(warmCache(Number(data.paceMs) || 0));
   }
 });

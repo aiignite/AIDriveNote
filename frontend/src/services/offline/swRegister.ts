@@ -60,44 +60,52 @@ export async function registerServiceWorker(): Promise<void> {
 }
 
 /**
- * 首屏加载完成、浏览器空闲时，通知 SW 后台预热非首屏资源。
+ * 首屏加载完成一段时间后，通知 SW 后台预热非首屏资源。
  *
- * 为什么不在安装期一次性预缓存：全部产物合计 3 MB 以上（懒加载页面、编辑器、
+ * 为什么不在安装期一次性预缓存：全部产物合计 10 MB 以上（懒加载页面、编辑器、
  * KaTeX 字体、导出模块），安装期下载会与首屏请求争抢同一条链路，
- * 弱网下首屏被拖到几十秒。改到 load 之后的空闲时段串行预热，
- * 既不阻塞首屏，又能在用户真正断网前把离线资源补齐。
+ * 弱网下首屏被拖到几十秒。
+ *
+ * 预热时机必须足够靠后：高延迟链路（如跨机房访问）下，用户刷新后的头十几秒
+ * 里列表 / 正文 / 图片等接口请求还在排队，若预热紧接着 load 就启动，
+ * 串行的大 chunk 也会持续占满带宽，页面表现为「一节一节」地慢慢出来。
+ * 因此固定延迟 15 秒、并给 SW 传每资源 2 秒的间隔，把链路留给交互流量。
  */
 function scheduleCacheWarm(): void {
-  /**
-   * 在浏览器空闲时执行回调；不支持 requestIdleCallback 时退化为定时器。
-   * @param callback 待执行回调
-   */
-  const onIdle = (callback: () => void): void => {
-    if (typeof window.requestIdleCallback === 'function') {
-      window.requestIdleCallback(callback, { timeout: 5000 });
-    } else {
-      window.setTimeout(callback, 3000);
-    }
+  /** 省流量模式或已知慢速网络：完全不预热，运行时缓存仍按需补齐 */
+  const shouldSkip = (): boolean => {
+    const conn = (navigator as unknown as {
+      connection?: { saveData?: boolean; effectiveType?: string; type?: string };
+    }).connection;
+    if (!conn) return false;
+    if (conn.saveData) return true;
+    const effective = conn.effectiveType ?? '';
+    return effective === 'slow-2g' || effective === '2g' || effective === '3g';
   };
 
-  /** 向当前生效的 SW 发送预热指令 */
+  /** 向当前生效的 SW 发送预热指令（含资源间隔提示） */
   const send = async (): Promise<void> => {
     try {
       const ready = await navigator.serviceWorker.ready;
       // 首次安装时页面尚未被接管，需回退到 active 实例
       const target = navigator.serviceWorker.controller ?? ready.active;
-      target?.postMessage({ type: 'WARM_CACHE' });
+      target?.postMessage({ type: 'WARM_CACHE', paceMs: 2000 });
     } catch {
       /* 预热失败不影响在线使用 */
     }
   };
 
+  if (shouldSkip()) return;
+
   if (document.readyState === 'complete') {
-    onIdle(() => void send());
+    window.setTimeout(() => void send(), WARM_DELAY_MS);
   } else {
-    window.addEventListener('load', () => onIdle(() => void send()), { once: true });
+    window.addEventListener('load', () => window.setTimeout(() => void send(), WARM_DELAY_MS), { once: true });
   }
 }
+
+/** 页面 load 后延迟预热的时间（毫秒），给刷新后的接口请求让路 */
+const WARM_DELAY_MS = 15_000;
 
 /**
  * 应用新版本：让等待中的 SW 立即接管并刷新页面。
