@@ -4,7 +4,11 @@ import toast from 'react-hot-toast';
 import { pickImage, type PickImageOptions } from '../../hooks/useImageCapture';
 
 export interface ImageCaptureButtonProps {
-  /** 拿到拍照 / 选图结果后的业务回调（上传、插入等由调用方处理） */
+  /**
+   * 拿到拍照 / 选图结果后的业务回调（上传、插入等由调用方处理）。
+   * 注意：本组件内部已负责调起 pickImage，onCaptured 里不要再调用 pickImage，
+   * 否则第二次 input.click() 因用户激活已消耗而被浏览器拦截，Promise 永远挂起。
+   */
   onCaptured: (file: File) => void | Promise<void>;
   onError?: (error: unknown) => void;
   pickOptions?: PickImageOptions;

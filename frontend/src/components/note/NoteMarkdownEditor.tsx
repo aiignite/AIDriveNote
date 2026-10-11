@@ -674,6 +674,27 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
       className={`note-md-editor-root relative w-full h-full flex flex-col min-h-0 ${isDark ? 'note-md-dark' : ''}`}
       data-color-mode={isDark ? 'dark' : 'light'}
     >
+      {/* 拍照录入工具条：普通文档流常驻顶部（参照 AIIgnitePLM），预览模式下插入到文末 */}
+      {!readOnly && (
+        <div
+          className={`flex items-center gap-2 px-3 py-1 border-b shrink-0 ${
+            isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50/50'
+          }`}
+        >
+          <ImageCaptureButton
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+              isDark ? 'text-amber-300 hover:bg-gray-700' : 'text-amber-700 hover:bg-amber-50'
+            }`}
+            title="拍照录入"
+            label="拍照录入"
+            size={14}
+            onCaptured={insertImageFile}
+          />
+          <span className={`text-[11px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+            拍完自动上传并插入笔记
+          </span>
+        </div>
+      )}
       {readOnly ? (
         <MDEditor.Markdown
           source={value}
@@ -707,20 +728,6 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
         className="hidden"
         onChange={handleImageFileChange}
       />
-      {/* 拍照录入浮层按钮：调起系统相机，拍完上传并插入光标处 */}
-      {!readOnly && (
-        <ImageCaptureButton
-          className={`absolute bottom-1.5 left-3 z-10 inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-medium shadow-sm transition-colors ${
-            isDark
-              ? 'border-gray-700 bg-gray-800/80 text-gray-300 hover:bg-gray-700'
-              : 'border-gray-200 bg-white/80 text-gray-600 hover:bg-gray-100'
-          }`}
-          title="拍照录入"
-          label="拍照录入"
-          size={13}
-          onCaptured={insertImageFile}
-        />
-      )}
       {showStats && (
         <div
           className={`pointer-events-none absolute bottom-1 right-3 text-[11px] select-none ${

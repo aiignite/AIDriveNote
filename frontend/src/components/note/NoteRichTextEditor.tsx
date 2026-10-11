@@ -975,7 +975,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
           <ImageCaptureButton
             className={`${btnCls} inline-flex items-center`}
             title="拍照录入"
-            onCaptured={handleCameraCapture}
+            onCaptured={uploadAndInsertImage}
           />
           <button
             ref={recordingAnchorRef}
