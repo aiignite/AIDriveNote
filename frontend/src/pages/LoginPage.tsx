@@ -104,8 +104,8 @@ const LoginPage: React.FC = () => {
               {guestLoading ? '进入中…' : '匿名使用'}
             </button>
             <p className="text-xs text-center mt-3 text-gray-400 dark:text-gray-500 leading-relaxed">
-              无需注册即可使用全部笔记功能与 AI 助手。<br />
-              数据仅临时保存在服务器，30 分钟无操作后自动清除。
+              无需注册即可使用全部笔记功能。<br />
+              AI 助手需登录后使用；数据仅临时保存在服务器，30 分钟无操作后自动清除。
             </p>
           </>
         )}

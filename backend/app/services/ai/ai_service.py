@@ -14,7 +14,8 @@ from app.ai_tools.registry import ToolRegistry
 from app.database import AsyncSessionLocal
 from app.models.ai import AIAssistant, AIConversation, AIMessage
 from app.services.ai.attachment_service import AttachmentService
-from app.services.ai.llm_router import LLMRouter, ProviderResolution
+from app.services.ai.llm_router import LLMRouter, NoAvailableModelError, ProviderResolution
+from app.services.ai.ownership import assistants_visible_to
 from app.services.ai.rag_service import RagService
 from app.services.ai.tool_executor import ToolExecutor
 from app.services.ai_providers.base import AIProviderConfig, ChatMessage, ChatOptions
@@ -46,14 +47,29 @@ def _build_page_context_prompt(page_context: dict[str, Any] | None) -> str:
 
 class AIService:
     @staticmethod
-    async def get_assistant(db: AsyncSession, name: str | None) -> AIAssistant | None:
+    async def get_assistant(
+        db: AsyncSession,
+        name: str | None,
+        *,
+        user_id: uuid.UUID | None = None,
+        is_guest: bool = False,
+    ) -> AIAssistant | None:
+        """按名称解析助手。
+
+        传入 ``user_id`` 时按归属过滤（系统助手 + 本人创建）；匿名用户仅可见本人创建的。
+        """
         target = name or "笔记助手"
-        result = await db.execute(
-            select(AIAssistant).where(
+        stmt = select(AIAssistant).where(
+            AIAssistant.name == target,
+            AIAssistant.is_deleted == False,  # noqa: E712
+        )
+        if user_id is not None:
+            stmt = assistants_visible_to(user_id, is_guest=is_guest)
+            stmt = stmt.where(
                 AIAssistant.name == target,
                 AIAssistant.is_deleted == False,  # noqa: E712
             )
-        )
+        result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
     @staticmethod
@@ -143,22 +159,31 @@ class AIService:
         model_id: str | None = None,
         attachment_ids: list[str] | None = None,
         force_skills: list[str] | None = None,
+        is_guest: bool = False,
     ) -> "PreparedChat":
         """流开始前的准备阶段——所有准备工作都在**短事务**内完成并提交。
 
         这里集中做：解析助手 / 模型 / 会话、技能路由、RAG 上下文、历史消息、
         附件抽取，并落库 user 消息。返回后调用方即可释放连接，交给流式阶段。
+
+        助手与模型的解析都限定在当前用户可见范围内；匿名用户仅能使用自己创建的。
         """
-        assistant = await AIService.get_assistant(db, assistant_name)
+        assistant = await AIService.get_assistant(
+            db, assistant_name, user_id=user_id, is_guest=is_guest,
+        )
         if not assistant:
             raise ChatPreparationError("未找到助手")
 
-        resolution = await LLMRouter.resolve(
-            db, user_id,
-            assistant_model=assistant.model,
-            request_model=model_id,
-            temperature=assistant.temperature,
-        )
+        try:
+            resolution = await LLMRouter.resolve(
+                db, user_id,
+                assistant_model=assistant.model,
+                request_model=model_id,
+                temperature=assistant.temperature,
+                is_guest=is_guest,
+            )
+        except NoAvailableModelError as exc:
+            raise ChatPreparationError(str(exc)) from exc
         conv = await AIService.get_or_create_conversation(
             db, user_id,
             conversation_id=conversation_id,

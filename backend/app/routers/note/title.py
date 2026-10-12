@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
+from app.auth import get_current_user, require_not_guest
 from app.database import get_db
 from app.exceptions import AppException, ForbiddenException, NotFoundException
 from app.models.note.note import Note
@@ -76,9 +76,12 @@ async def derive_note_title(
 async def generate_note_title(
     payload: TitleGenerateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_not_guest),
 ) -> TitleSuggestResponse:
-    """调用 AI 模型为笔记生成标题建议。"""
+    """调用 AI 模型为笔记生成标题建议。
+
+    匿名账号禁用：该接口会真实调用大模型，消耗服务端额度（``require_not_guest``）。
+    """
     note = await _load_editable_note(db, payload.note_id, current_user)
     try:
         title = await TitleGenerator.generate(

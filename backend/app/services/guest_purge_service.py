@@ -29,6 +29,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
+from app.models.ai import AIAssistant, AIModel
 from app.models.guest_event import GuestEventType
 from app.models.note.note import Note, NoteFolder, NoteRevision, NoteShare, NoteTag, NoteTemplate
 from app.models.note.recording import NoteRecording
@@ -282,9 +283,17 @@ class GuestPurgeService:
                     delete(model).where(column["shared_with_user_id"] == user_id)
                 )
 
-        # 匿名用户自建的 AI 模型/助手 **不删除**：它们的 user_id 是只写不读字段，
-        # 模型实际全站共享（GET /ai/models 与 LLMRouter 均不过滤用户），
-        # 删除会打断其他用户正在进行的会话。属公共资产，不随账号清除。
+        # AI 模型与助手：模型已按 user_id 严格归属（见 services/ai/ownership.py），
+        # 匿名账号创建的模型只对自己可见，因此可以安全地随账号一并删除。
+        # system 种子（user_id IS NULL）不在此列，不受影响。
+        await db.execute(delete(AIModel).where(AIModel.user_id == user_id))
+        assistants = await db.execute(
+            select(AIAssistant).where(AIAssistant.user_id == user_id)
+        )
+        for assistant in assistants.scalars().all():
+            # 助手技能绑定在 ORM 上是 cascade="all, delete-orphan"，随助手一并删除
+            await db.delete(assistant)
+        await db.flush()
 
         # 邮箱验证码表以 email 字符串为键、无外键，需按邮箱清除
         from app.models.email_verification import EmailVerificationCode

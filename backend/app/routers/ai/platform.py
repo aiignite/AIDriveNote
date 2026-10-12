@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from app.ai_tools.registry import ToolRegistry
 import app.ai_tools  # noqa: F401
-from app.auth import get_current_user
+from app.auth import get_current_user, require_not_guest
 from app.database import get_db
 from app.exceptions import BadRequestException, NotFoundException
 
@@ -36,6 +36,12 @@ from app.models.ai import (
 from app.models.user import User
 from app.services.ai.ai_service import AIService
 from app.services.ai.attachment_service import AttachmentService
+from app.services.ai.ownership import (
+    assistants_visible_to,
+    models_visible_to,
+    owned_assistant,
+    owned_model,
+)
 from app.services.ai.seed_service import AISeedService
 from app.services.ai_providers.factory import AIProviderFactory
 from app.services.secret_crypto import (
@@ -44,7 +50,11 @@ from app.services.secret_crypto import (
     is_masked_secret_placeholder,
 )
 
-router = APIRouter(prefix="/ai", tags=["AI"])
+# 整个 AI 平台对匿名账号关闭：对话会消耗服务端大模型额度，而匿名数据随时被清除，
+# 无法追责也无法回收。统一在 router 级加守卫，避免逐个端点遗漏。
+router = APIRouter(
+    prefix="/ai", tags=["AI"], dependencies=[Depends(require_not_guest)],
+)
 
 
 # ── Schemas ──
@@ -323,8 +333,11 @@ async def _clear_user_default_model_if_matches(
 @router.get("/models")
 async def list_models(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     default_name = await _get_user_default_model_name(db, user.id)
+    # 仅返回本人创建 + 系统种子；匿名用户只能看到自己创建的
     result = await db.execute(
-        select(AIModel).where(AIModel.is_deleted == False).order_by(AIModel.name)  # noqa: E712
+        models_visible_to(user.id, is_guest=bool(getattr(user, "is_guest", False)))
+        .where(AIModel.is_deleted == False)  # noqa: E712
+        .order_by(AIModel.name)
     )
     return [
         _model_to_out(m, is_default=bool(default_name and m.name == default_name))
@@ -359,7 +372,9 @@ async def update_model(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(AIModel).where(AIModel.id == model_id, AIModel.is_deleted == False))  # noqa: E712
+    result = await db.execute(
+        owned_model(user.id, model_id).where(AIModel.is_deleted == False)  # noqa: E712
+    )
     m = result.scalar_one_or_none()
     if not m:
         raise NotFoundException("AIModel")
@@ -389,7 +404,10 @@ async def delete_model(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(AIModel).where(AIModel.id == model_id, AIModel.is_deleted == False))  # noqa: E712
+    # 归属校验：只能删除自己创建的模型（系统种子与其他用户的模型不可删）
+    result = await db.execute(
+        owned_model(user.id, model_id).where(AIModel.is_deleted == False)  # noqa: E712
+    )
     m = result.scalar_one_or_none()
     if not m:
         raise NotFoundException("AIModel")
@@ -415,7 +433,10 @@ async def test_model_connection(
 ):
     from app.config import get_settings
 
-    result = await db.execute(select(AIModel).where(AIModel.id == model_id, AIModel.is_deleted == False))  # noqa: E712
+    # 归属校验：只能测试自己创建的模型（避免探测他人模型的连通性）
+    result = await db.execute(
+        owned_model(user.id, model_id).where(AIModel.is_deleted == False)  # noqa: E712
+    )
     m = result.scalar_one_or_none()
     if not m:
         raise NotFoundException("AIModel")
@@ -524,8 +545,11 @@ async def test_model_connection(
 @router.get("/assistants")
 async def list_assistants(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     await AISeedService.ensure_platform_seed(db)
+    # 仅返回系统助手 + 本人创建的；匿名用户只能看到自己创建的
     result = await db.execute(
-        select(AIAssistant).where(AIAssistant.is_deleted == False).order_by(AIAssistant.name)  # noqa: E712
+        assistants_visible_to(user.id, is_guest=bool(getattr(user, "is_guest", False)))
+        .where(AIAssistant.is_deleted == False)  # noqa: E712
+        .order_by(AIAssistant.name)
     )
     return [_assistant_to_out(a) for a in result.scalars().all()]
 
@@ -552,7 +576,10 @@ async def update_assistant(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(AIAssistant).where(AIAssistant.id == assistant_id, AIAssistant.is_deleted == False))  # noqa: E712
+    # 归属校验：只能改自己创建的助手（系统助手与他人助手不可改）
+    result = await db.execute(
+        owned_assistant(user.id, assistant_id).where(AIAssistant.is_deleted == False)  # noqa: E712
+    )
     a = result.scalar_one_or_none()
     if not a:
         raise NotFoundException("AIAssistant")
@@ -572,7 +599,9 @@ async def delete_assistant(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(AIAssistant).where(AIAssistant.id == assistant_id, AIAssistant.is_deleted == False))  # noqa: E712
+    result = await db.execute(
+        owned_assistant(user.id, assistant_id).where(AIAssistant.is_deleted == False)  # noqa: E712
+    )
     a = result.scalar_one_or_none()
     if not a:
         raise NotFoundException("AIAssistant")
@@ -588,7 +617,14 @@ async def clone_assistant(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(AIAssistant).where(AIAssistant.id == assistant_id, AIAssistant.is_deleted == False))  # noqa: E712
+    # 克隆是「读」操作：允许克隆可见范围内的助手（系统助手也可克隆为个人副本）
+    result = await db.execute(
+        assistants_visible_to(user.id, is_guest=bool(getattr(user, "is_guest", False)))
+        .where(
+            AIAssistant.id == assistant_id,
+            AIAssistant.is_deleted == False,  # noqa: E712
+        )
+    )
     src = result.scalar_one_or_none()
     if not src:
         raise NotFoundException("AIAssistant")
@@ -911,6 +947,13 @@ async def get_assistant_skills(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # 归属校验：只能读取可见范围内助手的技能绑定
+    visible = await db.execute(
+        assistants_visible_to(user.id, is_guest=bool(getattr(user, "is_guest", False)))
+        .where(AIAssistant.id == assistant_id, AIAssistant.is_deleted == False)  # noqa: E712
+    )
+    if visible.scalar_one_or_none() is None:
+        raise NotFoundException("AIAssistant")
     result = await db.execute(
         select(AIAssistantSkillBinding)
         .where(
@@ -937,6 +980,12 @@ async def save_assistant_skills(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # 归属校验：只能配置自己创建的助手（系统助手与其他用户的助手不可改）
+    owned = await db.execute(
+        owned_assistant(user.id, assistant_id).where(AIAssistant.is_deleted == False)  # noqa: E712
+    )
+    if owned.scalar_one_or_none() is None:
+        raise NotFoundException("AIAssistant")
     for item in items:
         result = await db.execute(
             select(AIAssistantSkillBinding).where(
@@ -1047,6 +1096,7 @@ async def chat_stream(
             model_id=body.model_id,
             attachment_ids=body.attachment_ids,
             force_skills=body.force_skills,
+            is_guest=bool(getattr(user, "is_guest", False)),
         )
     except ChatPreparationError as exc:
         async def _prep_error():

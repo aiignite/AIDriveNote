@@ -1,7 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
-import { AuthProvider } from './contexts/AuthContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { AppProvider } from './contexts/AppContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import AdminRoute from './components/AdminRoute';
@@ -61,6 +61,27 @@ const withSuspense = (node: React.ReactNode) => (
   <Suspense fallback={<PageLoader />}>{node}</Suspense>
 );
 
+/**
+ * 设置首页重定向：匿名账号不能进 AI 设置，落到「离线缓存」。
+ * 否则 /settings 默认跳 models，会触发 aiApi 请求并返回 403。
+ */
+const SettingsIndexRedirect: React.FC = () => {
+  const { isGuest, isLoading } = useAuth();
+  if (isLoading) return null;
+  return <Navigate to={isGuest ? 'offline' : 'models'} replace />;
+};
+
+/**
+ * 匿名账号禁用的设置子路由守卫：直连 URL 时统一退回「离线缓存」。
+ * 与后端 require_not_guest 呼应，避免前端先渲染再报 403。
+ */
+const GuestDisabledRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isGuest, isLoading } = useAuth();
+  if (isLoading) return null;
+  if (isGuest) return <Navigate to="/settings/offline" replace />;
+  return <>{children}</>;
+};
+
 const basename = (import.meta.env.VITE_BASE_PATH || '/').replace(/\/$/, '') || undefined;
 
 const App: React.FC = () => (
@@ -79,10 +100,10 @@ const App: React.FC = () => (
             path="/settings"
             element={<ProtectedRoute>{withSuspense(<SettingsRoute />)}</ProtectedRoute>}
           >
-            <Route index element={<Navigate to="models" replace />} />
-            <Route path="models" element={withSuspense(<AIModelsPage />)} />
-            <Route path="assistants" element={withSuspense(<AIAssistantsPage />)} />
-            <Route path="skills" element={withSuspense(<AISkillsPage />)} />
+            <Route index element={<SettingsIndexRedirect />} />
+            <Route path="models" element={<GuestDisabledRoute>{withSuspense(<AIModelsPage />)}</GuestDisabledRoute>} />
+            <Route path="assistants" element={<GuestDisabledRoute>{withSuspense(<AIAssistantsPage />)}</GuestDisabledRoute>} />
+            <Route path="skills" element={<GuestDisabledRoute>{withSuspense(<AISkillsPage />)}</GuestDisabledRoute>} />
             <Route path="asr" element={withSuspense(<ASRSettingsPage />)} />
             <Route path="common-terms" element={withSuspense(<CommonTermsPage />)} />
             <Route path="sync" element={withSuspense(<SyncSettingsPage />)} />

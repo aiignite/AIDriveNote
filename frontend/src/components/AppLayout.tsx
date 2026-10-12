@@ -12,16 +12,19 @@ import InstallPrompt from './InstallPrompt';
 const AISidebar = lazy(() => import('../components/ai/AISidebar'));
 
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, logout } = useAuth();
+  const { user, logout, isGuest } = useAuth();
   const { theme, toggleTheme, openAI, aiOpen, sidebarWidth, setSidebarWidth } = useApp();
   const isDark = theme === 'dark';
   const isMobile = useIsMobile();
 
+  // 匿名账号禁用 AI：后端 router 级 require_not_guest 会返回 403，
+  // 这里直接不发请求，避免控制台报错与无意义的失败重试。
   useEffect(() => {
+    if (isGuest) return;
     void aiApi.getSettings().then(s => {
       if (s.sidebarWidth) setSidebarWidth(s.sidebarWidth);
     }).catch(() => {});
-  }, [setSidebarWidth]);
+  }, [setSidebarWidth, isGuest]);
 
   // 空闲时预取设置页 chunk：设置页是高频入口，提前把代码拉进本地缓存，
   // 点击「设置」时可直接渲染，省去一次跨机房往返（约 0.7s）。
@@ -50,6 +53,8 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }, []);
 
   useEffect(() => {
+    // 匿名账号不注册 AI 快捷键：既然后端禁用且按钮已隐藏，⌘J 不应再唤出侧栏
+    if (isGuest) return;
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
@@ -58,7 +63,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [openAI]);
+  }, [openAI, isGuest]);
 
   const aiPadding = isMobile ? 0 : (aiOpen ? sidebarWidth : 0);
 
@@ -73,9 +78,11 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           </span>
         </Link>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => openAI()} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="AI 助手 (⌘J)">
-            <Bot size={18} className="text-orange-500" />
-          </button>
+          {!isGuest && (
+            <button type="button" onClick={() => openAI()} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="AI 助手 (⌘J)">
+              <Bot size={18} className="text-orange-500" />
+            </button>
+          )}
           <Link to="/settings" className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="设置">
             <Settings size={18} className={isDark ? 'text-gray-300' : 'text-gray-600'} />
           </Link>

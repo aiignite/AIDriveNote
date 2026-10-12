@@ -4,12 +4,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.ai import AIModel, UserAISettings
-from app.services.ai_providers.base import AIProviderConfig
+from app.models.ai import AIModel
+from app.services.ai.ownership import find_model_by_ref, resolve_default_model
 from app.services.secret_crypto import decrypt_secret
 
 
@@ -33,39 +32,23 @@ class LLMRouter:
         assistant_model: str | None = None,
         request_model: str | None = None,
         temperature: float | None = None,
+        is_guest: bool = False,
     ) -> ProviderResolution:
+        """解析本次请求使用的模型。
+
+        **所有候选查询都限定在当前用户可见范围内**（本人创建的 + 系统种子）。
+        匿名用户（``is_guest=True``）只能使用自己创建的模型，不含系统种子——
+        种子通常指向管理员配置的付费 Key，不应对外暴露。
+        """
         settings = get_settings()
         model_ref = request_model or assistant_model
 
         ai_model: AIModel | None = None
         if model_ref:
-            result = await db.execute(
-                select(AIModel).where(
-                    AIModel.is_deleted == False,  # noqa: E712
-                    or_(AIModel.name == model_ref, AIModel.model_id == model_ref),
-                )
-            )
-            ai_model = result.scalar_one_or_none()
+            ai_model = await find_model_by_ref(db, user_id, model_ref, is_guest=is_guest)
 
         if not ai_model:
-            us_result = await db.execute(
-                select(UserAISettings).where(UserAISettings.user_id == user_id)
-            )
-            user_settings = us_result.scalar_one_or_none()
-            if user_settings and user_settings.default_model_name:
-                result = await db.execute(
-                    select(AIModel).where(
-                        AIModel.name == user_settings.default_model_name,
-                        AIModel.is_deleted == False,  # noqa: E712
-                    )
-                )
-                ai_model = result.scalar_one_or_none()
-
-        if not ai_model:
-            result = await db.execute(
-                select(AIModel).where(AIModel.is_deleted == False).limit(1)  # noqa: E712
-            )
-            ai_model = result.scalar_one_or_none()
+            ai_model = await resolve_default_model(db, user_id, is_guest=is_guest)
 
         if ai_model:
             model_ref_lower = f"{ai_model.name} {ai_model.model_id}".lower()
@@ -84,6 +67,11 @@ class LLMRouter:
                 supports_image=bool(ai_model.supports_image) or vision_name_hint,
             )
 
+        # 库中无可用模型时的兜底：
+        # 匿名用户绝不能回退到 env 配置（那是站点所有者的模型与 Key），直接失败。
+        if is_guest:
+            raise NoAvailableModelError()
+
         return ProviderResolution(
             provider="OLLAMA",
             model_id=settings.OLLAMA_MODEL,
@@ -91,3 +79,15 @@ class LLMRouter:
             endpoint=settings.OLLAMA_BASE_URL,
             temperature=temperature or 0.4,
         )
+
+
+class NoAvailableModelError(Exception):
+    """当前用户作用域内没有任何可用模型。
+
+    目前仅匿名用户会触发：他们的数据到期即被清除，不能也不应借用
+    系统管理员配置的模型与环境变量兜底。
+    """
+
+    def __str__(self) -> str:
+        return "当前没有可用的 AI 模型，请先在「设置 → 模型」中添加一个模型后再使用 AI 功能"
+
