@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from uuid import UUID
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
@@ -21,6 +22,12 @@ logger = logging.getLogger(__name__)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 settings = get_settings()
 
+# 匿名账号心跳的落库节流：user_id → 上次写入 last_seen_at 的单调时钟读数。
+# 每个请求都写库会给匿名会话带来无谓的 UPDATE，故按 PURGE_INTERVAL 节流；
+# 30 分钟的宽限期对比 5 分钟的精度绰绰有余。
+_last_seen_writes: dict[str, float] = {}
+_LAST_SEEN_MAX_ENTRIES = 10_000
+
 
 async def _resolve_bearer_token(
     request: Request,
@@ -36,6 +43,60 @@ async def _resolve_bearer_token(
     if auth_header and auth_header.startswith("Bearer "):
         return auth_header[7:], False
     return None, False
+
+
+def extract_client_ip(request: Request) -> str | None:
+    """提取真实客户端 IP。
+
+    nginx 已透传 ``X-Forwarded-For`` 与 ``X-Real-IP``（见 frontend/nginx.conf）。
+    ``X-Forwarded-For`` 是「客户端, 代理1, 代理2」逗号串，**只取第一段**——
+    尾段可被客户端伪造，取首位才是链路最上游的地址。
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first[:45]
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()[:45]
+    if request.client:
+        return request.client.host[:45]
+    return None
+
+
+def _should_write_last_seen(user: User) -> bool:
+    """按节流间隔判断本次请求是否需要真正落库 ``last_seen_at``。"""
+    now = time.monotonic()
+    key = str(user.id)
+    last = _last_seen_writes.get(key)
+    if last is not None and now - last < settings.GUEST_PURGE_INTERVAL_SECONDS:
+        return False
+    if len(_last_seen_writes) >= _LAST_SEEN_MAX_ENTRIES:
+        # 长期运行下条目只增不减，按写入时间粗粒度清理过期项，避免内存无界增长
+        cutoff = now - settings.GUEST_PURGE_INTERVAL_SECONDS
+        for stale in [k for k, v in _last_seen_writes.items() if v < cutoff]:
+            _last_seen_writes.pop(stale, None)
+        if len(_last_seen_writes) >= _LAST_SEEN_MAX_ENTRIES:
+            _last_seen_writes.clear()
+    _last_seen_writes[key] = now
+    return True
+
+
+async def _touch_guest_last_seen(db: AsyncSession, user: User) -> None:
+    """认证成功后刷新匿名账号的存活时间（节流写库）。"""
+    if not getattr(user, "is_guest", False):
+        return
+    if not _should_write_last_seen(user):
+        return
+    from app.services.guest_service import GuestService
+
+    try:
+        await GuestService.touch(db, user)
+        await db.commit()
+    except Exception:  # noqa: BLE001 — 心跳失败不应影响正常请求
+        logger.warning("刷新匿名账号存活时间失败 user=%s", user.id, exc_info=True)
+        await db.rollback()
 
 
 async def get_current_user(
@@ -57,6 +118,7 @@ async def get_current_user(
         user = await ApiTokenService.authenticate(db, token)
         if user is None:
             raise credentials_exception
+        await _touch_guest_last_seen(db, user)
         return user
 
     if is_sso and settings.SSO_ENABLED:
@@ -65,6 +127,7 @@ async def get_current_user(
             user, changed = await SSOService.sync_user_from_claims(db, claims)
             if changed:
                 await db.commit()
+            await _touch_guest_last_seen(db, user)
             return user
         except JWTError as exc:
             logger.warning("SSO JWT decode failed: %s", exc)
@@ -86,11 +149,13 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None or user.status != "Active":
         raise credentials_exception
+    await _touch_guest_last_seen(db, user)
     return user
 
 
 async def get_current_user_interactive(
     request: Request,
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> User:
     """仅允许交互式会话（JWT / SSO）的依赖。
@@ -110,10 +175,54 @@ async def get_current_user_interactive(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="访问令牌不能用于管理访问令牌，请使用网页登录会话",
             )
+    # 匿名账号数据到期即被清除，签发的长期令牌会变成无主凭据，故一律禁止
+    if getattr(user, "is_guest", False):
+        await _record_blocked_event(request, user, "api_token_not_allowed", db)
+        raise ForbiddenException("匿名模式下无法使用访问令牌功能，请登录后使用")
     return user
 
 
 async def get_current_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise ForbiddenException("Admin access required")
+    return user
+
+
+async def _record_blocked_event(
+    request: Request, user: User, detail: str, db: AsyncSession | None = None,
+) -> None:
+    """记录一次「匿名用户命中禁用功能」的事件。
+
+    旁路写入：失败不影响 403 的正常返回。``detail`` 固定为枚举常量，
+    不携带任何用户输入。
+    """
+    try:
+        from app.models.guest_event import GuestEventType
+        from app.services.guest_event_service import GuestEventService
+
+        await GuestEventService.record_in_new_session(
+            db=db,
+            guest_id=user.id,
+            event_type=GuestEventType.BLOCKED,
+            ip_address=extract_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            detail=detail,
+        )
+    except Exception:  # noqa: BLE001 — 审计旁路
+        logger.warning("记录匿名禁用事件失败 detail=%s", detail, exc_info=True)
+
+
+async def require_not_guest(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> User:
+    """禁止匿名账号使用的功能守卫。
+
+    用于录音转写、发邮件、访问令牌等：这些能力要么消耗服务端资源，要么会把
+    匿名数据带出系统，而匿名账号的数据随时会被清除，留下的将是无主残留。
+    """
+    if getattr(user, "is_guest", False):
+        await _record_blocked_event(request, user, "feature_not_allowed", db)
+        raise ForbiddenException("该功能在匿名模式下不可用，请登录后使用")
     return user

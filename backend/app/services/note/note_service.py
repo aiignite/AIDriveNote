@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.exceptions import BadRequestException
 from app.models.note import Note, NoteFavorite, NoteFolder, NoteNoteTag, NoteTemplate
+from app.models.user import User
 from app.services.note.rich_text_blocks import merge_rich_text_blocks
 
 logger = logging.getLogger(__name__)
@@ -267,17 +268,40 @@ class NoteService:
         return list(result.scalars().all()), total
 
     @staticmethod
+    async def _resolve_max_notes(db: AsyncSession, owner_id) -> int:
+        """取该用户的笔记数量上限。
+
+        匿名账号走更低的 ``GUEST_MAX_NOTES``：其数据到期即被清除，
+        但在存活期间仍占用服务端存储与 AI 索引资源，不应与正式账号同配额。
+        """
+        settings = get_settings()
+        if not owner_id:
+            return settings.USER_MAX_NOTES
+        try:
+            result = await db.execute(
+                select(User.is_guest).where(User.id == owner_id)
+            )
+            is_guest = result.scalar_one_or_none()
+        except Exception:  # noqa: BLE001 — 查询失败时按普通用户处理，不阻断建笔记
+            is_guest = None
+        if is_guest:
+            guest_max = settings.GUEST_MAX_NOTES
+            return guest_max if guest_max > 0 else settings.USER_MAX_NOTES
+        return settings.USER_MAX_NOTES
+
+    @staticmethod
     async def create_note(db: AsyncSession, data: dict) -> Note:
         """创建笔记。
 
         编号由 ``_next_note_no`` 生成；极端并发下（数据库函数不可用且退回
         MAX+1）仍可能撞唯一约束，这里捕获后重试数次，避免 500 直接失败。
 
-        单用户笔记总量受 ``USER_MAX_NOTES`` 约束（含回收站）：所有创建路径
-        （路由 / 复制 / 模板 / AI 工具 / MCP）都汇聚到这里，超限一律拒绝。
+        单用户笔记总量含回收站：所有创建路径（路由 / 复制 / 模板 / AI 工具 / MCP）
+        都汇聚到这里，超限一律拒绝。正式用户按 ``USER_MAX_NOTES``，匿名用户按更低的
+        ``GUEST_MAX_NOTES``（见 :meth:`_resolve_max_notes`）。
         """
-        max_notes = get_settings().USER_MAX_NOTES
         owner_id = data.get("created_by")
+        max_notes = await NoteService._resolve_max_notes(db, owner_id)
         if max_notes > 0 and owner_id:
             total = (
                 await db.execute(

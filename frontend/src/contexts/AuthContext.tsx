@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { authApi } from '../services/auth';
+import { authApi, type AuthUser } from '../services/auth';
 import {
   isAuthenticated,
   isNetworkError,
@@ -13,12 +13,16 @@ import {
 import { bindUser } from '../services/offline/noteCache';
 
 interface AuthContextValue {
-  user: { id: string; email: string; name: string; status: string; role: string } | null;
+  user: AuthUser | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  /** 匿名登录：创建本次会话的独立账号，数据到期后由服务器清除 */
+  guestLogin: () => Promise<void>;
   /** 三步式注册的最后一步：验码消费 + 激活账号，成功后自动登录 */
   register: (email: string, password: string, code: string) => Promise<void>;
   logout: () => void;
+  /** 当前是否为匿名账号：UI 据此隐藏访问令牌/录音/本地同步等入口 */
+  isGuest: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -26,7 +30,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // 本地快照用于首屏秒开：有快照时立即视为已登录并渲染，/auth/me 改为后台静默校验，
   // 避免跨机房一次往返（约 0.7s）造成的整屏白屏等待。
-  const [user, setUser] = useState<AuthContextValue['user']>(() => readCachedUser());
+  const [user, setUser] = useState<AuthUser | null>(() => readCachedUser());
   const [isLoading, setIsLoading] = useState(() => !readCachedUser());
   const nav = useNavigate();
 
@@ -101,6 +105,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     nav('/');
   }, [nav]);
 
+  const guestLogin = useCallback(async () => {
+    // 与普通登录同构：服务端签发的是标准 JWT，笔记与 AI 接口无需特殊处理
+    const { user: guestUser } = await authApi.guestLogin();
+    writeCachedUser(guestUser);
+    setUser(guestUser);
+    nav('/');
+  }, [nav]);
+
   const register = useCallback(async (email: string, password: string, code: string) => {
     // 验证码在前两步已校验，此处完成注册（消费验证码 + 激活账号）后直接登录
     await authApi.completeRegister(email, code, password);
@@ -108,15 +120,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [login]);
 
   const logout = useCallback(() => {
+    // 先通知服务端：匿名账号据此立即清除数据，不必再等 30 分钟宽限期。
+    // fire-and-forget，且 notifyLogout 内部已吞掉所有异常，绝不阻塞本地登出。
+    void authApi.notifyLogout();
     // authApi.logout 内部调用 setAuthTokens(null)，会一并清除本地用户快照
+    // 与离线缓存（IndexedDB），满足「登出时清空本地数据」
     authApi.logout();
     setUser(null);
     nav('/login');
   }, [nav]);
 
   const value = useMemo(
-    () => ({ user, isLoading, login, register, logout }),
-    [user, isLoading, login, register, logout],
+    () => ({ user, isLoading, login, guestLogin, register, logout, isGuest: user?.isGuest === true }),
+    [user, isLoading, login, guestLogin, register, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

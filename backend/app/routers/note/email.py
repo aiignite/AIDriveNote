@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
+from app.auth import require_not_guest
 from app.database import get_db
 from app.exceptions import ForbiddenException, NotFoundException
 from app.models.user import User
@@ -42,11 +42,12 @@ class NoteEmailSendResult(BaseModel):
 async def send_note_email(
     payload: NoteEmailSend,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_not_guest),
 ) -> NoteEmailSendResult:
     """把指定笔记渲染成 HTML 正文并发送。
 
     仅笔记所有者或具备编辑权的协作者可发送，避免把他人私有笔记外泄。
+    匿名账号禁用：防止匿名会话被用作邮件发送跳板（``require_not_guest``）。
     """
     note = await NoteService.get_note(db, payload.note_id)
     if not note:

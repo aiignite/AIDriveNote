@@ -38,6 +38,12 @@ services:
       SELF_REGISTRATION_ENABLED: "${SELF_REGISTRATION_ENABLED:-false}"
       USER_MAX_NOTES: "${USER_MAX_NOTES:-100}"
       USER_MAX_UPLOAD_BYTES: "${USER_MAX_UPLOAD_BYTES:-2097152}"
+      # 匿名登录：免注册使用，数据不长期保存——超过宽限期无请求即被物理清除
+      GUEST_LOGIN_ENABLED: "${GUEST_LOGIN_ENABLED:-true}"
+      GUEST_IDLE_TIMEOUT_MINUTES: "${GUEST_IDLE_TIMEOUT_MINUTES:-30}"
+      GUEST_PURGE_INTERVAL_SECONDS: "${GUEST_PURGE_INTERVAL_SECONDS:-300}"
+      GUEST_MAX_NOTES: "${GUEST_MAX_NOTES:-50}"
+      GUEST_EVENTS_ENABLED: "${GUEST_EVENTS_ENABLED:-true}"
       # 单条录音上限 25MB；nginx 各层 client_max_body_size 须 ≥ 此值 + 1MB
       NOTE_MAX_RECORDING_BYTES: "${NOTE_MAX_RECORDING_BYTES:-26214400}"
       # 生产环境关闭 /docs /redoc /openapi.json，避免对外暴露完整接口结构

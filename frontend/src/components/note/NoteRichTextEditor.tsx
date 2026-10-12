@@ -35,6 +35,7 @@ import type {
   NoteOutlineItem,
   NoteOutlineState,
 } from '../../utils/noteCommands';
+import { useAuth } from '../../contexts/AuthContext';
 import '@blocknote/core/fonts/inter.css';
 import '@blocknote/mantine/style.css';
 
@@ -242,6 +243,8 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const [recordingDot, setRecordingDot] = useState<RecordingDotState>('idle');
   /** insertBlocksAfterCursor 的稳定引用（供录音浮窗插入转写内容） */
   const insertBlocksAfterCursorRef = useRef<((blocks: PartialBlock[]) => void) | null>(null);
+  /** 匿名账号禁用录音转写：数据到期即清除，且转写会占用服务端算力 */
+  const { isGuest } = useAuth();
 
   /** 录音浮窗命令式句柄：工具栏麦克风按钮直接驱动开始 / 停止录音 */
   const recordingPanelRef = useRef<NoteRecordingPanelHandle>(null);
@@ -977,17 +980,20 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
             title="拍照录入"
             onCaptured={uploadAndInsertImage}
           />
-          <button
-            ref={recordingAnchorRef}
-            type="button"
-            className={`${btnCls} relative`}
-            onClick={handleMicClick}
-            aria-expanded={recordingOpen}
-            title={recordingDot === 'recording' ? '停止录音' : '录音转写'}
-          >
-            <Mic size={16} />
-            <RecordingStatusDot state={recordingDot} />
-          </button>
+          {/* 录音转写：匿名账号不可用（后端 require_not_guest 同样拦截） */}
+          {!isGuest && (
+            <button
+              ref={recordingAnchorRef}
+              type="button"
+              className={`${btnCls} relative`}
+              onClick={handleMicClick}
+              aria-expanded={recordingOpen}
+              title={recordingDot === 'recording' ? '停止录音' : '录音转写'}
+            >
+              <Mic size={16} />
+              <RecordingStatusDot state={recordingDot} />
+            </button>
+          )}
           <button
             type="button"
             className={`${btnCls} ${speech.listening ? 'text-red-500' : ''}`}
@@ -1031,8 +1037,8 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
         className="hidden"
         onChange={handleImageFileChange}
       />
-      {/* 录音浮窗：锚定在工具栏麦克风按钮下方的小面板（非全屏抽屉） */}
-      {!readOnly && (
+      {/* 录音浮窗：锚定在工具栏麦克风按钮下方的小面板（非全屏抽屉）；匿名账号不渲染 */}
+      {!readOnly && !isGuest && (
         <NoteRecordingPanel
           ref={recordingPanelRef}
           open={recordingOpen}

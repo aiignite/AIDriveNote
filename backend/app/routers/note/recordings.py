@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import _resolve_bearer_token, get_current_user
+from app.auth import _resolve_bearer_token, get_current_user, require_not_guest
 from app.config import get_settings
 from app.database import get_db
 from app.exceptions import (
@@ -178,7 +178,7 @@ async def upload_recording(
     duration_seconds: float | None = Form(default=None, description="客户端上报的音频时长（秒）"),
     language: str | None = Form(default=None, description="识别语言，如 zh-CN"),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """上传音频文件，创建录音记录。
 
@@ -250,7 +250,7 @@ async def list_recordings(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """列出录音：指定 ``note_id`` 时按笔记过滤，否则列出当前用户全部录音。"""
     if note_id is not None:
@@ -279,7 +279,7 @@ async def list_recordings(
 async def get_recording(
     recording_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """获取录音详情（含已生成的全部转写分段）。"""
     recording = await _recording_service.get_recording_detail(db, recording_id)
@@ -297,7 +297,7 @@ async def get_recording(
 async def get_recording_transcript(
     recording_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """获取转写状态与分段，供前端 2 秒轮询。"""
     recording = await _recording_service.get_recording_detail(db, recording_id)
@@ -354,7 +354,7 @@ async def retranscribe_recording(
     recording_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """重置录音状态并重新触发转写（失败时立即返回 400，不进入后台）。"""
     recording = await _recording_service.get_recording_detail(db, recording_id)
@@ -387,7 +387,7 @@ async def retranscribe_recording(
 async def refine_recording(
     recording_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """重新调用 LLM 对转写文本做去重 / 同音字修复 / 顺句 / 标点 / 分段。"""
     recording = await _recording_service.get_recording_detail(db, recording_id)
@@ -412,7 +412,7 @@ async def refine_recording(
 async def delete_recording(
     recording_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """软删除录音并清理磁盘文件。"""
     try:

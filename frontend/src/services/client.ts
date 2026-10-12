@@ -95,6 +95,9 @@ export function readCachedUser(): AuthUser | null {
       name: String(parsed.name ?? ''),
       status: String(parsed.status ?? ''),
       role: String(parsed.role ?? ''),
+      // 匿名标记必须随快照保留：首屏据此决定隐藏哪些入口，
+      // 若丢失会在后台校验返回前短暂显示普通用户的全部菜单
+      isGuest: parsed.isGuest === true,
     };
   } catch {
     return null;

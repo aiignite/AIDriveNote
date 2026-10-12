@@ -167,6 +167,50 @@ class NoteAssetService:
         return found
 
     @staticmethod
+    def find_asset_hashes(content: dict | None) -> set[str]:
+        """递归收集 content 中引用的资产哈希（sha256）。
+
+        正文里的图片 URL 形如 ``/api/v1/notes/assets/{hash}.{ext}``。匿名用户
+        数据清除时需要据此定位磁盘文件（资产为内容寻址、不按用户隔离，
+        只能从正文反推），因此单独提供该提取器。
+        """
+        hashes: set[str] = set()
+
+        def _walk(node: object) -> None:
+            if isinstance(node, dict):
+                for value in node.values():
+                    _walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+            elif isinstance(node, str):
+                for match in _HASH_URL_RE.finditer(node):
+                    hashes.add(match.group("hash"))
+
+        _walk(content)
+        return hashes
+
+    @staticmethod
+    def delete_asset(file_hash: str, ext: str) -> bool:
+        """删除磁盘上的单个资产文件。文件不存在时返回 False。
+
+        资产为全局内容寻址且可能被多篇笔记共用，**调用方必须先确认引用数归零**，
+        否则会误删他人笔记中同图的副本。
+        """
+        if not re.fullmatch(r"[0-9a-f]{64}", file_hash or "", re.IGNORECASE):
+            raise BadRequestException("非法的资源哈希")
+        ext = (ext or "").lstrip(".").lower()
+        if not re.fullmatch(r"[a-z0-9]+", ext or "", re.IGNORECASE):
+            raise BadRequestException("非法的资源扩展名")
+        try:
+            target = _resolve(f"{file_hash[:2]}/{file_hash}.{ext}")
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("删除资产失败 %s.%s: %s", file_hash[:8], ext, exc)
+            return False
+        return True
+
+    @staticmethod
     def replace_data_url(content: dict | None, data_url: str, url: str) -> dict | None:
         """把 content 中所有等于 ``data_url`` 的字符串替换为 ``url``（原地返回新对象）。"""
         if not isinstance(content, dict):

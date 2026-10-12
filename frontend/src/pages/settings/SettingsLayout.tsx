@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { ArrowLeft, Bot, Brain, BookOpen, CloudOff, FolderSync, KeyRound, Mic, Save, Settings, Sparkles, Users } from 'lucide-react';
+import { Activity, ArrowLeft, Bot, Brain, BookOpen, CloudOff, FolderSync, KeyRound, Mic, Save, Settings, Sparkles, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../../contexts/AppContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -17,8 +17,24 @@ const aiNavItems = [
   { to: '/settings/tokens', label: '访问令牌', icon: KeyRound, accent: 'orange' as const },
 ];
 
+/**
+ * 匿名账号禁用的入口（后端同样以 require_not_guest 拦截，此处只是先隐藏 UI）。
+ *
+ * - 本地同步 / 访问令牌：数据会被写到浏览器本地目录或签发长期凭据，
+ *   而匿名数据到期即清除，届时将留下无主残留；
+ * - 语音转写 / 常用词库：这两处是全局单行配置，其 created_by 只是展示用字符串
+ *   而非外键，匿名账号的写入无法按用户回收，会污染全体用户的配置。
+ */
+const guestHiddenPaths = new Set([
+  '/settings/sync',
+  '/settings/tokens',
+  '/settings/asr',
+  '/settings/common-terms',
+]);
+
 const adminNavItems = [
   { to: '/settings/users', label: '用户管理', icon: Users, accent: 'indigo' as const },
+  { to: '/settings/guest-events', label: '匿名事件', icon: Activity, accent: 'indigo' as const },
 ];
 
 const navLinkClass = (
@@ -41,7 +57,7 @@ const navLinkClass = (
 
 const SettingsLayout: React.FC = () => {
   const { theme } = useApp();
-  const { user } = useAuth();
+  const { user, isGuest } = useAuth();
   const location = useLocation();
   const isDark = theme === 'dark';
   const [models, setModels] = useState<AIModel[]>([]);
@@ -51,10 +67,12 @@ const SettingsLayout: React.FC = () => {
 
   const showPreferences = !location.pathname.includes('/settings/users');
 
-  const navItems = useMemo(
-    () => [...aiNavItems, ...(user?.role === 'admin' ? adminNavItems : [])],
-    [user?.role],
-  );
+  const navItems = useMemo(() => {
+    const visibleAiItems = isGuest
+      ? aiNavItems.filter(item => !guestHiddenPaths.has(item.to))
+      : aiNavItems;
+    return [...visibleAiItems, ...(user?.role === 'admin' ? adminNavItems : [])];
+  }, [user?.role, isGuest]);
 
   useEffect(() => {
     void (async () => {

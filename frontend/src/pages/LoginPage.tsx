@@ -6,17 +6,23 @@ import { authApi } from '../services/auth';
 import Logo from '../components/Logo';
 
 const LoginPage: React.FC = () => {
-  const { login, user, isLoading } = useAuth();
+  const { login, guestLogin, user, isLoading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
   /** 后端未开放自助注册时隐藏「注册」入口（公网测试部署仅管理员建号） */
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
+  /** 后端未开放匿名登录时隐藏「匿名使用」入口 */
+  const [guestEnabled, setGuestEnabled] = useState(true);
 
   useEffect(() => {
     authApi.getConfig()
-      .then(cfg => setRegistrationEnabled(Boolean(cfg.registrationEnabled)))
-      .catch(() => { /* 查询失败按默认展示，注册页仍会被后端拦截 */ });
+      .then(cfg => {
+        setRegistrationEnabled(Boolean(cfg.registrationEnabled));
+        setGuestEnabled(Boolean(cfg.guestLoginEnabled));
+      })
+      .catch(() => { /* 查询失败按默认展示，后端仍会拦截 */ });
   }, []);
 
   if (!isLoading && user) {
@@ -32,6 +38,17 @@ const LoginPage: React.FC = () => {
       toast.error(err instanceof Error ? err.message : '登录失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGuestLogin = async () => {
+    setGuestLoading(true);
+    try {
+      await guestLogin();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '匿名登录失败');
+    } finally {
+      setGuestLoading(false);
     }
   };
 
@@ -70,6 +87,27 @@ const LoginPage: React.FC = () => {
           <p className="text-sm text-center mt-4 text-gray-500">
             没有账号？ <Link to="/register" className="text-orange-600 hover:underline">注册</Link>
           </p>
+        )}
+        {guestEnabled && (
+          <>
+            <div className="flex items-center gap-3 my-5">
+              <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+              <span className="text-xs text-gray-400 dark:text-gray-500">或</span>
+              <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleGuestLogin()}
+              disabled={guestLoading || loading}
+              className="w-full rounded-lg border border-orange-300 dark:border-orange-800 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-950/40 py-2.5 font-semibold disabled:opacity-50 transition-colors"
+            >
+              {guestLoading ? '进入中…' : '匿名使用'}
+            </button>
+            <p className="text-xs text-center mt-3 text-gray-400 dark:text-gray-500 leading-relaxed">
+              无需注册即可使用全部笔记功能与 AI 助手。<br />
+              数据仅临时保存在服务器，30 分钟无操作后自动清除。
+            </p>
+          </>
         )}
       </form>
     </div>

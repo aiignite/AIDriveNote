@@ -15,6 +15,7 @@ const AISkillsPage = lazy(() => import('./pages/settings/AISkillsPage'));
 const ASRSettingsPage = lazy(() => import('./pages/settings/ASRSettingsPage'));
 const CommonTermsPage = lazy(() => import('./pages/settings/CommonTermsPage'));
 const UsersPage = lazy(() => import('./pages/settings/UsersPage'));
+const GuestEventsPage = lazy(() => import('./pages/settings/GuestEventsPage'));
 const SyncSettingsPage = lazy(() => import('./pages/settings/SyncSettingsPage'));
 const OfflineSettingsPage = lazy(() => import('./pages/settings/OfflineSettingsPage'));
 const ApiTokensPage = lazy(() => import('./pages/settings/ApiTokensPage'));
@@ -92,6 +93,14 @@ const App: React.FC = () => (
               element={
                 <AdminRoute redirectTo="/settings/models">
                   {withSuspense(<UsersPage />)}
+                </AdminRoute>
+              }
+            />
+            <Route
+              path="guest-events"
+              element={
+                <AdminRoute redirectTo="/settings/models">
+                  {withSuspense(<GuestEventsPage />)}
                 </AdminRoute>
               }
             />

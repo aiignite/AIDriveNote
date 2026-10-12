@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # 单个上传文件大小上限（笔记图片资产 / AI 对话附件）
     USER_MAX_UPLOAD_BYTES: int = 2 * 1024 * 1024
 
+    # ── 匿名登录（Guest）──
+    # 是否开放匿名登录入口；关闭后 /auth/guest 返回 403，前端隐藏按钮
+    GUEST_LOGIN_ENABLED: bool = True
+    # 离线宽限期（分钟）：匿名用户超过该时长无任何请求即被后台任务物理清除
+    GUEST_IDLE_TIMEOUT_MINUTES: int = 30
+    # 清除任务扫描间隔（秒）；同时作为 last_seen_at 的落库节流间隔
+    GUEST_PURGE_INTERVAL_SECONDS: int = 300
+    # 匿名用户的独立笔记配额（低于普通用户的 USER_MAX_NOTES，防止被用来囤积存储）
+    GUEST_MAX_NOTES: int = 50
+    # 是否记录匿名登录事件（登录信息与会话生命周期，仅元数据）
+    GUEST_EVENTS_ENABLED: bool = True
+
     # ── 笔记版本历史 ──
     # 每篇笔记保留的修订条数上限；超出后按时间淘汰最旧的（恢复前快照不参与淘汰）
     NOTE_REVISION_KEEP: int = 50

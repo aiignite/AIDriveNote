@@ -4,18 +4,22 @@ from __future__ import annotations
 import secrets
 
 from pydantic import BaseModel, EmailStr, Field
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
+from app.auth import extract_client_ip, get_current_user
 from app.config import get_settings
 from app.database import get_db
 from app.exceptions import BadRequestException, ConflictException, ForbiddenException
+from app.models.guest_event import GuestEventType
 from app.models.user import User
 from app.services.admin_bootstrap import AdminBootstrap
 from app.services.auth_service import AuthService
 from app.services.email_verification_service import EmailVerificationService
+from app.services.guest_event_service import GuestEventService
+from app.services.guest_purge_service import GuestPurgeService
+from app.services.guest_service import GuestService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -27,6 +31,16 @@ def _require_registration_enabled() -> None:
     """
     if not get_settings().SELF_REGISTRATION_ENABLED:
         raise ForbiddenException("当前未开放注册，请联系管理员开通账号")
+
+
+def _require_guest_enabled() -> None:
+    """未开放匿名登录时拒绝 ``/auth/guest``。
+
+    与 ``_require_registration_enabled`` 同构：前端通过 ``GET /auth/config``
+    的 ``guest_login_enabled`` 隐藏匿名入口。
+    """
+    if not get_settings().GUEST_LOGIN_ENABLED:
+        raise ForbiddenException("当前未开放匿名登录")
 
 
 class RegisterCodeRequest(BaseModel):
@@ -62,6 +76,17 @@ class UserOut(BaseModel):
     name: str
     status: str
     role: str
+    # 匿名登录标记：前端据此隐藏令牌/录音/同步等入口并提示数据不长期保存
+    is_guest: bool = False
+
+
+def _to_user_out(user: User) -> UserOut:
+    """User → UserOut，统一补齐 ``is_guest``。"""
+    return UserOut(
+        id=str(user.id), email=user.email, name=user.name,
+        status=user.status, role=user.role,
+        is_guest=bool(getattr(user, "is_guest", False)),
+    )
 
 
 class TokenResponse(BaseModel):
@@ -75,8 +100,76 @@ class TokenResponse(BaseModel):
 
 @router.get("/config")
 async def auth_config():
-    """公开的认证配置：前端据此显示/隐藏注册入口（无需登录）。"""
-    return {"registration_enabled": get_settings().SELF_REGISTRATION_ENABLED}
+    """公开的认证配置：前端据此显示/隐藏注册与匿名登录入口（无需登录）。"""
+    settings = get_settings()
+    return {
+        "registration_enabled": settings.SELF_REGISTRATION_ENABLED,
+        "guest_login_enabled": settings.GUEST_LOGIN_ENABLED,
+    }
+
+
+@router.post("/guest", response_model=TokenResponse, dependencies=[Depends(_require_guest_enabled)])
+async def guest_login(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """匿名登录：为本次会话创建一条**独立**账号并签发标准 JWT。
+
+    每次调用都新建一条 ``users`` 行（``is_guest=true`` / ``role=guest``），
+    而不是复用某个共享账号——笔记按 ``created_by`` 隔离，共用账号会导致
+    匿名访客互相看到对方的笔记。
+
+    由于签发的是普通 JWT 且账号状态为 Active，笔记与 AI 全部接口无需任何
+    改动即可使用；账号数据在超过 ``GUEST_IDLE_TIMEOUT_MINUTES`` 无请求后
+    由后台任务物理清除。
+    """
+    user = await GuestService.create_guest(db)
+    await db.commit()
+    await db.refresh(user)
+
+    access_token, expires_in = AuthService.create_access_token(user.id)
+    refresh_token = AuthService.create_refresh_token(user.id)
+
+    # 记录匿名登录信息（仅元数据：IP / UA，不含任何用户内容）
+    await GuestEventService.record_in_new_session(
+        db=db,
+        guest_id=user.id,
+        event_type=GuestEventType.LOGIN,
+        ip_address=extract_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        access_token_expires_in=expires_in,
+        user=_to_user_out(user),
+    )
+
+
+@router.post("/guest/logout")
+async def guest_logout(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """匿名用户主动退出：立即清除其数据，不必再等宽限期到期。
+
+    普通用户调用时仅记一次 logout 事件并正常返回——前端对所有用户共用同一个
+    登出入口，服务端无需为此区分调用方。
+    """
+    if not getattr(user, "is_guest", False):
+        return {"ok": True, "purged": False}
+
+    await GuestEventService.record_in_new_session(
+        guest_id=user.id,
+        event_type=GuestEventType.LOGOUT,
+        ip_address=extract_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    # 走独立会话清除，避免与当前请求的事务互相干扰
+    await GuestPurgeService.purge_guest(user.id, reason="logout")
+    return {"ok": True, "purged": True}
 
 
 @router.post("/register/request", dependencies=[Depends(_require_registration_enabled)])
@@ -147,9 +240,7 @@ async def register_complete(body: CompleteRegisterRequest, db: AsyncSession = De
     user.status = "Active"
     await db.commit()
     await db.refresh(user)
-    return UserOut(
-        id=str(user.id), email=user.email, name=user.name, status=user.status, role=user.role,
-    )
+    return _to_user_out(user)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -163,9 +254,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         access_token=access_token,
         refresh_token=refresh_token,
         access_token_expires_in=expires_in,
-        user=UserOut(
-            id=str(user.id), email=user.email, name=user.name, status=user.status, role=user.role,
-        ),
+        user=_to_user_out(user),
     )
 
 
@@ -184,6 +273,4 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(get_current_user)):
-    return UserOut(
-        id=str(user.id), email=user.email, name=user.name, status=user.status, role=user.role,
-    )
+    return _to_user_out(user)

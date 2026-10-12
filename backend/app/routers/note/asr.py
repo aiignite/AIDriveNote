@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_admin, get_current_user
+from app.auth import get_current_admin, get_current_user, require_not_guest
 from app.database import get_db
 from app.exceptions import NotFoundException
 from app.models.note.asr import NoteAsrSettings, NoteCommonTerm
@@ -181,7 +181,7 @@ async def list_common_terms(
 async def create_common_term(
     body: CommonTermCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     """新建常用词条。"""
     data = body.model_dump(exclude_unset=True)
@@ -196,7 +196,7 @@ async def update_common_term(
     term_id: uuid.UUID,
     body: CommonTermUpdate,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_not_guest),
 ):
     """更新常用词条。"""
     data = body.model_dump(exclude_unset=True)
@@ -210,7 +210,7 @@ async def update_common_term(
 async def delete_common_term(
     term_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_not_guest),
 ):
     """软删除常用词条。"""
     ok = await NoteCommonTermService.delete_term(db, term_id)

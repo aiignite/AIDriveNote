@@ -302,6 +302,16 @@ ASR 设置（`/settings/asr`）以数据库为准、覆盖环境变量；网关 
 
 角色分为 `user` 与 `admin`。`ADMIN_EMAIL` 指定的首个注册用户自动成为管理员。管理员可在 `/settings/users` 按关键字 / 角色 / 状态筛选用户，并修改其名称、状态与角色；系统禁止停用或降级自己，也禁止降级最后一名管理员。
 
+### 匿名登录（免注册试用）
+
+登录页提供「匿名使用」入口，无需邮箱密码即可使用全部笔记功能与 AI 助手（含自行创建模型、助手与技能）。
+
+- **每个匿名会话一个独立账号**：这是隐私硬要求。笔记按 `created_by` 隔离，若所有匿名访客共用一个账号，所有人将互相看到对方的笔记。
+- **数据不长期保存**：匿名账号超过 `GUEST_IDLE_TIMEOUT_MINUTES`（默认 30 分钟）无任何请求后，后台定时任务会**物理删除**其笔记、文件夹、标签、AI 会话与附件、上传文件乃至账号行。主动点击「退出」则立即清除，无需等待宽限期。
+- **可用**：笔记全功能（富文本 / Markdown / 思维导图 / 流程图）、AI 对话与工具调用、AI 模型与助手创建、AI 偏好设置。
+- **不可用**：录音转写、本地同步、访问令牌（PAT）、笔记分享、发送到邮箱、语音转写与常用词库设置（后两者是全局配置，匿名写入无法按用户回收）。前端隐藏入口，后端以 `require_not_guest` 拦截。
+- **匿名登录事件**：管理员可在 `/settings/guest-events` 查看匿名用户的登录信息与会话生命周期（类型、时间、IP、User-Agent、存活时长、笔记数）。事件**仅记录元数据**，绝不包含笔记标题或正文；`guest_events` 表刻意不设 `users` 外键，因此账号被清除后事件仍保留，便于统计与审计。管理员还可点击「立即清除超时账号」手动触发。
+
 ### MCP 集成
 
 详见下一节 [MCP 接入](#mcp-接入外部-agent-写入笔记)。
@@ -563,6 +573,11 @@ docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `MINIMAX_API_KEY` | — | 云端模型兜底密钥 |
 | `AI_WEB_SEARCH_ENABLED` / `_TIMEOUT` / `_MAX_RESULTS` | `false` / 10 / 5 | AI 联网搜索 |
 | `SSO_ENABLED` / `SSO_SECRET_KEY` / `SSO_ISSUER` | `false` / — / `aidriveall` | 门户单点登录 |
+| `GUEST_LOGIN_ENABLED` | `true` | 是否开放匿名登录 |
+| `GUEST_IDLE_TIMEOUT_MINUTES` | 30 | 匿名账号离线宽限期，超时即物理清除 |
+| `GUEST_PURGE_INTERVAL_SECONDS` | 300 | 清除任务扫描间隔（兼作心跳节流） |
+| `GUEST_MAX_NOTES` | 50 | 匿名用户的笔记配额 |
+| `GUEST_EVENTS_ENABLED` | `true` | 是否记录匿名登录事件 |
 | `NOTE_ASR_MODE` | `remote` | `remote` 或 `local` |
 | `NOTE_ASR_REMOTE_URL` / `NOTE_ASR_REMOTE_API_KEY` / `NOTE_ASR_REMOTE_TIMEOUT` | — / — / 3600 | 远程转写网关 |
 | `NOTE_ASR_FALLBACK_LOCAL` | `false` | 远程失败是否降级本机 |
