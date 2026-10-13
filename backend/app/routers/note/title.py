@@ -16,11 +16,17 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_not_guest
+from app.auth import get_current_user
 from app.database import get_db
-from app.exceptions import AppException, ForbiddenException, NotFoundException
+from app.exceptions import (
+    AppException,
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from app.models.note.note import Note
 from app.models.user import User
+from app.services.ai.llm_router import NoAvailableModelError
 from app.services.note.note_enhance_service import NoteShareService
 from app.services.note.note_service import NoteService
 from app.services.note.title_derive import derive_title
@@ -76,13 +82,15 @@ async def derive_note_title(
 async def generate_note_title(
     payload: TitleGenerateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_not_guest),
+    current_user: User = Depends(get_current_user),
 ) -> TitleSuggestResponse:
     """调用 AI 模型为笔记生成标题建议。
 
-    匿名账号禁用：该接口会真实调用大模型，消耗服务端额度（``require_not_guest``）。
+    匿名账号同样可用：模型解析已按归属隔离，只会用其自己创建的模型
+    （见 ``app/services/ai/ownership.py``）；没有可用模型时会明确报错。
     """
     note = await _load_editable_note(db, payload.note_id, current_user)
+    is_guest = bool(getattr(current_user, "is_guest", False))
     try:
         title = await TitleGenerator.generate(
             db,
@@ -90,7 +98,10 @@ async def generate_note_title(
             note,
             assistant_model=payload.assistant_model,
             request_model=payload.request_model,
+            is_guest=is_guest,
         )
+    except NoAvailableModelError as exc:
+        raise BadRequestException(str(exc)) from exc
     except AppException:
         raise
     except Exception as exc:  # noqa: BLE001 - 模型不可用属于 502

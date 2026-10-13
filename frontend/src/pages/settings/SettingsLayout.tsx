@@ -20,17 +20,15 @@ const aiNavItems = [
 /**
  * 匿名账号禁用的入口（后端同样以 require_not_guest 拦截，此处只是先隐藏 UI）。
  *
- * - 模型 / 助手 / 技能：AI 对话会消耗服务端大模型额度，且匿名数据随时被清除，
- *   无法追责也无法回收，因此整个 AI 平台对匿名关闭；
+ * 「模型 / 助手 / 技能」**不在此列**：需求明确要求匿名用户可以创建并使用
+ * 自己的大模型，后端已按归属严格隔离（只看得到自己创建的行）。
+ *
  * - 本地同步 / 访问令牌：数据会被写到浏览器本地目录或签发长期凭据，
  *   而匿名数据到期即清除，届时将留下无主残留；
  * - 语音转写 / 常用词库：这两处是全局单行配置，其 created_by 只是展示用字符串
  *   而非外键，匿名账号的写入无法按用户回收，会污染全体用户的配置。
  */
 const guestHiddenPaths = new Set([
-  '/settings/models',
-  '/settings/assistants',
-  '/settings/skills',
   '/settings/sync',
   '/settings/tokens',
   '/settings/asr',
@@ -70,8 +68,9 @@ const SettingsLayout: React.FC = () => {
   const [sidebarWidth, setSidebarWidth] = useState(400);
   const [saving, setSaving] = useState(false);
 
-  // 匿名不显示「AI 偏好」面板：其中的默认模型 / 侧栏宽度都依赖 AI 接口
-  const showPreferences = !isGuest && !location.pathname.includes('/settings/users');
+  // AI 偏好（默认模型 / 侧栏宽度）对匿名同样可用：
+  // UserAISettings 按 user_id 唯一且随账号级联清除，不需要特殊处理
+  const showPreferences = !location.pathname.includes('/settings/users');
 
   const navItems = useMemo(() => {
     const visibleAiItems = isGuest
@@ -81,8 +80,6 @@ const SettingsLayout: React.FC = () => {
   }, [user?.role, isGuest]);
 
   useEffect(() => {
-    // 匿名账号的 AI 接口会返回 403，直接跳过请求，避免弹出「加载 AI 偏好失败」
-    if (isGuest) return;
     void (async () => {
       try {
         const [settings, modelList] = await Promise.all([
@@ -96,7 +93,7 @@ const SettingsLayout: React.FC = () => {
         toast.error('加载 AI 偏好失败');
       }
     })();
-  }, [isGuest]);
+  }, []);
 
   const handleSavePreferences = async () => {
     setSaving(true);
@@ -135,7 +132,7 @@ const SettingsLayout: React.FC = () => {
             <h1 className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>设置</h1>
           </div>
           <p className={`text-xs pl-8 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-            {isGuest ? '离线缓存与本地数据' : 'AI 配置与用户管理'}
+            AI 配置与用户管理
           </p>
         </div>
 

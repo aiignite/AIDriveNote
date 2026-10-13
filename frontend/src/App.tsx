@@ -62,23 +62,20 @@ const withSuspense = (node: React.ReactNode) => (
 );
 
 /**
- * 设置首页重定向：匿名账号不能进 AI 设置，落到「离线缓存」。
- * 否则 /settings 默认跳 models，会触发 aiApi 请求并返回 403。
+ * 设置首页重定向：默认进「模型」。
+ * 匿名账号同样可用 AI 模型（只能用自己创建的），无需特殊处理。
  */
-const SettingsIndexRedirect: React.FC = () => {
-  const { isGuest, isLoading } = useAuth();
-  if (isLoading) return null;
-  return <Navigate to={isGuest ? 'offline' : 'models'} replace />;
-};
+const SettingsIndexRedirect: React.FC = () => <Navigate to="models" replace />;
 
 /**
- * 匿名账号禁用的设置子路由守卫：直连 URL 时统一退回「离线缓存」。
- * 与后端 require_not_guest 呼应，避免前端先渲染再报 403。
+ * 匿名账号禁用的设置子路由守卫：直连 URL 时统一退回「模型」。
+ * 覆盖本地同步 / 访问令牌 / 语音转写 / 常用词库——与后端 require_not_guest 呼应，
+ * 避免前端先渲染再报 403。
  */
 const GuestDisabledRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isGuest, isLoading } = useAuth();
   if (isLoading) return null;
-  if (isGuest) return <Navigate to="/settings/offline" replace />;
+  if (isGuest) return <Navigate to="/settings/models" replace />;
   return <>{children}</>;
 };
 
@@ -101,14 +98,16 @@ const App: React.FC = () => (
             element={<ProtectedRoute>{withSuspense(<SettingsRoute />)}</ProtectedRoute>}
           >
             <Route index element={<SettingsIndexRedirect />} />
-            <Route path="models" element={<GuestDisabledRoute>{withSuspense(<AIModelsPage />)}</GuestDisabledRoute>} />
-            <Route path="assistants" element={<GuestDisabledRoute>{withSuspense(<AIAssistantsPage />)}</GuestDisabledRoute>} />
-            <Route path="skills" element={<GuestDisabledRoute>{withSuspense(<AISkillsPage />)}</GuestDisabledRoute>} />
-            <Route path="asr" element={withSuspense(<ASRSettingsPage />)} />
-            <Route path="common-terms" element={withSuspense(<CommonTermsPage />)} />
-            <Route path="sync" element={withSuspense(<SyncSettingsPage />)} />
+            {/* 模型 / 助手 / 技能：匿名可用（后端按归属只返回自己创建的行） */}
+            <Route path="models" element={withSuspense(<AIModelsPage />)} />
+            <Route path="assistants" element={withSuspense(<AIAssistantsPage />)} />
+            <Route path="skills" element={withSuspense(<AISkillsPage />)} />
+            {/* 以下四项匿名禁用：全局配置或会把数据带出系统 */}
+            <Route path="asr" element={<GuestDisabledRoute>{withSuspense(<ASRSettingsPage />)}</GuestDisabledRoute>} />
+            <Route path="common-terms" element={<GuestDisabledRoute>{withSuspense(<CommonTermsPage />)}</GuestDisabledRoute>} />
+            <Route path="sync" element={<GuestDisabledRoute>{withSuspense(<SyncSettingsPage />)}</GuestDisabledRoute>} />
             <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
-            <Route path="tokens" element={withSuspense(<ApiTokensPage />)} />
+            <Route path="tokens" element={<GuestDisabledRoute>{withSuspense(<ApiTokensPage />)}</GuestDisabledRoute>} />
             <Route
               path="users"
               element={

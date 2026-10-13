@@ -17,6 +17,7 @@ class AIProvider(str, enum.Enum):
     OPENAI = "OPENAI"
     ANTHROPIC = "ANTHROPIC"
     MINIMAX = "MINIMAX"
+    OPENCODE = "OPENCODE"
 
 
 class AIModel(Base):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import uuid
 from typing import Any, AsyncIterator
@@ -71,6 +72,18 @@ class OpenAICompatibleProvider(BaseAIProvider):
             out.append(item)
         return out
 
+    def _build_headers(self, api_key: str) -> dict[str, str]:
+        """构造出站请求头；子类（如 OpenCode Zen）可覆写以追加自定义头。"""
+        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    def _prepare_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """发送前对请求体做最后处理；子类可覆写（如 free-lane 形状门禁）。"""
+        return payload
+
+    def _retry_on_429(self, attempt: int) -> bool:
+        """429 限流时是否重试；attempt 从 0 计。默认不重试，子类可覆写。"""
+        return False
+
     async def stream_chat_with_tools(
         self,
         messages: list[ChatMessage],
@@ -98,55 +111,70 @@ class OpenAICompatibleProvider(BaseAIProvider):
                 for t in opts.tools
             ]
 
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream(
-                    "POST", f"{base_url}/chat/completions", json=payload, headers=headers,
-                ) as resp:
-                    resp.raise_for_status()
-                    tool_calls_acc: dict[int, dict[str, Any]] = {}
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
+        payload = self._prepare_payload(payload)
+
+        attempt = 0
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with client.stream(
+                        "POST", f"{base_url}/chat/completions", json=payload,
+                        headers=self._build_headers(api_key),
+                    ) as resp:
+                        if resp.status_code == 429 and self._retry_on_429(attempt):
+                            # 上游限流：静默退避后重试（次数由子类策略决定）
+                            attempt += 1
+                            await asyncio.sleep(min(2.0 * attempt, 6.0))
                             continue
-                        raw = line[6:].strip()
-                        if raw == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        choice = (data.get("choices") or [{}])[0]
-                        delta = choice.get("delta") or {}
-                        content = delta.get("content")
-                        if content:
-                            yield {"type": "content", "content": content}
-                        for tc in delta.get("tool_calls") or []:
-                            idx = tc.get("index", 0)
-                            acc = tool_calls_acc.setdefault(idx, {
-                                "id": tc.get("id") or f"call_{uuid.uuid4().hex[:8]}",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            })
-                            fn = tc.get("function") or {}
-                            if fn.get("name"):
-                                acc["function"]["name"] = fn["name"]
-                            if fn.get("arguments"):
-                                acc["function"]["arguments"] += fn["arguments"]
-                    for tc in tool_calls_acc.values():
-                        args_raw = tc["function"]["arguments"]
-                        try:
-                            args = json.loads(args_raw) if args_raw else {}
-                        except json.JSONDecodeError:
-                            args = {"raw": args_raw}
-                        yield {
-                            "type": "tool_call",
-                            "tool_call": {
-                                "id": tc["id"],
-                                "type": "function",
-                                "function": {"name": tc["function"]["name"], "arguments": args},
-                            },
-                        }
-        except Exception as exc:
-            logger.warning("OpenAI provider error: %s", exc)
-            yield {"type": "content", "content": f"OpenAI 请求失败：{exc}"}
+                        resp.raise_for_status()
+                        async for chunk in self._consume_stream(resp):
+                            yield chunk
+                        break
+            except Exception as exc:
+                logger.warning("OpenAI provider error: %s", exc)
+                yield {"type": "content", "content": f"OpenAI 请求失败：{exc}"}
+                break
+
+    async def _consume_stream(self, resp: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+        async for line in resp.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            raw = line[6:].strip()
+            if raw == "[DONE]":
+                break
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            choice = (data.get("choices") or [{}])[0]
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if content:
+                yield {"type": "content", "content": content}
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                acc = tool_calls_acc.setdefault(idx, {
+                    "id": tc.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                })
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    acc["function"]["name"] = fn["name"]
+                if fn.get("arguments"):
+                    acc["function"]["arguments"] += fn["arguments"]
+        for tc in tool_calls_acc.values():
+            args_raw = tc["function"]["arguments"]
+            try:
+                args = json.loads(args_raw) if args_raw else {}
+            except json.JSONDecodeError:
+                args = {"raw": args_raw}
+            yield {
+                "type": "tool_call",
+                "tool_call": {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["function"]["name"], "arguments": args},
+                },
+            }

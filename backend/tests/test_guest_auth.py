@@ -213,6 +213,13 @@ async def test_guest_blocked_features_return_403(db_session: AsyncSession):
         assert tokens.status_code == 403, tokens.text
         share_search = await ac.get("/users/search", params={"q": "a"})
         assert share_search.status_code == 403
+        # 技能是全局表（无 user_id 列），匿名写入会永久污染全局配置
+        skill_create = await ac.post("/ai/skills", json={
+            "code": "guest_skill", "name": "匿名技能", "prompt_template": "p",
+        })
+        assert skill_create.status_code == 403, "匿名不得创建全局技能"
+        page_skills = await ac.put("/ai/page-skills/notes", json=[])
+        assert page_skills.status_code == 403, "匿名不得改全局技能绑定"
     app.dependency_overrides.clear()
 
     blocked = (
@@ -245,6 +252,49 @@ async def test_regular_user_unaffected_by_guest_gating(db_session: AsyncSession)
         res = await ac.post("/api-tokens", json={"name": "pat"})
     app.dependency_overrides.clear()
     assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_guest_can_create_and_use_own_ai_model(db_session: AsyncSession):
+    """核心需求：匿名用户可创建自己的大模型并使用（但看不到他人/系统模型）。"""
+    from app.models.ai import AIModel
+
+    guest = await _make_guest(db_session)
+    other = await _make_guest(db_session, name="别人")
+    db_session.add(AIModel(
+        name="Other/Model", model_id="other", provider="OPENAI",
+        api_key="sk-other", user_id=other.id,
+    ))
+    await db_session.commit()
+
+    app, transport = _make_client(db_session, user=guest)
+    async with AsyncClient(transport=transport, base_url="http://test/api/v1") as ac:
+        # 他人与系统的模型对匿名均不可见
+        assert (await ac.get("/ai/models")).json() == []
+
+        created = await ac.post("/ai/models", json={
+            "name": "My/Model", "model_id": "mine", "provider": "OPENAI",
+            "endpoint": "https://api.example.com", "api_key": "sk-mine",
+        })
+        assert created.status_code == 201, created.text
+        model_id = created.json()["id"]
+
+        # 自己创建后即可在自己的列表中看到
+        listed = {m["name"] for m in (await ac.get("/ai/models")).json()}
+        assert listed == {"My/Model"}
+
+        # 归属于自己的可编辑
+        upd = await ac.put(f"/ai/models/{model_id}", json={"model_id": "mine2"})
+        assert upd.status_code == 200
+
+        # 解析时用的是自己的模型；API Key 落库为 enc:: 密文，出站前解密还原
+        from app.services.ai.llm_router import LLMRouter
+
+        res = await LLMRouter.resolve(db_session, guest.id, request_model="My/Model", is_guest=True)
+        assert res.model_name == "My/Model"
+        assert res.model_id == "mine2"
+        assert res.api_key == "sk-mine", "应解密还原出自己的 API Key"
+    app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

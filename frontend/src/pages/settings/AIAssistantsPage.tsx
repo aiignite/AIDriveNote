@@ -110,6 +110,11 @@ const AIAssistantsPage: React.FC = () => {
   }, []);
 
   const openEdit = useCallback((assistant: AIAssistant) => {
+    // 系统助手只读：所有用户共享，改动会全站生效；想改请先「克隆」一份自己编辑
+    if (assistant.isSystem) {
+      toast.error('系统助手不可修改，如需自定义请先克隆一份');
+      return;
+    }
     setEditingAssistant(assistant);
     setShowForm(true);
   }, []);

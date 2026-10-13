@@ -385,7 +385,7 @@ class CreateFromTemplateBody(BaseModel):
 @router.get("", response_model=NoteListOut)
 async def list_notes(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=500),
     search: Optional[str] = None,
     note_type: Optional[str] = None,
     folder_id: Optional[str] = None,
@@ -420,7 +420,7 @@ async def list_notes(
 @router.get("/trash/list", response_model=NoteListOut)
 async def list_trash_notes(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=500),
     search: Optional[str] = None,
     include_content: bool = False,
     db: AsyncSession = Depends(get_db),

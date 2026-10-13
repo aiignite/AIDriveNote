@@ -1279,20 +1279,18 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
                 >
                   <FileText size={14} />
                 </button>
-                {/* AI 生成标题会真实调用大模型，匿名账号后端已禁用，此处同步隐藏 */}
-                {!isGuest && (
-                  <button
-                    type="button"
-                    onClick={() => void handleGenerateAiTitle()}
-                    disabled={aiTitleLoading}
-                    title="AI 生成标题"
-                    className={`p-1 rounded-md transition-colors disabled:opacity-50 ${
-                      isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
-                    }`}
-                  >
-                    {aiTitleLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                  </button>
-                )}
+                {/* AI 生成标题会真实调用大模型；匿名账号可用（只能用自己创建的模型） */}
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateAiTitle()}
+                  disabled={aiTitleLoading}
+                  title="AI 生成标题"
+                  className={`p-1 rounded-md transition-colors disabled:opacity-50 ${
+                    isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
+                  }`}
+                >
+                  {aiTitleLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                </button>
               </>
             )}
           </div>
@@ -1617,8 +1615,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           >
             <h3 className={`text-sm font-semibold mb-3 ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>快捷键说明</h3>
             <div className="space-y-1.5">
-              {/* 匿名账号已禁用 AI，隐藏 ⌘J / 关闭 AI 助手 两条提示 */}
-              {SHORTCUT_HELP.filter(item => !(isGuest && item.desc.includes('AI 助手'))).map(item => (
+              {SHORTCUT_HELP.map(item => (
                 <div key={item.keys} className="flex items-center justify-between text-xs">
                   <span className={isDark ? 'text-gray-400' : 'text-gray-600'}>{item.desc}</span>
                   <span className={`tabular-nums px-1.5 py-0.5 rounded border ${isDark ? 'border-gray-600 text-gray-300' : 'border-gray-200 text-gray-500'}`}>

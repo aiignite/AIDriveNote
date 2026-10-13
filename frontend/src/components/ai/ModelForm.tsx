@@ -25,6 +25,16 @@ interface ModelFormProps {
 
 const PROVIDER_OPTIONS = [
   {
+    value: 'OPENCODE',
+    label: 'OpenCode Zen（免费公共）',
+    description: 'OpenCode 匿名免费通道，无需 API Key，全站用户（含匿名）可用。',
+    endpoint: 'https://opencode.ai/zen/v1',
+    authHint: '无需 API Key',
+    endpointHint: '默认官方匿名通道地址。',
+    suggestedModelId: 'ling-3.1-flash-free',
+    suggestedImage: false,
+  },
+  {
     value: 'OPENAI',
     label: 'OpenAI GPT',
     description: '适合通用对话、函数调用和生态兼容。',

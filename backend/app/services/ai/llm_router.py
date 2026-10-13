@@ -37,8 +37,9 @@ class LLMRouter:
         """解析本次请求使用的模型。
 
         **所有候选查询都限定在当前用户可见范围内**（本人创建的 + 系统种子）。
-        匿名用户（``is_guest=True``）只能使用自己创建的模型，不含系统种子——
-        种子通常指向管理员配置的付费 Key，不应对外暴露。
+        匿名用户（``is_guest=True``）只能使用自己创建的模型与 provider 为
+        ``OPENCODE`` 的系统公共免费模型（匿名通道，不携带任何站点 Key）——
+        其余系统种子通常指向管理员配置的付费 Key，不对外暴露。
         """
         settings = get_settings()
         model_ref = request_model or assistant_model

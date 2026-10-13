@@ -80,6 +80,11 @@ const AIModelsPage: React.FC = () => {
   }, []);
 
   const openEdit = useCallback((model: AIModel) => {
+    // 系统预置模型只读：所有用户共享，改动会全站生效，因此不允许直接编辑
+    if (model.isSystem) {
+      toast.error('系统预置模型不可修改，如需自定义请新建一个自己的模型');
+      return;
+    }
     setEditingModel(model);
     setShowForm(true);
   }, []);
@@ -106,6 +111,11 @@ const AIModelsPage: React.FC = () => {
   );
 
   const handleDelete = useCallback((model: AIModel) => {
+    // 系统预置模型所有用户可见但不可删（后端会返回 404），这里直接给出解释
+    if (model.isSystem) {
+      toast.error('系统预置模型不可删除，如需调整请新建一个自己的模型');
+      return;
+    }
     setModelToDelete(model);
   }, []);
 

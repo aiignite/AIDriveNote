@@ -50,11 +50,10 @@ from app.services.secret_crypto import (
     is_masked_secret_placeholder,
 )
 
-# 整个 AI 平台对匿名账号关闭：对话会消耗服务端大模型额度，而匿名数据随时被清除，
-# 无法追责也无法回收。统一在 router 级加守卫，避免逐个端点遗漏。
-router = APIRouter(
-    prefix="/ai", tags=["AI"], dependencies=[Depends(require_not_guest)],
-)
+# AI 平台对匿名账号开放：需求明确要求「匿名登录后可以使用 AI 大模型，
+# 自己创建的可以使用」。模型/助手的归属由 services/ai/ownership.py 逐端点校验，
+# 匿名用户只能看到并使用自己创建的行（不含系统种子）。
+router = APIRouter(prefix="/ai", tags=["AI"])
 
 
 # ── Schemas ──
@@ -263,6 +262,9 @@ def _model_to_out(m: AIModel, *, is_default: bool = False) -> dict[str, Any]:
         "endpoint": m.endpoint,
         "description": m.description,
         "isPublic": m.is_public,
+        # 系统种子（user_id IS NULL）对所有用户可见但不可改：前端据此禁用编辑/删除，
+        # 避免用户点了之后收到 404
+        "isSystem": m.user_id is None,
         "isDefault": is_default,
         "popularity": m.popularity,
         "speed": m.speed,
@@ -433,10 +435,16 @@ async def test_model_connection(
 ):
     from app.config import get_settings
 
-    # 归属校验：只能测试自己创建的模型（避免探测他人模型的连通性）
-    result = await db.execute(
-        owned_model(user.id, model_id).where(AIModel.is_deleted == False)  # noqa: E712
+    # 连通性测试按「可见」口径：本人创建 + 系统种子——OPENCODE 公共免费模型
+    # 全站可用，理应可测；他人私有模型依旧 404，仍不可探测；匿名用户只能测
+    # 自己的 + OPENCODE 公共模型（与 models_visible_to 列表口径一致）。
+    stmt = models_visible_to(
+        user.id, is_guest=bool(getattr(user, "is_guest", False)),
+    ).where(
+        AIModel.id == model_id,
+        AIModel.is_deleted == False,  # noqa: E712
     )
+    result = await db.execute(stmt)
     m = result.scalar_one_or_none()
     if not m:
         raise NotFoundException("AIModel")
@@ -474,6 +482,25 @@ async def test_model_connection(
                 resp = await client.get(f"{url}/v1/models")
                 resp.raise_for_status()
                 return _result(True, "LM Studio 连接成功")
+
+            if provider == "OPENCODE":
+                # OpenCode Zen 匿名免费通道：Bearer public，带 CLI 同形头
+                from app.services.ai_providers.opencode import (
+                    OPENCODE_PUBLIC_KEY,
+                    OPENCODE_USER_AGENT,
+                )
+
+                url = (m.endpoint or "https://opencode.ai/zen/v1").rstrip("/")
+                resp = await client.get(
+                    f"{url}/models",
+                    headers={
+                        "Authorization": f"Bearer {OPENCODE_PUBLIC_KEY}",
+                        "User-Agent": OPENCODE_USER_AGENT,
+                        "x-opencode-client": "cli",
+                    },
+                )
+                resp.raise_for_status()
+                return _result(True, "OpenCode Zen 连接成功")
 
             if provider == "OPENAI":
                 api_key = _resolve_api_key(m.api_key, settings.OPENAI_API_KEY)
@@ -819,8 +846,13 @@ async def list_skills(db: AsyncSession = Depends(get_db), user: User = Depends(g
 async def create_skill(
     body: SkillCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
+    """创建自定义技能。
+
+    ``ai_skills`` 是全局表（无 ``user_id`` 列，无法归属到个人），匿名创建的
+    技能会在账号清除后永久残留并影响其他用户，故对匿名关闭写入口。
+    """
     code = body.code.strip()
     if not code:
         raise BadRequestException("技能代码不能为空")
@@ -852,7 +884,7 @@ async def update_skill(
     skill_id: uuid.UUID,
     body: SkillUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     result = await db.execute(
         select(AISkill).where(AISkill.id == skill_id, AISkill.is_deleted == False)  # noqa: E712
@@ -878,7 +910,7 @@ async def update_skill(
 async def delete_skill(
     skill_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     result = await db.execute(
         select(AISkill).where(AISkill.id == skill_id, AISkill.is_deleted == False)  # noqa: E712
@@ -918,8 +950,13 @@ async def get_page_skills(db: AsyncSession = Depends(get_db), user: User = Depen
 async def save_page_skills(
     items: list[SkillBindingItem],
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
+    """保存页面技能绑定。
+
+    ``ai_page_skill_bindings`` 是全局表（无归属列），改动会影响所有用户的
+    技能命中，故对匿名关闭。
+    """
     for item in items:
         result = await db.execute(
             select(PageSkillBinding).where(
@@ -1099,8 +1136,11 @@ async def chat_stream(
             is_guest=bool(getattr(user, "is_guest", False)),
         )
     except ChatPreparationError as exc:
+        # except as 的变量在块结束即被删除，须先捕获消息供生成器使用
+        prep_error_message = str(exc)
+
         async def _prep_error():
-            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': prep_error_message}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(

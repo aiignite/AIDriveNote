@@ -308,10 +308,56 @@ DESIGN_ASSISTANTS = [
 
 
 class AISeedService:
+    # OpenCode Zen 匿名免费通道的公共模型（provider=OPENCODE，无任何站点 Key）。
+    # 对所有用户（含匿名用户）可见可用，见 services/ai/ownership.py 的例外口径。
+    OPENCODE_PUBLIC_MODELS = [
+        {"model_id": "ling-3.1-flash-free", "name": "OpenCode/ling-3.1-flash",
+         "description": "OpenCode Zen 免费通道：ling 3.1 flash，速度快，适合日常对话与总结。"},
+        {"model_id": "mimo-v2.6-flash-free", "name": "OpenCode/mimo-v2.6-flash",
+         "description": "OpenCode Zen 免费通道：mimo v2.6 flash，通用对话与轻量推理。"},
+        {"model_id": "step-5-preview-free", "name": "OpenCode/step-5-preview",
+         "description": "OpenCode Zen 免费通道：step 5 preview，质量较好的免费通用模型。"},
+        {"model_id": "nemotron-3.5-lightning-free", "name": "OpenCode/nemotron-3.5-lightning",
+         "description": "OpenCode Zen 免费通道：nemotron 3.5 lightning，低延迟免费模型。"},
+        {"model_id": "space-bunny-free", "name": "OpenCode/space-bunny",
+         "description": "OpenCode Zen 免费通道：space-bunny，实验性免费模型。"},
+    ]
+
+    @staticmethod
+    async def _seed_opencode_models(db: AsyncSession) -> None:
+        """种子 OpenCode 公共免费模型（user_id IS NULL，provider=OPENCODE）。"""
+        from app.services.ai_providers.opencode import DEFAULT_ZEN_BASE_URL
+
+        for spec in AISeedService.OPENCODE_PUBLIC_MODELS:
+            result = await db.execute(
+                select(AIModel).where(
+                    AIModel.provider == "OPENCODE",
+                    AIModel.model_id == spec["model_id"],
+                    AIModel.is_deleted == False,  # noqa: E712
+                )
+            )
+            if result.scalar_one_or_none():
+                continue
+            db.add(AIModel(
+                id=uuid.uuid4(),
+                name=spec["name"],
+                model_id=spec["model_id"],
+                provider="OPENCODE",
+                endpoint=DEFAULT_ZEN_BASE_URL,
+                description=spec["description"],
+                cost="Free",
+                speed="Fast",
+                context="128K",
+                is_public=True,
+            ))
+        await db.flush()
+
     @staticmethod
     async def ensure_platform_seed(db: AsyncSession) -> None:
         settings = get_settings()
         model_name = f"Ollama/{settings.OLLAMA_MODEL}"
+
+        await AISeedService._seed_opencode_models(db)
 
         result = await db.execute(
             select(AIModel).where(AIModel.name == model_name, AIModel.is_deleted == False)  # noqa: E712

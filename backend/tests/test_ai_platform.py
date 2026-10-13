@@ -156,10 +156,15 @@ async def test_list_skills(authed_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_update_assistant_model(authed_client: AsyncClient):
+async def test_system_assistant_is_read_only(authed_client: AsyncClient):
+    """系统助手对普通用户只读——改它必须先克隆。
+
+    模型/助手已按 user_id 严格归属，系统种子（user_id IS NULL）不属于任何用户，
+    因此不允许直接编辑，避免一人改配置全站生效。
+    """
     listing = await authed_client.get("/ai/assistants")
     assert listing.status_code == 200
-    assistant = next(a for a in listing.json() if a["name"] == "笔记助手")
+    system = next(a for a in listing.json() if a["name"] == "笔记助手")
 
     create = await authed_client.post("/ai/models", json={
         "name": "Alt/Ollama",
@@ -169,20 +174,32 @@ async def test_update_assistant_model(authed_client: AsyncClient):
     })
     assert create.status_code == 201
 
-    update = await authed_client.put(f"/ai/assistants/{assistant['id']}", json={
+    update = await authed_client.put(f"/ai/assistants/{system['id']}", json={
         "model": "Alt/Ollama",
         "temperature": 0.5,
     })
-    assert update.status_code == 200
-    assert update.json()["model"] == "Alt/Ollama"
-    assert update.json()["temperature"] == 0.5
+    assert update.status_code == 404, "系统助手不应可编辑"
 
-    # 列表接口会触发 ensure_platform_seed，不应把用户刚保存的模型覆盖回默认值
+    delete = await authed_client.delete(f"/ai/assistants/{system['id']}")
+    assert delete.status_code == 404, "系统助手不应可删除"
+
+    # 克隆后即可自由编辑
+    clone = await authed_client.post(f"/ai/assistants/{system['id']}/clone")
+    assert clone.status_code == 201
+    cloned_id = clone.json()["id"]
+    edit = await authed_client.put(f"/ai/assistants/{cloned_id}", json={
+        "model": "Alt/Ollama",
+        "temperature": 0.5,
+    })
+    assert edit.status_code == 200
+    assert edit.json()["model"] == "Alt/Ollama"
+    assert edit.json()["temperature"] == 0.5
+
+    # 列表接口会触发 ensure_platform_seed，不得把系统助手覆盖回默认值
     relist = await authed_client.get("/ai/assistants")
     assert relist.status_code == 200
     note = next(a for a in relist.json() if a["name"] == "笔记助手")
-    assert note["model"] == "Alt/Ollama"
-    assert note["temperature"] == 0.5
+    assert note["temperature"] != 0.5, "系统助手不应被普通用户的修改影响"
 
 
 @pytest.mark.asyncio

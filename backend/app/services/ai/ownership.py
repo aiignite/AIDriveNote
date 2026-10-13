@@ -12,8 +12,9 @@
 - ``user_id = 当前用户``：该用户自己创建的。
 - 其他用户的行：**一律不可见、不可改、不可用**。
 
-匿名账号的额外限制：匿名用户只能使用**自己创建**的模型，不含系统种子模型——
-系统种子通常指向管理员配置的 Ollama / 付费 Key，不应对外暴露。
+匿名账号口径：模型只能用**自己创建**的，外加 provider 为 ``OPENCODE`` 的
+系统公共免费模型（OpenCode Zen 匿名通道，无任何站点 Key）；系统助手对所有
+用户可见（只含提示词，无密钥，只读）。
 """
 from __future__ import annotations
 
@@ -40,45 +41,63 @@ def scope_by_owner(stmt: Select, column, user_id: uuid.UUID, *, include_system: 
 def models_visible_to(
     db_user_id: uuid.UUID, *, is_guest: bool = False, include_system: bool = True,
 ) -> Select:
-    """当前用户可见的模型查询（尚未过滤软删除）。"""
+    """当前用户可见的模型查询（尚未过滤软删除）。
+
+    **公共免费模型例外**：provider 为 ``OPENCODE`` 的系统种子模型走
+    OpenCode Zen 匿名免费通道，不携带任何站点 Key，对所有用户（含匿名
+    用户）可见可用。
+    """
+    if is_guest:
+        # 匿名：本人创建 + 系统 OPENCODE 公共免费模型，一次性给出组合条件
+        # （不能先 where(user_id==guest) 再 where(or_(...))，两者是 AND 关系）
+        return select(AIModel).where(
+            or_(
+                AIModel.user_id == db_user_id,
+                (AIModel.user_id.is_(None)) & (AIModel.provider == "OPENCODE"),
+            )
+        )
     return scope_by_owner(
         select(AIModel), AIModel.user_id, db_user_id,
-        include_system=include_system and not is_guest,
+        include_system=include_system,
     )
 
 
 def assistants_visible_to(
     db_user_id: uuid.UUID, *, is_guest: bool = False, include_system: bool = True,
 ) -> Select:
-    """当前用户可见的助手查询（尚未过滤软删除）。"""
+    """当前用户可见的助手查询（尚未过滤软删除）。
+
+    系统助手对所有用户（含匿名用户）可见：助手只含提示词与工具配置，
+    不携带任何密钥；其引用的模型在 ``LLMRouter`` 中按当前用户作用域解析
+    （匿名用户解析不到系统种子模型时会自动落到 OPENCODE 公共免费模型）。
+    匿名用户依旧**不可写**系统助手（``owned_assistant`` 仅限本人创建）。
+    """
     return scope_by_owner(
         select(AIAssistant), AIAssistant.user_id, db_user_id,
-        include_system=include_system and not is_guest,
+        include_system=include_system,
     )
 
 
-def owned_model(
-    db_user_id: uuid.UUID, model_id: uuid.UUID, *, is_guest: bool = False,
-) -> Select:
-    """按 ID 取一个**可写**的模型：本人创建，或系统种子（``user_id IS NULL``）。
+def owned_model(db_user_id: uuid.UUID, model_id: uuid.UUID) -> Select:
+    """按 ID 取一个**可写**的模型：必须是本人创建的。
 
-    保留改动前的既有能力：系统预置模型与助手是平台级配置，任何登录用户都可在
-    「设置」中编辑其模型 / 温度 / 技能绑定。这里只排除「其他用户创建」的行，
-    把跨用户越权堵住，而不改变原有的单用户使用行为。
+    系统种子（``user_id IS NULL``）虽然对所有用户可见，但**不可写**——否则
+    任何人改动默认模型都会影响全站。其余用户的模型同样不可写。
     """
     return select(AIModel).where(
         AIModel.id == model_id,
-        or_(AIModel.user_id == db_user_id, AIModel.user_id.is_(None)),
+        AIModel.user_id == db_user_id,
     )
 
 
-def owned_assistant(
-    db_user_id: uuid.UUID, assistant_id: uuid.UUID,
-) -> Select:
-    """按 ID 取一个**可写**的助手：本人创建，或系统种子（``user_id IS NULL``）。"""
+def owned_assistant(db_user_id: uuid.UUID, assistant_id: uuid.UUID) -> Select:
+    """按 ID 取一个**可写**的助手：必须是本人创建的。
+
+    系统助手对所有用户只读，想改请先克隆一份（``POST /ai/assistants/{id}/clone``）。
+    """
     return select(AIAssistant).where(
         AIAssistant.id == assistant_id,
-        or_(AIAssistant.user_id == db_user_id, AIAssistant.user_id.is_(None)),
+        AIAssistant.user_id == db_user_id,
     )
 
 

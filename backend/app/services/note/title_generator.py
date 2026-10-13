@@ -71,12 +71,14 @@ class TitleGenerator:
         *,
         assistant_model: str | None = None,
         request_model: str | None = None,
+        is_guest: bool = False,
     ) -> str:
         """为指定笔记生成建议标题。
 
         :param db: 数据库会话
         :param user_id: 用户 ID（用于解析该用户可用的模型）
         :param note: 目标笔记
+        :param is_guest: 是否匿名账号（只能用其自己创建的模型）
         :returns: 建议标题；无法生成时返回空字符串
         """
         preview = note_preview_text(note, max_len=MAX_CONTENT_CHARS).strip()
@@ -90,6 +92,7 @@ class TitleGenerator:
             assistant_model=assistant_model,
             request_model=request_model,
             temperature=0.2,  # 低温度让输出更稳定、少发挥
+            is_guest=is_guest,
         )
 
         provider = AIProviderFactory.create(

@@ -56,6 +56,8 @@ export interface AIModel {
   endpoint?: string | null;
   description?: string | null;
   isPublic: boolean;
+  /** 系统预置模型：所有用户可见但不可编辑/删除（需自行创建副本） */
+  isSystem?: boolean;
   isDefault?: boolean;
   popularity?: number;
   speed?: string;
