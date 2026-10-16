@@ -158,6 +158,8 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
   const uploadOpenRef = useRef<(() => void) | null>(null);
   /** 浮窗自身引用 */
   const panelRef = useRef<HTMLDivElement>(null);
+  /** 当前选中条目引用：选中后自动滚动到可见区域，保证就地展开的转写内容可见 */
+  const activeItemRef = useRef<HTMLDivElement | null>(null);
   /** 常驻录音实例句柄：录音期间面板布局变化也不会中断采集 */
   const recorderRef = useRef<AudioRecorderHandle>(null);
   /** 面板尺寸（可拖拽调整），初始值从 localStorage 恢复 */
@@ -358,6 +360,13 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
   /** 是否显示可见面板：关闭或录音中都不显示（录音期间仅保留工具栏按钮上的小红点） */
   const visible = open && !isRecording;
 
+  /** 选中录音后将对应条目滚动到可见区域，避免就地展开的转写内容被挤到看不清的位置 */
+  useEffect(() => {
+    if (!visible || !activeRecording) return;
+    activeItemRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, activeRecording?.id]);
+
   /**
    * 采集完成：连同浏览器内置 ASR 分段（若有）一起上传。
    * @param blob 录音 Blob
@@ -526,72 +535,75 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
               </p>
               {isRecordingsLoading && <Loader2 size={11} className="animate-spin text-gray-400" />}
             </div>
-            {recordings.map(rec => (
-              <button
-                key={rec.id}
-                type="button"
-                onClick={() => void selectRecording(rec)}
-                className={`w-full text-left p-1.5 rounded-lg border transition-colors ${
-                  activeRecording?.id === rec.id
-                    ? (isDark ? 'border-sky-500 bg-sky-900/20' : 'border-sky-400 bg-sky-50')
-                    : (isDark ? 'border-gray-700 hover:bg-gray-800' : 'border-gray-100 hover:bg-gray-50')
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="flex items-center gap-1.5 text-[11px] truncate">
-                    <FileAudio size={11} className="shrink-0 text-gray-400" />
-                    <span className="truncate">{rec.fileName}</span>
-                  </span>
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => { e.stopPropagation(); void handleDelete(rec.id, rec.fileName); }}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); void handleDelete(rec.id, rec.fileName); } }}
-                    className="shrink-0 text-gray-400 hover:text-rose-500"
-                    title="删除录音"
+            {recordings.map(rec => {
+              const isActive = activeRecording?.id === rec.id;
+              return (
+                <div
+                  key={rec.id}
+                  ref={isActive ? activeItemRef : undefined}
+                  className={isActive ? 'space-y-1' : undefined}
+                >
+                  <button
+                    type="button"
+                    onClick={() => void selectRecording(rec)}
+                    className={`w-full text-left p-1.5 rounded-lg border transition-colors ${
+                      isActive
+                        ? (isDark ? 'border-sky-500 bg-sky-900/20' : 'border-sky-400 bg-sky-50')
+                        : (isDark ? 'border-gray-700 hover:bg-gray-800' : 'border-gray-100 hover:bg-gray-50')
+                    }`}
                   >
-                    <Trash2 size={11} />
-                  </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-[11px] truncate">
+                        <FileAudio size={11} className="shrink-0 text-gray-400" />
+                        <span className="truncate">{rec.fileName}</span>
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => { e.stopPropagation(); void handleDelete(rec.id, rec.fileName); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); void handleDelete(rec.id, rec.fileName); } }}
+                        className="shrink-0 text-gray-400 hover:text-rose-500"
+                        title="删除录音"
+                      >
+                        <Trash2 size={11} />
+                      </span>
+                    </div>
+                    <div className="mt-0.5">
+                      <RecordingStatusBadge status={rec.status} progressPct={rec.progressPct} errorMessage={rec.errorMessage} />
+                    </div>
+                  </button>
+                  {/* 当前录音的试听与转写内容：就地展示在对应条目下方，避免要拉到列表末尾单独查看 */}
+                  {isActive && activeRecording && (
+                    <div className={`p-2 space-y-1.5 rounded-lg border ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50/60'}`}>
+                      {/* 音频试听（audioUrl 缺失时用 buildAudioUrl 兜底） */}
+                      <audio
+                        controls
+                        preload="metadata"
+                        src={resolveAudioUrl(activeRecording.audioUrl, activeRecording.id)}
+                        className="w-full h-8"
+                      />
+                      {isTranscriptLoading ? (
+                        <p className="text-[11px] text-gray-400 flex items-center gap-1">
+                          <Loader2 size={11} className="animate-spin" /> 加载转写…
+                        </p>
+                      ) : activeRecording.status === 'Transcribed' ? (
+                        <TranscriptPreview
+                          segments={transcriptSegments}
+                          isDark={isDark}
+                          busyAction={busyAction}
+                          onAiOrganize={() => void refine(activeRecording)}
+                          onRetranscribe={() => void retranscribe(activeRecording)}
+                        />
+                      ) : (
+                        <p className={`text-[11px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+                          {activeRecording.status === 'Failed' ? '转写失败' : '转写处理中…'}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="mt-0.5">
-                  <RecordingStatusBadge status={rec.status} progressPct={rec.progressPct} errorMessage={rec.errorMessage} />
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* 当前录音的转写与处理 */}
-        {activeRecording && (
-          <div className={`p-2 space-y-1.5 rounded-lg border ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50/60'}`}>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] font-semibold truncate">{activeRecording.fileName}</span>
-              <RecordingStatusBadge status={activeRecording.status} progressPct={activeRecording.progressPct} />
-            </div>
-            {/* 音频试听（audioUrl 缺失时用 buildAudioUrl 兜底） */}
-            <audio
-              controls
-              preload="metadata"
-              src={resolveAudioUrl(activeRecording.audioUrl, activeRecording.id)}
-              className="w-full h-8"
-            />
-            {isTranscriptLoading ? (
-              <p className="text-[11px] text-gray-400 flex items-center gap-1">
-                <Loader2 size={11} className="animate-spin" /> 加载转写…
-              </p>
-            ) : activeRecording.status === 'Transcribed' ? (
-              <TranscriptPreview
-                segments={transcriptSegments}
-                isDark={isDark}
-                busyAction={busyAction}
-                onAiOrganize={() => void refine(activeRecording)}
-                onRetranscribe={() => void retranscribe(activeRecording)}
-              />
-            ) : (
-              <p className={`text-[11px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-                {activeRecording.status === 'Failed' ? '转写失败' : '转写处理中…'}
-              </p>
-            )}
+              );
+            })}
           </div>
         )}
 
