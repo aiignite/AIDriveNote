@@ -68,6 +68,36 @@ settings = get_settings()
 # 单例服务：实例本身很轻，重型状态（模型、信号量）位于类/模块级
 _recording_service = NoteRecordingService()
 
+# 浏览器分段覆盖率判定阈值：音频达到该时长且分段覆盖比例低于阈值时，
+# 视为浏览器识别提前结束（仅覆盖开头），回退服务端转写以免出现半截转写。
+_BROWSER_COVERAGE_MIN_SECONDS = 20.0
+_BROWSER_COVERAGE_MIN_RATIO = 0.5
+
+
+def _browser_coverage_ratio(
+    segments: list[dict[str, Any]],
+    duration_seconds: float | None,
+) -> float | None:
+    """计算浏览器 ASR 分段对音频总时长的覆盖比例。
+
+    @param segments 浏览器分段列表（每项含 ``end_time``）
+    @param duration_seconds 音频总时长（秒），未知时传 None
+    @returns 覆盖比例（0-1）；无法判定（时长未知）时返回 None
+    """
+    if not duration_seconds or duration_seconds <= 0:
+        return None
+    if not segments:
+        return 0.0
+    max_end = 0.0
+    for seg in segments:
+        try:
+            max_end = max(max_end, float(seg.get("end_time") or 0))
+        except (TypeError, ValueError):
+            continue
+    if max_end <= 0:
+        return 0.0
+    return min(1.0, max_end / float(duration_seconds))
+
 
 # ── 序列化辅助 ────────────────────────────────────────────────────────
 
@@ -223,20 +253,36 @@ async def upload_recording(
             # 解析失败则回退到服务端转写路径，不阻塞上传本身
             logger.warning("浏览器分段解析失败，回退服务端转写: %s", exc)
         else:
-            try:
-                updated = await _recording_service.save_browser_transcripts(
-                    db,
+            # 覆盖率校验：浏览器识别常在静音 / 超时后提前结束，导致分段只覆盖
+            # 音频开头。此时若直接落库会得到半截转写，故改走服务端转写。
+            effective_duration = duration_seconds or recording.duration_seconds
+            coverage = _browser_coverage_ratio(payload, effective_duration)
+            if (
+                coverage is not None
+                and coverage < _BROWSER_COVERAGE_MIN_RATIO
+                and (effective_duration or 0) >= _BROWSER_COVERAGE_MIN_SECONDS
+            ):
+                logger.info(
+                    "浏览器分段覆盖率不足（%.0f%%，音频 %.0fs），改走服务端转写: %s",
+                    coverage * 100,
+                    effective_duration,
                     recording.id,
-                    payload,
-                    duration_seconds=duration_seconds,
-                    language=language or "zh-CN",
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("浏览器分段落库失败: %s", exc)
-                raise BadRequestException(f"浏览器分段落库失败：{exc}") from exc
-            if updated is None:
-                raise NotFoundException("Recording")
-            return _to_recording_out(updated)
+            else:
+                try:
+                    updated = await _recording_service.save_browser_transcripts(
+                        db,
+                        recording.id,
+                        payload,
+                        duration_seconds=duration_seconds,
+                        language=language or "zh-CN",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("浏览器分段落库失败: %s", exc)
+                    raise BadRequestException(f"浏览器分段落库失败：{exc}") from exc
+                if updated is None:
+                    raise NotFoundException("Recording")
+                return _to_recording_out(updated)
 
     # ── 路径 B：服务端 Whisper 流水线（remote 优先 / local 降级）──
     background_tasks.add_task(_run_transcription_safe, recording.id)

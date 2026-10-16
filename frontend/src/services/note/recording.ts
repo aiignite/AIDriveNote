@@ -162,13 +162,16 @@ export const noteRecordingApi = {
     const fileName = file instanceof File ? file.name : `recording-${Date.now()}.webm`;
     form.append('file', file, fileName);
     if (noteId) form.append('note_id', noteId);
+    // 时长始终上报：后端用它校验浏览器分段覆盖率，覆盖率不足时改走服务端转写
+    if (durationSeconds && durationSeconds > 0) {
+      form.append('duration_seconds', String(durationSeconds));
+    }
+    form.append('language', language);
     if (transcripts && transcripts.length > 0) {
       form.append(
         'transcripts',
         JSON.stringify(transcripts.map(({ text, start_time, end_time }) => ({ text, start_time, end_time }))),
       );
-      form.append('duration_seconds', String(durationSeconds ?? 0));
-      form.append('language', language);
     }
     const res = await fetchWithAuth('/note-recordings', { method: 'POST', body: form });
     return parseJsonResponse<NoteRecording>(res);

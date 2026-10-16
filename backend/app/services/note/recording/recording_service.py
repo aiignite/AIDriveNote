@@ -446,8 +446,13 @@ class NoteRecordingService:
         )
         await db.flush()
 
+        # 浏览器内置 ASR（尤其港台环境）可能输出繁体，统一归一化为简体中文
+        from app.services.note.recording.transcript_refinement_service import (
+            _simplify_chinese,
+        )
+
         for idx, seg in enumerate(segments):
-            text = str(seg.get("text") or "").strip()
+            text = _simplify_chinese(str(seg.get("text") or "").strip())
             if not text:
                 continue
             db.add(

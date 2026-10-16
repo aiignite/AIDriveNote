@@ -1124,9 +1124,6 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
                 ? `结束录音（已录 ${formatDuration(recordingElapsed)}）`
                 : '录音转写（录制音频并转写为文字）'}
             >
-              {isRecordingState && (
-                <span aria-hidden className="pointer-events-none absolute inset-0 rounded-md ring-2 ring-red-500/70 animate-ping" />
-              )}
               <Mic size={16} className={isRecordingState ? 'animate-recording-breath text-red-500' : ''} />
               {isRecordingState ? (
                 <span className="ml-1 font-mono text-[10px] tabular-nums text-red-500">{formatDuration(recordingElapsed)}</span>

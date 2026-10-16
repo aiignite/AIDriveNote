@@ -163,6 +163,12 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
   const pendingRef = useRef<{ blob: Blob; name: string; durationMs: number } | null>(null);
   /** 识别是否已结束（无识别能力时为 true） */
   const recognitionEndedRef = useRef<boolean>(true);
+  /** 识别是否被永久拒绝（not-allowed / service-not-allowed），置真后不再重启 */
+  const recognitionDeadRef = useRef<boolean>(false);
+  /** 是否正在执行「停止录音」流程（用于区分识别自然结束与主动停止，避免误重启） */
+  const stoppingRef = useRef<boolean>(false);
+  /** 识别自动重启定时器句柄 */
+  const recognitionRestartTimerRef = useRef<number | null>(null);
   /** 开始时间戳 */
   const startedAtRef = useRef<number>(0);
   /** 计时器句柄 */
@@ -219,6 +225,11 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
 
   useEffect(() => () => {
     if (tickRef.current !== null) window.clearInterval(tickRef.current);
+    if (recognitionRestartTimerRef.current !== null) {
+      window.clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
+    stoppingRef.current = true;
     try { recognitionRef.current?.stop(); } catch { /* noop */ }
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') {
@@ -304,6 +315,8 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
 
       // 并行启动浏览器内置语音识别（Web Speech API）
       recognitionEndedRef.current = !speechSupported();
+      recognitionDeadRef.current = false;
+      stoppingRef.current = false;
       segmentsRef.current = [];
       lastEndRef.current = 0;
       if (speechSupported()) {
@@ -330,12 +343,35 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
             }
           };
           srec.onerror = (ev) => {
-            // 不打断录音；如识别被拒（not-allowed）则后续分段为空
+            // 永久性错误（用户 / 系统拒绝授权）：标记后不再重启，后续分段为空
             if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+              recognitionDeadRef.current = true;
               recognitionEndedRef.current = true;
             }
+            // no-speech / network / aborted 等瞬时错误不打断录音，交由 onend 自动重启
           };
           srec.onend = () => {
+            // 识别在静音 / 超时后会自行结束（continuous 也不保证持续）。
+            // 若录音仍在进行且识别未被永久拒绝，则短暂延迟后自动重启，
+            // 避免分段只覆盖开头几秒 —— 否则上传时会因「有分段」而跳过服务端
+            // 转写，最终只得到半截转写结果（用户反馈的「时间很短 / 无法转译」）。
+            if (!stoppingRef.current && recordingRef.current && !recognitionDeadRef.current) {
+              if (recognitionRestartTimerRef.current !== null) {
+                window.clearTimeout(recognitionRestartTimerRef.current);
+              }
+              recognitionRestartTimerRef.current = window.setTimeout(() => {
+                recognitionRestartTimerRef.current = null;
+                if (stoppingRef.current || !recordingRef.current || recognitionDeadRef.current) return;
+                try {
+                  srec.start();
+                } catch {
+                  // 重启失败（如实例已失效）：视为识别结束，收尾发射
+                  recognitionEndedRef.current = true;
+                  if (pendingRef.current) emitCapture();
+                }
+              }, 300);
+              return;
+            }
             recognitionEndedRef.current = true;
             // 音频已就绪时补齐分段发射
             if (pendingRef.current) emitCapture();
@@ -369,6 +405,12 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
    */
   const stopCapture = () => {
     startingRef.current = false;
+    // 标记进入停止流程：识别 onend 不再自动重启，改为收尾发射
+    stoppingRef.current = true;
+    if (recognitionRestartTimerRef.current !== null) {
+      window.clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
     const rec = recorderRef.current;
     if (rec && rec.state !== 'inactive') {
       try { rec.stop(); } catch { /* noop */ }

@@ -206,11 +206,12 @@ export function useNoteRecording(
     try {
       const hasTranscript = !!transcript && transcript.length > 0;
       const durationSeconds = durationMs && durationMs > 0 ? durationMs / 1000 : undefined;
+      // 时长始终上报：后端据此校验浏览器分段覆盖率，覆盖率不足时改走服务端转写
       const rec = await noteRecordingApi.uploadRecording(
         realFile,
         nid ?? undefined,
         hasTranscript ? transcript : undefined,
-        hasTranscript ? durationSeconds : undefined,
+        durationSeconds,
       );
       setRecordings(prev => [rec, ...prev]);
       setActiveRecording(rec);
