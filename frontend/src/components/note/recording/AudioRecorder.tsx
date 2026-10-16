@@ -292,7 +292,12 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
         const blob = new Blob(chunksRef.current, { type });
         stream.getTracks().forEach(t => t.stop());
         const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        // 用本地时间（设备所在时区，如北京时间 UTC+8）生成文件名时间戳，
+        // 避免 toISOString() 恒为 UTC 导致列表 / 音频块显示的时间比本地时间少 8 小时
+        const now = new Date();
+        const pad2 = (n: number) => String(n).padStart(2, '0');
+        const ts = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`
+          + `-${pad2(now.getHours())}-${pad2(now.getMinutes())}-${pad2(now.getSeconds())}`;
         const durationMs = Date.now() - startedAtRef.current;
         pendingRef.current = { blob, name: `recording-${ts}.${ext}`, durationMs };
         chunksRef.current = [];

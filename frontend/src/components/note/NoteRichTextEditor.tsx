@@ -351,6 +351,15 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
     setConfirmMode(null);
   }, []);
 
+  /**
+   * 查看已有录音：关闭确认小框并打开录音浮窗（列表可试听 / 重转写 / AI 整理 / 插入 / 删除）。
+   * @returns void
+   */
+  const openRecordingsList = useCallback(() => {
+    setConfirmMode(null);
+    setRecordingOpen(true);
+  }, []);
+
   // 录音期间轮询刷新已录时长（供工具栏按钮显示 mm:ss 计时）
   useEffect(() => {
     if (!isRecordingState) {
@@ -1201,23 +1210,39 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
               </p>
             </>
           )}
-          <div className="mt-2 flex items-center justify-end gap-1.5">
-            <button
-              type="button"
-              onClick={cancelRecordingAction}
-              className={`px-2 py-1 text-[11px] rounded-md border transition-colors ${
-                isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              {confirmMode === 'start' ? '取消' : '继续录音'}
-            </button>
-            <button
-              type="button"
-              onClick={confirmRecordingAction}
-              className="px-2 py-1 text-[11px] rounded-md bg-rose-600 text-white hover:bg-rose-700"
-            >
-              {confirmMode === 'start' ? '开始录音' : '结束并转写'}
-            </button>
+          <div className="mt-2 flex items-center justify-between gap-1.5">
+            {/* 开始确认时提供「查看录音」入口，可打开已有列表进行试听 / 重转写 / 插入等操作 */}
+            {confirmMode === 'start' ? (
+              <button
+                type="button"
+                onClick={openRecordingsList}
+                className={`px-2 py-1 text-[11px] rounded-md border transition-colors ${
+                  isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                查看录音
+              </button>
+            ) : (
+              <span />
+            )}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={cancelRecordingAction}
+                className={`px-2 py-1 text-[11px] rounded-md border transition-colors ${
+                  isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {confirmMode === 'start' ? '取消' : '继续录音'}
+              </button>
+              <button
+                type="button"
+                onClick={confirmRecordingAction}
+                className="px-2 py-1 text-[11px] rounded-md bg-rose-600 text-white hover:bg-rose-700"
+              >
+                {confirmMode === 'start' ? '开始录音' : '结束并转写'}
+              </button>
+            </div>
           </div>
         </div>
       )}
