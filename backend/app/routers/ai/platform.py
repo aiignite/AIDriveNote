@@ -485,22 +485,71 @@ async def test_model_connection(
 
             if provider == "OPENCODE":
                 # OpenCode Zen 匿名免费通道：Bearer public，带 CLI 同形头
+                url = (m.endpoint or "https://opencode.ai/zen/v1").rstrip("/")
                 from app.services.ai_providers.opencode import (
+                    FREE_LANE_GATE_TOOL_NAMES,
                     OPENCODE_PUBLIC_KEY,
                     OPENCODE_USER_AGENT,
+                    canonical_session_id,
                 )
 
-                url = (m.endpoint or "https://opencode.ai/zen/v1").rstrip("/")
-                resp = await client.get(
-                    f"{url}/models",
-                    headers={
+                def _zen_headers() -> dict[str, str]:
+                    # 与 provider 相同的规范会话形状（测试固定用 model id 做信号）
+                    session_id = canonical_session_id(f"test-conn:{m.model_id}")
+                    return {
                         "Authorization": f"Bearer {OPENCODE_PUBLIC_KEY}",
+                        "Content-Type": "application/json",
                         "User-Agent": OPENCODE_USER_AGENT,
                         "x-opencode-client": "cli",
+                        "x-opencode-session": session_id,
+                        "x-session-affinity": session_id,
+                        "X-Session-Id": session_id,
+                        "x-opencode-request": uuid.uuid4().hex,
+                        "x-opencode-project": canonical_session_id(session_id + "-project"),
+                    }
+
+                resp = await client.get(
+                    f"{url}/models",
+                    headers=_zen_headers(),
+                )
+                if resp.status_code != 200:
+                    return _result(False, "OpenCode Zen 目录不可达", error=f"HTTP {resp.status_code}")
+                # /models 通 ≠ 匿名聊天通道可用：再发一次最小 smoke 请求做真实准入探测
+                smoke = await client.post(
+                    f"{url}/chat/completions",
+                    headers=_zen_headers(),
+                    json={
+                        "model": m.model_id,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                        "stream": True,
+                        "tools": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "description": "Reserved for the host runtime; do not call it.",
+                                    "parameters": {"type": "object", "properties": {}},
+                                },
+                            }
+                            for name in FREE_LANE_GATE_TOOL_NAMES
+                        ],
+                        "tool_choice": "none",
                     },
                 )
-                resp.raise_for_status()
-                return _result(True, "OpenCode Zen 连接成功")
+                if smoke.status_code == 200:
+                    return _result(True, "OpenCode Zen 连接成功")
+                if smoke.status_code == 429:
+                    # 与 DSH 插件口径一致：429 = 已准入但限流，连接本身可用
+                    return _result(True, "OpenCode Zen 连接成功（免费通道限流中）")
+                body = smoke.text[:300]
+                if smoke.status_code == 403 and "FreeTierError" in body:
+                    return _result(
+                        False,
+                        "OpenCode Zen 匿名通道未准入当前出口 IP",
+                        error="上游按出口 IP 准入免费请求（403 FreeTierError）；该通道为公共备用渠道，请改用其他模型或稍后重试",
+                    )
+                return _result(False, "OpenCode Zen 连接失败", error=f"HTTP {smoke.status_code}：{body}")
 
             if provider == "OPENAI":
                 api_key = _resolve_api_key(m.api_key, settings.OPENAI_API_KEY)

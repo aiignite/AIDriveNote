@@ -170,8 +170,22 @@ async def test_can_test_connection_on_system_seed(db_session: AsyncSession, api,
     import types
 
     class _FakeResp:
+        status_code = 200
+        reason_phrase = "OK"
+
         def raise_for_status(self) -> None:
             return None
+
+        @property
+        def request(self) -> object:  # 兼容错误路径取 resp.request.url
+            return types.SimpleNamespace(url="http://fake")
+
+        @property
+        def text(self) -> str:
+            return ""
+
+        async def aread(self) -> bytes:
+            return b""
 
     class _FakeClient:
         def __init__(self, **kwargs: object) -> None:
@@ -184,6 +198,10 @@ async def test_can_test_connection_on_system_seed(db_session: AsyncSession, api,
             return False
 
         async def get(self, url: str, **kwargs: object) -> _FakeResp:
+            return _FakeResp()
+
+        async def post(self, url: str, **kwargs: object) -> _FakeResp:
+            # OPENCODE smoke 请求返回 200，表示匿名通道准入成功
             return _FakeResp()
 
     monkeypatch.setattr(

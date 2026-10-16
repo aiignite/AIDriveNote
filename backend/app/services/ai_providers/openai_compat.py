@@ -80,6 +80,10 @@ class OpenAICompatibleProvider(BaseAIProvider):
         """发送前对请求体做最后处理；子类可覆写（如 free-lane 形状门禁）。"""
         return payload
 
+    def _explain_upstream_error(self, status_code: int, body: str) -> str | None:
+        """子类可覆写：把上游错误体翻译成用户可读的中文说明；默认不翻译。"""
+        return None
+
     def _retry_on_429(self, attempt: int) -> bool:
         """429 限流时是否重试；attempt 从 0 计。默认不重试，子类可覆写。"""
         return False
@@ -126,7 +130,13 @@ class OpenAICompatibleProvider(BaseAIProvider):
                             attempt += 1
                             await asyncio.sleep(min(2.0 * attempt, 6.0))
                             continue
-                        resp.raise_for_status()
+                        if resp.status_code >= 400:
+                            body = (await resp.aread()).decode("utf-8", "replace")[:800]
+                            friendly = self._explain_upstream_error(resp.status_code, body)
+                            if friendly:
+                                yield {"type": "content", "content": friendly}
+                                break
+                            raise RuntimeError(f"Client error '{resp.status_code} {resp.reason_phrase}' for url '{resp.request.url}'：{body[:300]}")
                         async for chunk in self._consume_stream(resp):
                             yield chunk
                         break

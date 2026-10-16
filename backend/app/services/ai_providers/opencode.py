@@ -118,6 +118,22 @@ class OpenCodeProvider(OpenAICompatibleProvider):
         # 匿名通道按 IP 限流；与插件一致做静默退避重试（最多 3 次）
         return attempt < 3
 
+    def _explain_upstream_error(self, status_code: int, body: str) -> str | None:
+        # Zen 匿名免费通道按出口 IP 准入：403 FreeTierError = 当前出口 IP 未被
+        # 上游准入（参照 DSH 插件的准入探测口径：429 才算「准入但限流」）。
+        if status_code == 403 and "FreeTierError" in body:
+            return (
+                "OpenCode 免费通道暂不可用：上游按出口 IP 准入匿名请求，当前服务器的"
+                "出口 IP 未被准入（403 FreeTierError）。该通道为免费公共备用渠道，"
+                "可用性随上游策略波动，请改用其他模型，或稍后重试。"
+            )
+        if status_code == 403 and "RegionError" in body:
+            return (
+                "OpenCode 免费通道暂不可用：该模型对当前服务器所在区域不开放"
+                "（403 RegionError），请改用其他模型。"
+            )
+        return None
+
     def _build_headers(self, api_key: str) -> dict[str, str]:
         # 会话 id 由 stream_chat_with_tools 派生后暂存
         session_id = getattr(self, "_last_session_id", "")
