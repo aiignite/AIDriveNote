@@ -167,6 +167,39 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
   const startedAtRef = useRef<number>(0);
   /** 计时器句柄 */
   const tickRef = useRef<number | null>(null);
+  /** 屏幕常亮锁句柄（录音期间阻止手机自动熄屏，避免熄屏后页面被挂起导致录音中断） */
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+
+  /**
+   * 申请屏幕常亮锁：录音期间让屏幕保持点亮，避免手机自动熄屏。
+   * 不支持 Wake Lock 或申请失败（非安全上下文 / 页面不可见等）时静默忽略。
+   * @returns Promise<void>
+   */
+  const acquireWakeLock = async () => {
+    try {
+      // 旧版浏览器可能没有 wakeLock（运行时兜底）
+      if (typeof navigator === 'undefined' || !navigator.wakeLock) return;
+      if (wakeLockRef.current && !wakeLockRef.current.released) return;
+      const sentinel = await navigator.wakeLock.request('screen');
+      wakeLockRef.current = sentinel;
+      // 系统在页面隐藏时会自动释放锁，这里同步句柄，便于回到前台后重新申请
+      sentinel.addEventListener('release', () => {
+        if (wakeLockRef.current === sentinel) wakeLockRef.current = null;
+      });
+    } catch { /* 忽略：如非安全上下文 / 用户代理限制 / 页面不可见 */ }
+  };
+
+  /**
+   * 释放屏幕常亮锁（录音结束 / 组件卸载时调用）。
+   * @returns void
+   */
+  const releaseWakeLock = () => {
+    const sentinel = wakeLockRef.current;
+    wakeLockRef.current = null;
+    if (sentinel && !sentinel.released) {
+      void sentinel.release().catch(() => { /* 忽略释放失败 */ });
+    }
+  };
 
   useEffect(() => {
     const hasMedia = typeof navigator !== 'undefined'
@@ -191,6 +224,18 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
     if (rec && rec.state !== 'inactive') {
       try { rec.stop(); } catch { /* noop */ }
     }
+    releaseWakeLock();
+  }, []);
+
+  // 回到前台且仍在录音时重新申请屏幕常亮锁（页面隐藏时系统会自动释放锁）
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && recordingRef.current) {
+        void acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
 
   /**
@@ -243,11 +288,19 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
         // 识别已结束（或无识别能力）时立即发射，否则等识别 onend 补齐分段
         if (recognitionEndedRef.current) emitCapture();
       };
+      // 系统在后台 / 熄屏时可能暂停采集：仍在录音则尝试自动恢复，尽量不中断
+      rec.onpause = () => {
+        if (recordingRef.current) {
+          try { rec.resume(); } catch { /* noop */ }
+        }
+      };
       rec.start();
       recorderRef.current = rec;
       startedAtRef.current = Date.now();
       setRecording(true);
       setElapsed(0);
+      // 录音期间申请屏幕常亮锁，避免手机自动熄屏后页面被挂起导致录音中断
+      void acquireWakeLock();
 
       // 并行启动浏览器内置语音识别（Web Speech API）
       recognitionEndedRef.current = !speechSupported();
@@ -304,6 +357,7 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
       setError(msg);
       onError?.(msg);
       setRecording(false);
+      releaseWakeLock();
     } finally {
       startingRef.current = false;
     }
@@ -325,6 +379,8 @@ export const AudioRecorder = forwardRef<AudioRecorderHandle, AudioRecorderProps>
       tickRef.current = null;
     }
     setRecording(false);
+    // 录音结束即释放屏幕常亮锁，恢复正常熄屏
+    releaseWakeLock();
   };
 
   // 录音状态变化时同步给外部（供外部自绘按钮 / 状态点使用）

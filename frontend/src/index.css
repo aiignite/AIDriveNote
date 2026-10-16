@@ -61,6 +61,26 @@ body {
   background-color: rgb(254 215 170 / 0.85);
 }
 
+/*
+ * 录音中图标呼吸动效：图标在红色高亮基础上做缩放 + 透明度脉动，
+ * 让工具栏麦克风按钮在录音期间有明确的“正在工作”视觉反馈。
+ */
+@keyframes recording-breath {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.82);
+    opacity: 0.6;
+  }
+}
+
+.animate-recording-breath {
+  animation: recording-breath 1.1s ease-in-out infinite;
+  transform-origin: center;
+}
+
 /* BlockNote 富文本：编辑区默认撑满剩余视口高度 */
 .note-rich-text-editor .bn-container,
 .note-rich-text-editor .bn-editor {

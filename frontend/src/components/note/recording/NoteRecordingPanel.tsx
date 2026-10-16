@@ -24,14 +24,60 @@ import { RecordingStatusBadge } from './RecordingStatusBadge';
 import type { RecordingDotState } from './RecordingStatusDot';
 import { TranscriptPreview } from './TranscriptPreview';
 
-/** 浮窗宽度（像素），与定位计算保持一致 */
-const POPOVER_WIDTH = 320;
-
-/** 浮窗最大高度（像素） */
-const POPOVER_MAX_HEIGHT = 420;
-
 /** 视口边缘最小留白（像素） */
 const VIEWPORT_MARGIN = 8;
+
+/** 面板尺寸持久化键（记录用户拖拽后的宽高，重开时复用） */
+const PANEL_SIZE_STORAGE_KEY = 'aidrivenote:recordingPanelSize';
+
+/** 默认面板宽度（像素） */
+const DEFAULT_PANEL_WIDTH = 360;
+
+/** 默认面板高度（像素） */
+const DEFAULT_PANEL_HEIGHT = 420;
+
+/** 面板最小宽度（像素） */
+const MIN_PANEL_WIDTH = 280;
+
+/** 面板最小高度（像素） */
+const MIN_PANEL_HEIGHT = 240;
+
+/** 面板最大宽度（像素），避免拖得过宽遮挡编辑器 */
+const MAX_PANEL_WIDTH = 720;
+
+/** 面板最大高度上限（像素），实际还会受视口高度约束 */
+const MAX_PANEL_HEIGHT = 1000;
+
+/**
+ * 读取持久化的面板尺寸。
+ * @returns 合法范围内的宽高；无记录或解析失败时返回默认尺寸
+ */
+function loadPanelSize(): { width: number; height: number } {
+  const fallback = { width: DEFAULT_PANEL_WIDTH, height: DEFAULT_PANEL_HEIGHT };
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = window.localStorage.getItem(PANEL_SIZE_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as { width?: number; height?: number };
+    const width = Number(parsed?.width);
+    const height = Number(parsed?.height);
+    return {
+      width: Number.isFinite(width) ? Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, width)) : fallback.width,
+      height: Number.isFinite(height) ? Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, height)) : fallback.height,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 计算受视口约束的最大面板高度。
+ * @returns 面板可用的最大高度（像素）
+ */
+function viewportMaxHeight(): number {
+  if (typeof window === 'undefined') return DEFAULT_PANEL_HEIGHT;
+  return Math.max(MIN_PANEL_HEIGHT, window.innerHeight - VIEWPORT_MARGIN * 2);
+}
 
 interface NoteRecordingPanelProps {
   /** 是否打开 */
@@ -60,6 +106,8 @@ export interface NoteRecordingPanelHandle {
   start: () => void;
   /** 停止录音 */
   stop: () => void;
+  /** 当前已录制时长（毫秒），未录音时为 0 */
+  getElapsedMs: () => number;
 }
 
 /**
@@ -112,6 +160,13 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
   const panelRef = useRef<HTMLDivElement>(null);
   /** 常驻录音实例句柄：录音期间面板布局变化也不会中断采集 */
   const recorderRef = useRef<AudioRecorderHandle>(null);
+  /** 面板尺寸（可拖拽调整），初始值从 localStorage 恢复 */
+  const [size, setSize] = useState<{ width: number; height: number }>(() => loadPanelSize());
+  /** size 的最新值镜像，供拖拽结束时的持久化回调读取 */
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  /** 拖拽缩放会话的起始快照（为 null 表示未在拖拽） */
+  const resizeStartRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
 
   /** onRecordingStateChange 的稳定引用（供 handleRecordingChange 闭包读取最新回调） */
   const onRecordingStateChangeRef = useRef(onRecordingStateChange);
@@ -137,6 +192,7 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
   useImperativeHandle(ref, () => ({
     start: startRecording,
     stop: stopRecording,
+    getElapsedMs: () => recorderRef.current?.elapsedMs ?? 0,
   }), [startRecording, stopRecording]);
 
   /** 当前录音是否正在执行某动作 */
@@ -166,34 +222,37 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
 
   /**
-   * 依据锚点按钮计算浮窗位置。
+   * 依据锚点按钮与当前面板尺寸计算浮窗位置，越界时翻转 / 贴边。
    * @returns void
    */
   const computePosition = useCallback(() => {
+    // 面板高度受视口约束（拖得过高时自动收紧，避免超出屏幕）
+    const height = Math.min(size.height, viewportMaxHeight());
+    const width = size.width;
     const anchor = anchorRef?.current;
     if (!anchor) {
-      // 无锚点（菜单命令打开）：退回视口右下角
+      // 无锚点（菜单命令打开）：退回视口右侧中部
       setPosition({
-        left: Math.max(VIEWPORT_MARGIN, window.innerWidth - POPOVER_WIDTH - VIEWPORT_MARGIN),
-        top: Math.max(VIEWPORT_MARGIN, window.innerHeight / 2 - 120),
+        left: Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN),
+        top: Math.max(VIEWPORT_MARGIN, window.innerHeight / 2 - height / 2),
       });
       return;
     }
     const rect = anchor.getBoundingClientRect();
-    let left = rect.left + rect.width / 2 - POPOVER_WIDTH / 2;
+    let left = rect.left + rect.width / 2 - width / 2;
     left = Math.min(
       Math.max(VIEWPORT_MARGIN, left),
-      Math.max(VIEWPORT_MARGIN, window.innerWidth - POPOVER_WIDTH - VIEWPORT_MARGIN),
+      Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN),
     );
-    // 默认在按钮下方；下方空间不足则翻转到上方
+    // 默认在按钮下方；下方空间不足则翻转到上方，最后夹取到视口内
+    const estimatedHeight = panelRef.current?.offsetHeight ?? height;
     const below = rect.bottom + 6;
-    const estimatedHeight = panelRef.current?.offsetHeight ?? POPOVER_MAX_HEIGHT;
     const above = rect.top - estimatedHeight - 6;
-    const top = below + estimatedHeight > window.innerHeight - VIEWPORT_MARGIN
-      ? Math.max(VIEWPORT_MARGIN, above)
-      : below;
+    const preferBelow = below + estimatedHeight <= window.innerHeight - VIEWPORT_MARGIN;
+    let top = preferBelow ? below : above;
+    top = Math.max(VIEWPORT_MARGIN, Math.min(top, window.innerHeight - estimatedHeight - VIEWPORT_MARGIN));
     setPosition({ left, top });
-  }, [anchorRef]);
+  }, [anchorRef, size.width, size.height]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -211,6 +270,45 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
       window.removeEventListener('scroll', onViewportChange, true);
     };
   }, [open, computePosition]);
+
+  /**
+   * 开始拖拽缩放面板（右下角手柄）。
+   * 通过 window 上的 pointer 事件跟踪移动，松开时持久化尺寸并重新夹取面板位置。
+   * @param e 指针按下事件
+   * @returns void
+   */
+  const handleResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeStartRef.current = { x: e.clientX, y: e.clientY, width: size.width, height: size.height };
+    const onMove = (ev: PointerEvent) => {
+      const start = resizeStartRef.current;
+      if (!start) return;
+      const maxHeight = Math.min(MAX_PANEL_HEIGHT, viewportMaxHeight());
+      const width = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, start.width + (ev.clientX - start.x)));
+      const height = Math.max(MIN_PANEL_HEIGHT, Math.min(maxHeight, start.height + (ev.clientY - start.y)));
+      setSize({ width, height });
+    };
+    const onUp = () => {
+      resizeStartRef.current = null;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      try {
+        window.localStorage.setItem(PANEL_SIZE_STORAGE_KEY, JSON.stringify(sizeRef.current));
+      } catch { /* 忽略持久化失败（隐私模式等） */ }
+      // 仅把当前位置夹取回视口内，避免缩放后因重新锚定造成位置“翻转跳动”
+      setPosition(prev => {
+        if (!prev) return prev;
+        const width = sizeRef.current.width;
+        const height = Math.min(sizeRef.current.height, viewportMaxHeight());
+        const left = Math.max(VIEWPORT_MARGIN, Math.min(prev.left, window.innerWidth - width - VIEWPORT_MARGIN));
+        const top = Math.max(VIEWPORT_MARGIN, Math.min(prev.top, window.innerHeight - height - VIEWPORT_MARGIN));
+        return { left, top };
+      });
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, [size.width, size.height]);
 
   // 打开期间监听 ESC 与「点击外部关闭」；录音中不关闭，避免误触中断采集
   useEffect(() => {
@@ -338,8 +436,8 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
           style={{
             left: position?.left ?? VIEWPORT_MARGIN,
             top: position?.top ?? VIEWPORT_MARGIN,
-            width: POPOVER_WIDTH,
-            maxHeight: POPOVER_MAX_HEIGHT,
+            width: size.width,
+            height: Math.min(size.height, viewportMaxHeight()),
           }}
           className={`${shellCls} flex flex-col`}
         >
@@ -505,7 +603,7 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
       </div>
 
       {/* 底部：插入笔记 */}
-      <div className={`px-3 py-2 border-t flex items-center justify-between gap-2 shrink-0 ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
+      <div className={`px-3 pr-5 py-2 border-t flex items-center justify-between gap-2 shrink-0 ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
         <span className={`text-[10px] truncate ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
           {activeRecording ? '插入后写入光标处' : '选中录音后可插入'}
         </span>
@@ -518,6 +616,21 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
         >
           <PlusCircle size={12} /> 插入笔记
         </button>
+      </div>
+
+      {/* 右下角拖拽手柄：按住拖动可调整面板宽高（尺寸会被记住） */}
+      <div
+        role="separator"
+        aria-label="调整面板大小"
+        title="拖拽调整大小"
+        onPointerDown={handleResizeStart}
+        className={`absolute bottom-0 right-0 z-10 flex h-4 w-4 cursor-nwse-resize items-end justify-end ${
+          isDark ? 'text-gray-500 hover:text-gray-300' : 'text-gray-300 hover:text-gray-500'
+        }`}
+      >
+        <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden>
+          <path d="M14 4 L4 14 M14 10 L10 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
       </div>
         </div>
       )}

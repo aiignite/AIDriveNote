@@ -7,7 +7,7 @@
  *    供顶部统一菜单栏与命令面板消费；
  * 2. 通过 onOutlineChange 上报由 heading 块抽取的大纲（NoteOutlineState）。
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { BlockNoteEditor, PartialBlock } from '@blocknote/core';
 import { useCreateBlockNote } from '@blocknote/react';
@@ -44,6 +44,24 @@ const DEFAULT_BLOCKS: PartialBlock[] = [{ type: 'paragraph', props: { textAlignm
 
 /** 大纲刷新节流延迟（毫秒），避免每次输入都全量扫描文档 */
 const OUTLINE_THROTTLE_MS = 300;
+
+/** 录音确认小框宽度（像素），开始 / 结束确认共用，与定位计算保持一致 */
+const RECORD_CONFIRM_WIDTH = 224;
+
+/** 视口边缘最小留白（像素） */
+const OVERLAY_MARGIN = 8;
+
+/**
+ * 把毫秒格式化为 mm:ss。
+ * @param ms 毫秒数
+ * @returns 形如 01:23 的时间文本
+ */
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
 
 /**
  * 可选文字颜色 / 背景高亮色板项
@@ -250,44 +268,143 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   const recordingPanelRef = useRef<NoteRecordingPanelHandle>(null);
   /** 是否正在录音（ref 镜像，供按钮点击同步判断，避免依赖异步状态更新） */
   const isRecordingRef = useRef(false);
+  /** 是否正在录音（状态镜像，驱动按钮红色高亮与计时展示） */
+  const [isRecordingState, setIsRecordingState] = useState(false);
+  /** 录音已进行时长（毫秒），录音期间轮询刷新 */
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
+  /** 录音确认小框模式：null=关闭 / 'start'=开始录音确认 / 'stop'=结束录音确认 */
+  const [confirmMode, setConfirmMode] = useState<'start' | 'stop' | null>(null);
+  /** 录音确认小框定位 */
+  const [confirmPos, setConfirmPos] = useState<{ left: number; top: number } | null>(null);
+  /** 确认小框自身引用（用于点击外部取消） */
+  const confirmRef = useRef<HTMLDivElement>(null);
 
   /**
-   * 录音状态变化：同步镜像标记；停止后自动弹出处理面板。
+   * 录音状态变化：同步状态镜像；
+   * 开始录音时关闭确认框与面板，停止后自动弹出处理面板。
    * @param recording 是否正在录音
    * @returns void
    */
   const handleRecordingStateChange = useCallback((recording: boolean) => {
     const wasRecording = isRecordingRef.current;
     isRecordingRef.current = recording;
-    if (wasRecording && !recording) setRecordingOpen(true);
+    setIsRecordingState(recording);
+    // 录音状态一旦变化即收起确认小框，避免残留过期确认
+    setConfirmMode(null);
+    if (recording) {
+      setRecordingOpen(false);
+    } else if (wasRecording) {
+      setRecordingOpen(true);
+    }
+  }, []);
+
+  /** 请求开始录音：弹出确认小框，防止误触直接开启采集 */
+  const requestStartRecording = useCallback(() => {
+    setConfirmMode('start');
+  }, []);
+
+  /** 请求结束录音：弹出确认小框，防止误触直接停止 */
+  const requestStopRecording = useCallback(() => {
+    setConfirmMode('stop');
   }, []);
 
   /**
-   * 工具栏麦克风按钮：未录音时直接开始录音（不弹出面板，仅显示按钮上的小红点）；
-   * 录音中再次点击则停止，停止后自动弹出处理面板。
+   * 工具栏麦克风按钮：开始与结束录音都先弹出确认小框（防止误触）。
+   * 未录音 → 确认开始；录音中 → 确认结束（结束后自动弹出处理面板）。
    * @returns void
    */
   const handleMicClick = useCallback(() => {
     if (isRecordingRef.current) {
-      recordingPanelRef.current?.stop();
+      requestStopRecording();
     } else {
-      // 开始录音前先收起面板，保证录音期间界面上只保留按钮小红点
-      setRecordingOpen(false);
-      recordingPanelRef.current?.start();
+      requestStartRecording();
     }
-  }, []);
+  }, [requestStartRecording, requestStopRecording]);
 
   /**
-   * 命令面板「录音转写」入口：录音中则停止，否则切换面板开关（用于上传 / 管理录音）。
+   * 命令面板「录音转写」入口：录音中则请求停止（同样走确认），否则切换面板开关（用于上传 / 管理录音）。
    * @returns void
    */
   const toggleRecording = useCallback(() => {
     if (isRecordingRef.current) {
-      recordingPanelRef.current?.stop();
+      requestStopRecording();
     } else {
       setRecordingOpen(v => !v);
     }
+  }, [requestStopRecording]);
+
+  /** 确认执行：按当前确认模式开始或结束录音 */
+  const confirmRecordingAction = useCallback(() => {
+    const mode = confirmMode;
+    setConfirmMode(null);
+    if (mode === 'start') {
+      // 开始录音前先收起面板，保证录音期间界面上只保留按钮红色高亮
+      setRecordingOpen(false);
+      recordingPanelRef.current?.start();
+    } else if (mode === 'stop') {
+      recordingPanelRef.current?.stop();
+    }
+  }, [confirmMode]);
+
+  /** 取消确认：关闭小框，不执行任何录音操作 */
+  const cancelRecordingAction = useCallback(() => {
+    setConfirmMode(null);
   }, []);
+
+  // 录音期间轮询刷新已录时长（供工具栏按钮显示 mm:ss 计时）
+  useEffect(() => {
+    if (!isRecordingState) {
+      setRecordingElapsed(0);
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setRecordingElapsed(recordingPanelRef.current?.getElapsedMs() ?? 0);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [isRecordingState]);
+
+  // 确认小框定位：锚定在麦克风按钮下方，越界时翻转到上方
+  useLayoutEffect(() => {
+    if (!confirmMode) return;
+    const anchor = recordingAnchorRef.current;
+    if (!anchor) {
+      setConfirmPos({ left: window.innerWidth / 2 - RECORD_CONFIRM_WIDTH / 2, top: 96 });
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    const left = Math.max(
+      OVERLAY_MARGIN,
+      Math.min(rect.left + rect.width / 2 - RECORD_CONFIRM_WIDTH / 2, window.innerWidth - RECORD_CONFIRM_WIDTH - OVERLAY_MARGIN),
+    );
+    const estimatedHeight = 118;
+    const below = rect.bottom + 8;
+    const top = below + estimatedHeight > window.innerHeight - OVERLAY_MARGIN
+      ? Math.max(OVERLAY_MARGIN, rect.top - estimatedHeight - 8)
+      : below;
+    setConfirmPos({ left, top });
+  }, [confirmMode]);
+
+  // 确认小框：点击外部或按 ESC 取消（不执行任何录音操作）
+  useEffect(() => {
+    if (!confirmMode) return undefined;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (confirmRef.current?.contains(target)) return;
+      // 点回麦克风按钮本身不算外部（按钮点击逻辑会重新请求确认）
+      if (recordingAnchorRef.current?.contains(target)) return;
+      setConfirmMode(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setConfirmMode(null);
+    };
+    document.addEventListener('mousedown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [confirmMode]);
 
   /** 录音状态标记变化回调（稳定引用，避免浮窗 effect 依赖抖动） */
   const handleRecordingStatusChange = useCallback((state: RecordingDotState) => {
@@ -629,15 +746,28 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
   }, []);
 
   /**
-   * 把语音识别出的文本作为新段落插入当前光标块之后
+   * 把语音识别出的文本作为新段落插入，并把光标移动到新段落末尾。
+   *
+   * 这样连续听写时，下一段识别结果会落在本段之后（自动换到下一行），
+   * 避免多条最终结果都插到同一个锚点块之后导致文本顺序颠倒。
+   *
    * @param text 识别出的最终文本
    * @returns 无
    */
   const insertSpeechText = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    insertBlocksAfterCursor([{ type: 'paragraph', content: trimmed } as PartialBlock]);
-  }, [insertBlocksAfterCursor]);
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.focus();
+    const inserted = ed.insertBlocks(
+      [{ type: 'paragraph', content: trimmed } as PartialBlock],
+      ed.getTextCursorPosition().block,
+      'after',
+    );
+    const last = inserted[inserted.length - 1];
+    if (last) ed.setTextCursorPosition(last.id, 'end');
+  }, []);
 
   /** 语音输入：识别结果作为新段落插入 */
   const speech = useSpeechInput({ onFinal: insertSpeechText });
@@ -985,13 +1115,24 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
             <button
               ref={recordingAnchorRef}
               type="button"
-              className={`${btnCls} relative`}
+              className={`${btnCls} relative inline-flex items-center ${
+                isRecordingState ? 'text-red-500 hover:text-red-600 bg-red-50 dark:bg-red-900/40' : ''
+              }`}
               onClick={handleMicClick}
               aria-expanded={recordingOpen}
-              title={recordingDot === 'recording' ? '停止录音' : '录音转写'}
+              title={isRecordingState
+                ? `结束录音（已录 ${formatDuration(recordingElapsed)}）`
+                : '录音转写（录制音频并转写为文字）'}
             >
-              <Mic size={16} />
-              <RecordingStatusDot state={recordingDot} />
+              {isRecordingState && (
+                <span aria-hidden className="pointer-events-none absolute inset-0 rounded-md ring-2 ring-red-500/70 animate-ping" />
+              )}
+              <Mic size={16} className={isRecordingState ? 'animate-recording-breath text-red-500' : ''} />
+              {isRecordingState ? (
+                <span className="ml-1 font-mono text-[10px] tabular-nums text-red-500">{formatDuration(recordingElapsed)}</span>
+              ) : (
+                <RecordingStatusDot state={recordingDot} />
+              )}
             </button>
           )}
           <button
@@ -1000,7 +1141,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
             onClick={speech.toggle}
             disabled={!speech.supported}
             title={speech.supported
-              ? (speech.listening ? '停止语音输入' : '语音输入')
+              ? (speech.listening ? '停止语音输入' : '语音输入（实时听写，不录制音频）')
               : '当前浏览器不支持语音输入'}
           >
             <AudioLines size={16} />
@@ -1037,6 +1178,52 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
         className="hidden"
         onChange={handleImageFileChange}
       />
+      {/* 录音确认小框：锚定在麦克风按钮下方，开始 / 结束录音都需先确认（防误触） */}
+      {confirmMode && confirmPos && (
+        <div
+          ref={confirmRef}
+          role="dialog"
+          aria-label={confirmMode === 'start' ? '开始录音确认' : '结束录音确认'}
+          style={{ left: confirmPos.left, top: confirmPos.top, width: RECORD_CONFIRM_WIDTH }}
+          className={`fixed z-[80] rounded-lg border p-2.5 shadow-xl ${
+            isDark ? 'bg-gray-900 text-gray-100 border-gray-700' : 'bg-white text-gray-900 border-gray-200'
+          }`}
+        >
+          {confirmMode === 'start' ? (
+            <>
+              <p className="text-[12px] font-semibold">开始录音？</p>
+              <p className={`mt-1 text-[11px] leading-snug ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                将录制音频并转写为文字，需要麦克风授权。
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-[12px] font-semibold">结束录音？</p>
+              <p className={`mt-1 text-[11px] leading-snug ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                结束后将上传音频并开始转写。
+              </p>
+            </>
+          )}
+          <div className="mt-2 flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={cancelRecordingAction}
+              className={`px-2 py-1 text-[11px] rounded-md border transition-colors ${
+                isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {confirmMode === 'start' ? '取消' : '继续录音'}
+            </button>
+            <button
+              type="button"
+              onClick={confirmRecordingAction}
+              className="px-2 py-1 text-[11px] rounded-md bg-rose-600 text-white hover:bg-rose-700"
+            >
+              {confirmMode === 'start' ? '开始录音' : '结束并转写'}
+            </button>
+          </div>
+        </div>
+      )}
       {/* 录音浮窗：锚定在工具栏麦克风按钮下方的小面板（非全屏抽屉）；匿名账号不渲染 */}
       {!readOnly && !isGuest && (
         <NoteRecordingPanel
