@@ -1651,6 +1651,28 @@ async function writeNoteToLocal(
   oldRel?: string,
 ): Promise<void> {
   const isKb = ctx.direction === 'kb';
+
+  // 保护目录只导入：不写本地文件，但仍要记录基线，
+  // 否则每次同步都会把同一个文件重复上传（本地才是真相）。
+  if (isKb && isProtected(targetRel, ctx.protect)) {
+    ctx.report.blockedByProtection.push(targetRel);
+    const existing = await readFile(root, targetRel);
+    if (existing) {
+      ctx.nextManifest.notes[note.id] = {
+        relPath: targetRel,
+        noteType: note.noteType,
+        serverUpdatedAt: note.updatedAt ?? null,
+        contentHash: await fileSignature(existing),
+        localMtime: existing.lastModified,
+        localSize: existing.size,
+        title: note.title,
+        folderPath: dirname(targetRel),
+        tagIds: (note.tags ?? []).map((t) => t.id),
+      };
+    }
+    return;
+  }
+
   const tagNames = isKb ? kbFileTags(note) : (note.tags ?? []).map((t) => t.name);
 
   // 读已有文件的 frontmatter 做保真写入
