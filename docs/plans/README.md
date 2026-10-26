@@ -17,3 +17,4 @@
 | [AIDriveNote 优化方向分析](./AIDriveNote-优化方向分析.md) | draft | 2026-10-06 | 工程层：架构、性能、安全、CI 门禁 |
 | [AIDriveNote 全量优化方案](./AIDriveNote-全量优化方案.md) | draft | 2026-10-06 | 会话起草稿：现状/差距诊断 + 五项系统级优化 + 路线图 |
 | [AIDriveNote 产品能力演进方案](./AIDriveNote-产品能力演进方案.md) | draft | 2026-10-06 | **代码核实版**：13 项新发现缺陷 + 块级双链/图谱/画布/属性/CRDT/Graph-RAG 分级方案 |
+| [AIDriveNote 知识库管理模式方案](./AIDriveNote-知识库管理模式方案.md) | P0 implemented | 2026-10-26 | **代码核实版**：7 项同步冲突（含 2 处数据丢失）+ 知识库根文件夹模型 + 忽略/保护目录 + 单向导入与不删不覆盖规则 |

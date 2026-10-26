@@ -45,7 +45,7 @@
 | 邮件 | 把笔记以附件发送到邮箱（QQ SMTP）；注册三步验证码 |
 | 图片 | 粘贴 / 拖拽 / 本地选择 / **拍照**上传，服务端资源化存储（同内容去重），断网降级 base64 |
 | 离线 | PWA 可安装、离线阅读与编辑、IndexedDB 缓存、写队列与冲突处理 |
-| 同步 | 本机文件夹双向同步（File System Access API，三方比对） |
+| 同步 | 本机文件夹双向同步（File System Access API，三方比对）；**知识库管理模式**：本地文件为事实源、永不删除/覆盖、保护目录只导入 |
 | 导出 | 富文本/Markdown → PDF / DOCX / HTML / MD；导图 → PDF / PNG / SVG / JSON / XMind；流程图 → PDF / PNG / SVG / XML；全部笔记原格式批量导出（保留文件夹层级） |
 | AI | 侧栏 SSE 流式对话（Markdown + Mermaid 渲染）、笔记页快捷操作、混合 RAG、17 个笔记工具、13 个内置技能、写入需确认、OpenCode Zen 免 Key 公共模型（含匿名可用） |
 | 集成 | MCP Server（外部 Agent 写入笔记）、SSO 单点登录、API 访问令牌（PAT） |
@@ -323,7 +323,49 @@ ASR 设置（`/settings/asr`）以数据库为准、覆盖环境变量；网关 
 - 以 `.aidrivenote/sync.json` 记录同步基线，文件内容 SHA-256 与服务端 `updated_at` 三方比对；
 - 文件夹树以服务端为权威，远端删除的文件移入 `.aidrivenote/trash/`，本地删除会软删除服务端笔记；
 - 同步前可先执行**只读对比**，生成差异报告后再决定是否写入；
-- Markdown 文件带 YAML frontmatter（id / title / tags / folder），导图与流程图分别为 `.json` 与 `.drawio`。
+- Markdown 文件带 YAML frontmatter（`adn_id` / title / tags / folder，兼容历史 `id`），导图与流程图分别为 `.json` 与 `.drawio`。
+
+### 知识库管理模式
+
+把 AIDriveNote 当作**本地 Markdown 知识库的管理软件**（阅读 / 查询 / 新增）时启用。
+典型对象是那种带 `AGENTS.md`、`index.md`、`log.md`、`raw/`、`wiki/`、`templates/` 的纯文件知识库。
+设计方案与源码核实记录见 [docs/plans/AIDriveNote-知识库管理模式方案.md](docs/plans/AIDriveNote-知识库管理模式方案.md)。
+
+**启用方式**：设置 → 本地同步 → 同步模式选「知识库管理模式」→ 指定**知识库根文件夹**（笔记树里的一个文件夹），并把本地目录绑定为知识库根目录。
+
+**与通用镜像的语义差异**：
+
+| 维度 | 通用镜像 | 知识库管理模式 |
+|---|---|---|
+| 身份键 | frontmatter 里的 `adn_id` | **本地文件相对路径**（随 manifest 持久化） |
+| 事实源 | 服务端 | **本地文件** |
+| 删除本地文件 | 移入 `.aidrivenote/trash/` | **永不删除**（含目录） |
+| 覆盖本地文件 | 冲突时另存副本再覆盖 | **仅当本地未改动时**才写回 |
+| 双改 | 生成冲突副本 | **本地为准**，远端变更记入报告 |
+| 远端标题变化 | 重命名本地文件 | **原地更新**，不重命名 |
+| frontmatter | 写入 `adn_id` 等字段 | 不注入 ID；`folder`/`updated_at` 也不写 |
+| 未知 frontmatter 键 | 保留 | 保留（`type`/`sources`/`related`/`confidence` 等） |
+| 非文本文件 | 全部扫描 | 只处理 `.md`/`.json`/`.drawio`，其余计数跳过 |
+
+**五条硬规则**：
+
+1. 引擎在知识库模式下不调用 `removeEntry`，也不调用 `noteApi.delete`；
+2. 只有 `localHash === base.contentHash`（本地未改）时才写回；
+3. 保护目录（默认 `raw`、`templates`）只导入，写回动作降级为报告；
+4. 执行前先跑一次只读对比并弹确认框，列出计划；
+5. 文件被改名/搬走后按**内容指纹**认领，不会重复导入。
+
+**忽略清单**（一行一条，相对知识库根，可在设置页编辑）：
+
+- `/AGENTS.md` —— 首斜杠表示只匹配根目录；
+- `archive/2025` —— 含斜杠表示该子树；
+- `templates` —— 不含斜杠表示任意层级的同名文件或目录。
+
+内置预设：`AGENTS.md`、`CLAUDE.md`、`MEMORY.md`、`README.md`、`index.md`、`log.md`、`archive`、`templates`。
+点开头的项（`.git/`、`.obsidian/`、`.gitkeep`）由扫描层自动跳过，无需写进清单。
+
+**frontmatter 映射**：`title` → 笔记标题，`tags` → 标签，`type` → 标签 `kb:concept`，`topic` → 标签 `topic:产品开发`，
+`confidence`/`sources`/`related` → 写入笔记描述（不注入正文，避免与磁盘文件不一致导致同步震荡）。
 
 ---
 
@@ -796,6 +838,20 @@ cd frontend && npm run build                   # tsc + vite build + gzip
 ---
 
 ## 更新日志
+
+### 2026-10-26
+
+- **知识库管理模式（本地同步第二方向）**：在笔记树中指定一个「知识库根文件夹」，把本地 Markdown 知识库目录挂载给它，即可把 AIDriveNote 当作该知识库的管理软件（阅读 / 查询 / 新增）。
+  - 新增 `SyncDirection = 'two-way' | 'kb'`，默认 `two-way`，**不开模式零行为变化**；
+  - **本地文件永不被删**：知识库模式下引擎不再调用 `moveToTrash` / `noteApi.delete`；本地目录也不会被移入回收站；
+  - **本地文件永不被覆盖**：只有「本地未改动」（`localHash === base.contentHash`）时才写回；双改时以本地为准，远端变更记入报告，不生成冲突副本；
+  - **身份键改为路径**：不再依赖 frontmatter 里的笔记 ID；文件被改名/搬走后按内容指纹认领，不重复导入；远端标题变化不重命名本地文件；
+  - **忽略清单 + 保护目录**：支持 `/根锚定`、`子/路径`、`同名任意层级` 三种写法；保护目录（默认 `raw`、`templates`）只导入，写回降级为报告；
+  - **frontmatter 保真（修复两处数据丢失）**：`parseFrontmatter` 改为保序解析，未知键不再被丢弃；写回时保留已存在文件的未知键、注释与顺序 —— 知识页的 `type` / `sources` / `related` / `confidence` 不再被抹掉；
+  - **命名空间隔离**：`id` 改为 `adn_id`（读取兼容历史 `id`），避免撞上外部工具的裸 `id`；
+  - 报告新增 `imported` / `missingLocal` / `unlinkedLocal` / `blockedByProtection` / `skippedRemoteChanges` / `skippedUnsupported` 六项计数；
+  - 设置页新增同步模式选择、知识库根文件夹选择、忽略清单与保护目录编辑；笔记树对知识库根文件夹显示 `Database` 徽标。
+  - 设计方案与验收标准见 [docs/plans/AIDriveNote-知识库管理模式方案.md](docs/plans/AIDriveNote-知识库管理模式方案.md)。
 
 ### 2026-10-13
 

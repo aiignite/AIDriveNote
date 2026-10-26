@@ -11,7 +11,7 @@ import {
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
   BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, FolderSync, Clock,
   PanelLeftClose, Tag, X, Check, LayoutGrid, CheckSquare, Square,
-  Lock, Unlock, KeyRound, LockOpen,
+  Lock, Unlock, KeyRound, LockOpen, Database,
 } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -20,6 +20,7 @@ import {
 } from '../../hooks/usePersistentState';
 import { ensurePermission, isSupported as isSyncSupported, loadHandleFromIndexedDB } from '../../services/sync/folderAccess';
 import { runSync } from '../../services/sync/syncEngine';
+import { KB_CONFIG_EVENT, loadKbConfig } from '../../services/sync/kbConfig';
 import { getUnlockToken, type Note, type NoteFolder, type NoteTag } from '../../services/note';
 
 /* ── helpers ────────────────────────────────────── */
@@ -328,6 +329,8 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   const [syncingLocal, setSyncingLocal] = useState(false);
   /** 本地同步进度（用于按钮上的加载态提示） */
   const [syncProgress, setSyncProgress] = useState<{ done: number; total: number; phase: string } | null>(null);
+  /** 知识库根文件夹 ID（启用知识库模式且已指定时非空，用于树上打标） */
+  const [kbRootId, setKbRootId] = useState<string | null>(null);
   // Context menu
   const [contextMenu, setContextMenu] = useState<{
     x: number; y: number; type: 'note' | 'folder'; id: string;
@@ -337,6 +340,17 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   const [renameValue, setRenameValue] = useState('');
   // Move-to-folder modal
   const [movingNoteId, setMovingNoteId] = useState<string | null>(null);
+
+  /** 读取知识库根标记，并跟随设置页的配置变更即时刷新 */
+  useEffect(() => {
+    const syncKbRoot = () => {
+      const cfg = loadKbConfig();
+      setKbRootId(cfg.enabled ? cfg.rootFolderId : null);
+    };
+    syncKbRoot();
+    window.addEventListener(KB_CONFIG_EVENT, syncKbRoot);
+    return () => window.removeEventListener(KB_CONFIG_EVENT, syncKbRoot);
+  }, []);
   // New folder inline input
   const [newFolderParent, setNewFolderParent] = useState<string | null | undefined>(undefined);
   const [newFolderName, setNewFolderName] = useState('');
@@ -646,12 +660,24 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         toast.error('未获取到当前用户信息，请重新登录后再试');
         return;
       }
+      const kbCfg = loadKbConfig();
+      const kbDirection = kbCfg.enabled && kbCfg.rootFolderId ? 'kb' : 'two-way';
       const report = await runSync(handle, {
         mode: 'apply',
         userId,
+        direction: kbDirection,
+        kb:
+          kbDirection === 'kb'
+            ? {
+                rootFolderId: kbCfg.rootFolderId,
+                rootFolderName: kbCfg.rootFolderName,
+                ignore: kbCfg.ignore,
+                protect: kbCfg.protect,
+              }
+            : undefined,
         onProgress: p => setSyncProgress({ done: p.done, total: p.total, phase: p.phase }),
       });
-      const changed = report.downloaded + report.uploaded
+      const changed = report.downloaded + report.uploaded + report.imported
         + report.localDeleted.length + report.remoteDeleted.length
         + report.createdFolders.length + report.uploadedFolders.length
         + report.removedFolders.length + report.conflicts.length;
@@ -858,6 +884,15 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                 <Lock size={11} className="inline mr-1 -mt-0.5 text-orange-500" />
               )}
               {folder.name}
+            </span>
+          )}
+          {/* 知识库管理文件夹标记 */}
+          {folder.id === kbRootId && renamingFolderId !== folder.id && (
+            <span
+              className="shrink-0 flex items-center"
+              title="知识库管理文件夹：本地知识库目录与它建立映射"
+            >
+              <Database size={12} className="text-emerald-500" />
             </span>
           )}
           {/* Note count badge */}

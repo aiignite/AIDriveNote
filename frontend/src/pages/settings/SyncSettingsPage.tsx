@@ -2,18 +2,23 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast';
 import {
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
+  Database,
   FileText,
   Folder,
   FolderSync,
   HardDriveDownload,
   Loader2,
   RefreshCw,
+  Save,
   ShieldAlert,
+  ShieldCheck,
   Unplug,
 } from 'lucide-react';
 import { useApp } from '../../contexts/AppContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { noteFolderApi, type NoteFolder } from '../../services/note';
 import {
   clearHandleFromIndexedDB,
   ensurePermission,
@@ -29,7 +34,15 @@ import {
   type SyncDirectoryHandle,
 } from '../../services/sync/folderAccess';
 import {
+  KB_PRESET_IGNORE,
+  KB_PRESET_PROTECT,
+  loadKbConfig,
+  saveKbConfig,
+  type KbConfig,
+} from '../../services/sync/kbConfig';
+import {
   runSync,
+  type SyncDirection,
   type SyncProgress,
   type SyncReport,
 } from '../../services/sync/syncEngine';
@@ -58,6 +71,97 @@ const SyncSettingsPage: React.FC = () => {
   const [showOrphans, setShowOrphans] = useState(false);
   const autoComparedRef = useRef(false);
 
+  // ── 知识库管理模式 ──
+  const [kb, setKb] = useState<KbConfig>(() => loadKbConfig());
+  const [folders, setFolders] = useState<NoteFolder[]>([]);
+  const [ignoreDraft, setIgnoreDraft] = useState(() => loadKbConfig().ignore.join('\n'));
+  const [protectDraft, setProtectDraft] = useState(() => loadKbConfig().protect.join('\n'));
+
+  /** 当前同步方向：启用知识库模式且已指定根文件夹时为 kb */
+  const direction: SyncDirection = kb.enabled && kb.rootFolderId ? 'kb' : 'two-way';
+
+  /**
+   * 把文件夹 ID 还原为「父/子」可读路径（用于选择器展示）。
+   * @param folderId 文件夹 ID
+   * @param list 文件夹列表
+   * @returns 层级路径；找不到时返回空字符串
+   */
+  const folderLabel = useCallback((folderId: string, list: NoteFolder[]): string => {
+    const byId = new Map(list.map((f) => [f.id, f]));
+    const parts: string[] = [];
+    const seen = new Set<string>();
+    let cur = byId.get(folderId);
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      parts.unshift(cur.name);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return parts.join('/');
+  }, []);
+
+  /**
+   * 读取笔记文件夹列表，供「知识库根文件夹」选择器使用。
+   */
+  const refreshFolders = useCallback(async () => {
+    try {
+      setFolders(await noteFolderApi.list());
+    } catch {
+      setFolders([]);
+    }
+  }, []);
+
+  /**
+   * 保存知识库配置并同步草稿状态。
+   * @param next 新配置
+   */
+  const persistKb = useCallback((next: KbConfig) => {
+    setKb(next);
+    saveKbConfig(next);
+    setIgnoreDraft(next.ignore.join('\n'));
+    setProtectDraft(next.protect.join('\n'));
+  }, []);
+
+  /**
+   * 切换同步模式。
+   * @param enabled 是否启用知识库管理模式
+   */
+  const handleToggleMode = (enabled: boolean) => {
+    persistKb({ ...kb, enabled });
+    if (enabled && !kb.rootFolderId && folders.length > 0) {
+      toast('请先指定「知识库根文件夹」');
+    }
+  };
+
+  /**
+   * 指定知识库根文件夹。
+   * @param folderId 文件夹 ID；空字符串表示未选择
+   */
+  const handleSelectRoot = (folderId: string) => {
+    const target = folders.find((f) => f.id === folderId);
+    persistKb({
+      ...kb,
+      rootFolderId: folderId || null,
+      rootFolderName: target?.name ?? '',
+    });
+  };
+
+  /** 保存忽略清单与保护目录 */
+  const handleSaveRules = () => {
+    const toList = (text: string) =>
+      text
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+    persistKb({ ...kb, ignore: toList(ignoreDraft), protect: toList(protectDraft) });
+    toast.success('知识库规则已保存');
+  };
+
+  /** 恢复知识库预设规则 */
+  const handleResetPreset = () => {
+    persistKb({ ...kb, ignore: [...KB_PRESET_IGNORE], protect: [...KB_PRESET_PROTECT] });
+    toast.success('已恢复知识库预设规则');
+  };
+
   /**
    * 读取已绑定目录的直接子条目，用于在页面上展示文件夹与文件名称。
    * 只列一层：既能让用户确认「绑的是哪个目录、里面有什么」，
@@ -78,10 +182,13 @@ const SyncSettingsPage: React.FC = () => {
    * @param target 目标目录句柄
    */
   const run = useCallback(
-    async (mode: 'compare' | 'apply', target: SyncDirectoryHandle) => {
+    async (
+      mode: 'compare' | 'apply',
+      target: SyncDirectoryHandle,
+    ): Promise<SyncReport | null> => {
       if (!user?.id) {
         setError('未获取到当前用户信息，请重新登录后再试');
-        return;
+        return null;
       }
       setBusy(mode);
       setError('');
@@ -90,25 +197,73 @@ const SyncSettingsPage: React.FC = () => {
         const result = await runSync(target, {
           mode,
           userId: user.id,
+          direction,
+          kb:
+            direction === 'kb'
+              ? {
+                  rootFolderId: kb.rootFolderId,
+                  rootFolderName: kb.rootFolderName,
+                  ignore: kb.ignore,
+                  protect: kb.protect,
+                }
+              : undefined,
           onProgress: setProgress,
         });
         setReport(result);
         await refreshEntries(target);
         if (mode === 'apply') toast.success('同步完成');
+        return result;
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+        return null;
       } finally {
         setBusy('idle');
         setProgress(null);
       }
     },
-    [user?.id, refreshEntries],
+    [user?.id, refreshEntries, direction, kb],
   );
+
+  /**
+   * 执行同步。知识库模式下先跑一次只读比较并把计划列清，用户确认后才真正写盘
+   * （对齐知识库红线：破坏性动作前先出计划）。
+   */
+  const handleApply = useCallback(async () => {
+    if (!handle) return;
+    if (direction === 'kb') {
+      const preview = await run('compare', handle);
+      if (!preview) return;
+      const planned =
+        preview.imported +
+        preview.downloaded +
+        preview.uploaded +
+        preview.createdFolders.length +
+        preview.uploadedFolders.length;
+      if (planned === 0 && preview.errors.length === 0) {
+        toast('没有需要同步的变更');
+        return;
+      }
+      const lines = [
+        '知识库模式本次将执行：',
+        `· 导入新建 ${preview.imported} 篇`,
+        `· 写回本地 ${preview.downloaded} 篇`,
+        `· 更新服务端 ${preview.uploaded} 篇`,
+        `· 新建文件夹 ${preview.createdFolders.length + preview.uploadedFolders.length} 个`,
+        '',
+        '不会删除任何本地文件，也不会覆盖有未同步修改的文件。',
+        '',
+        '确认执行？',
+      ];
+      if (!window.confirm(lines.join('\n'))) return;
+    }
+    await run('apply', handle);
+  }, [handle, direction, run]);
 
   // 打开页面时恢复上次授权的目录，并在有权限的前提下自动对比一次
   useEffect(() => {
     if (!supported) return;
     void isPersistent().then(setPersistent);
+    void refreshFolders();
     if (autoComparedRef.current) return;
     autoComparedRef.current = true;
     void (async () => {
@@ -132,7 +287,7 @@ const SyncSettingsPage: React.FC = () => {
       await refreshEntries(stored);
       if (ok) await run('compare', stored);
     })();
-  }, [supported, run, refreshEntries]);
+  }, [supported, run, refreshEntries, refreshFolders]);
 
   /**
    * 选择本地文件夹并持久化句柄。
@@ -366,7 +521,7 @@ const SyncSettingsPage: React.FC = () => {
               <button
                 type="button"
                 disabled={!handle || !granted || busy !== 'idle'}
-                onClick={() => handle && void run('apply', handle)}
+                onClick={() => void handleApply()}
                 className="flex items-center gap-1.5 rounded-lg bg-orange-600 px-3 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50 transition-colors"
               >
                 {busy === 'apply' ? (
@@ -408,6 +563,196 @@ const SyncSettingsPage: React.FC = () => {
           </div>
         </div>
 
+        {/* 同步模式卡片 */}
+        <div className={card}>
+          <div className="p-5 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                <Database className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <h3 className={`text-sm font-bold ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>
+                  同步模式
+                </h3>
+                <p className={`text-xs ${muted}`}>
+                  决定本地文件夹与笔记树之间，谁说话算数
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleToggleMode(false)}
+                className={`text-left rounded-xl border p-3 transition-colors ${
+                  !kb.enabled
+                    ? isDark
+                      ? 'border-orange-600 bg-orange-950/30'
+                      : 'border-orange-400 bg-orange-50'
+                    : isDark
+                      ? 'border-gray-700 hover:bg-gray-700/40'
+                      : 'border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <FolderSync size={15} className="text-orange-500 shrink-0" />
+                  <span className={`text-sm font-medium ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+                    通用镜像
+                  </span>
+                  {!kb.enabled && (
+                    <CheckCircle2 size={13} className={isDark ? 'text-emerald-400' : 'text-emerald-600'} />
+                  )}
+                </div>
+                <p className={`mt-1 text-xs ${muted}`}>
+                  双向增量同步，冲突保留副本，删除进回收站
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleToggleMode(true)}
+                className={`text-left rounded-xl border p-3 transition-colors ${
+                  kb.enabled
+                    ? isDark
+                      ? 'border-emerald-600 bg-emerald-950/30'
+                      : 'border-emerald-400 bg-emerald-50'
+                    : isDark
+                      ? 'border-gray-700 hover:bg-gray-700/40'
+                      : 'border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <BookOpen size={15} className="text-emerald-500 shrink-0" />
+                  <span className={`text-sm font-medium ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+                    知识库管理模式
+                  </span>
+                  {kb.enabled && (
+                    <CheckCircle2 size={13} className={isDark ? 'text-emerald-400' : 'text-emerald-600'} />
+                  )}
+                </div>
+                <p className={`mt-1 text-xs ${muted}`}>
+                  本地文件为准，永不删除、永不覆盖，保护目录只导入
+                </p>
+              </button>
+            </div>
+
+            {kb.enabled && (
+              <div
+                className={`space-y-3 rounded-xl border p-3 ${
+                  isDark ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-gray-50'
+                }`}
+              >
+                {/* 知识库根文件夹 */}
+                <div>
+                  <label className={`block text-xs font-medium mb-1.5 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                    知识库根文件夹
+                  </label>
+                  <select
+                    value={kb.rootFolderId ?? ''}
+                    onChange={(e) => handleSelectRoot(e.target.value)}
+                    className={`w-full rounded-lg border px-2.5 py-2 text-sm outline-none ${
+                      isDark
+                        ? 'border-gray-700 bg-gray-800 text-gray-200'
+                        : 'border-gray-200 bg-white text-gray-800'
+                    }`}
+                  >
+                    <option value="">（未选择 —— 必须指定后才能启用）</option>
+                    {folders.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {folderLabel(f.id, folders) || f.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className={`mt-1 text-xs ${muted}`}>
+                    绑定目录与该文件夹建立映射；只有它下面的笔记参与同步，其余笔记不受影响。
+                  </p>
+                </div>
+
+                {/* 忽略清单 */}
+                <div>
+                  <label className={`block text-xs font-medium mb-1.5 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                    忽略清单（一行一条，相对知识库根）
+                  </label>
+                  <textarea
+                    value={ignoreDraft}
+                    onChange={(e) => setIgnoreDraft(e.target.value)}
+                    rows={6}
+                    spellCheck={false}
+                    className={`w-full rounded-lg border px-2.5 py-2 font-mono text-xs outline-none ${
+                      isDark
+                        ? 'border-gray-700 bg-gray-800 text-gray-200'
+                        : 'border-gray-200 bg-white text-gray-800'
+                    }`}
+                  />
+                  <p className={`mt-1 text-xs ${muted}`}>
+                    <code>/AGENTS.md</code> 只匹配根目录；<code>archive/2025</code> 匹配该子树；
+                    <code>templates</code> 匹配任意层级的同名项。点开头的文件由系统自动跳过。
+                  </p>
+                </div>
+
+                {/* 保护目录 */}
+                <div>
+                  <label className={`flex items-center gap-1.5 text-xs font-medium mb-1.5 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <ShieldCheck size={13} className="text-emerald-500" />
+                    保护目录（只导入，禁止写回与删除）
+                  </label>
+                  <textarea
+                    value={protectDraft}
+                    onChange={(e) => setProtectDraft(e.target.value)}
+                    rows={3}
+                    spellCheck={false}
+                    className={`w-full rounded-lg border px-2.5 py-2 font-mono text-xs outline-none ${
+                      isDark
+                        ? 'border-gray-700 bg-gray-800 text-gray-200'
+                        : 'border-gray-200 bg-white text-gray-800'
+                    }`}
+                  />
+                  <p className={`mt-1 text-xs ${muted}`}>
+                    对齐知识库 AGENTS.md 权限表：<code>raw/</code> 与 <code>templates/</code> 的原始资料
+                    永远不会被应用改写。这是第二道保险，即使忽略清单改错也伤不到源文件。
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveRules}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 transition-colors"
+                  >
+                    <Save size={13} />
+                    保存规则
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetPreset}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                      isDark
+                        ? 'border-gray-700 text-gray-300 hover:bg-gray-700'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    恢复知识库预设
+                  </button>
+                </div>
+
+                {kb.enabled && !kb.rootFolderId && (
+                  <div
+                    className={`flex items-start gap-2 rounded-lg border p-2.5 text-xs ${
+                      isDark
+                        ? 'border-amber-900/60 bg-amber-950/40 text-amber-300'
+                        : 'border-amber-200 bg-amber-50 text-amber-700'
+                    }`}
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                    <span>
+                      还未指定知识库根文件夹，当前同步仍按「通用镜像」执行。选好根文件夹后才会切换到知识库模式。
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* 结果面板 */}
         {report && (
           <div className={card}>
@@ -435,14 +780,80 @@ const SyncSettingsPage: React.FC = () => {
               )}
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <Stat label="下载到本地" value={report.downloaded} isDark={isDark} />
-                <Stat label="上传到服务端" value={report.uploaded} isDark={isDark} />
-                <Stat label="冲突副本" value={report.conflicts.length} isDark={isDark} />
-                <Stat label="本地删除同步" value={report.localDeleted.length} isDark={isDark} />
-                <Stat label="远端删除移入回收站" value={report.remoteDeleted.length} isDark={isDark} />
+                {report.direction === 'kb' && (
+                  <Stat label="导入新建" value={report.imported} isDark={isDark} />
+                )}
+                <Stat
+                  label={report.direction === 'kb' ? '写回本地' : '下载到本地'}
+                  value={report.downloaded}
+                  isDark={isDark}
+                />
+                <Stat
+                  label={report.direction === 'kb' ? '更新服务端' : '上传到服务端'}
+                  value={report.uploaded}
+                  isDark={isDark}
+                />
+                {report.direction !== 'kb' && (
+                  <>
+                    <Stat label="冲突副本" value={report.conflicts.length} isDark={isDark} />
+                    <Stat label="本地删除同步" value={report.localDeleted.length} isDark={isDark} />
+                    <Stat
+                      label="远端删除移入回收站"
+                      value={report.remoteDeleted.length}
+                      isDark={isDark}
+                    />
+                  </>
+                )}
                 <Stat label="新建文件夹" value={report.uploadedFolders.length} isDark={isDark} />
                 <Stat label="跳过加密文档" value={report.skippedEncrypted} isDark={isDark} />
+                {report.direction === 'kb' && (
+                  <Stat label="跳过非文本文件" value={report.skippedUnsupported} isDark={isDark} />
+                )}
               </div>
+
+              {report.direction === 'kb' && (
+                <div
+                  className={`flex items-start gap-2 rounded-xl border p-3 text-xs ${
+                    isDark
+                      ? 'border-emerald-900/60 bg-emerald-950/30 text-emerald-300'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <span>
+                    知识库模式：本次运行未删除任何本地文件，未覆盖任何有未同步修改的文件。
+                  </span>
+                </div>
+              )}
+
+              {report.missingLocal.length > 0 && (
+                <PathList
+                  title="本地文件已消失（服务端笔记已保留，未删除）"
+                  items={report.missingLocal}
+                  isDark={isDark}
+                />
+              )}
+              {report.unlinkedLocal.length > 0 && (
+                <PathList
+                  title="远端笔记已删除（本地文件已保留，仅解除映射）"
+                  items={report.unlinkedLocal}
+                  isDark={isDark}
+                />
+              )}
+              {report.blockedByProtection.length > 0 && (
+                <PathList
+                  title="命中保护目录，已拒绝写回"
+                  items={report.blockedByProtection}
+                  isDark={isDark}
+                />
+              )}
+              {report.skippedRemoteChanges.length > 0 && (
+                <PathList
+                  title="两端都改过：已以本地为准，远端变更未生效"
+                  items={report.skippedRemoteChanges}
+                  isDark={isDark}
+                />
+              )}
 
               {report.conflicts.length > 0 && (
                 <PathList
@@ -510,13 +921,28 @@ const SyncSettingsPage: React.FC = () => {
               同步说明
             </h3>
             <ul className={`space-y-1.5 text-xs ${muted}`}>
-              <li>· Markdown 笔记带 YAML frontmatter（含 id/title/tags/folder），JSON 与 drawio 保持原生格式。</li>
-              <li>· 笔记内嵌图片以 base64 内联在文件中，不需要也不支持单独抽离为图片文件。</li>
-              <li>· AI 聊天附件不在同步范围内（它们挂在会话上，不属于笔记）。</li>
-              <li>· 服务端删除笔记时，本地文件会移入 <code>.aidrivenote/trash/</code>，不会真正删除。</li>
-              <li>· 本地删除文件时，服务端笔记走软删除，可在回收站中恢复。</li>
-              <li>· 两端都改过同一条笔记时，本地修改会另存为 <code>标题.conflict-时间戳.扩展名</code> 副本。</li>
-              <li>· 同步状态记录在 <code>.aidrivenote/sync.json</code>；删除它只影响差异判断，不会丢数据。</li>
+              {kb.enabled ? (
+                <>
+                  <li>· <b>本地文件是事实源</b>：同步只把本地内容推进数据库，不会删除任何本地文件。</li>
+                  <li>· 只有「本地未改动」的笔记才会被写回；有未同步修改的文件永不被覆盖。</li>
+                  <li>· 两端都改过时以本地为准，远端变更会列在报告里，不生成冲突副本。</li>
+                  <li>· 保护目录（<code>raw/</code>、<code>templates/</code>）只导入，永不写回。</li>
+                  <li>· 在应用内新建的笔记会写入绑定目录，位置按知识库根文件夹的层级还原。</li>
+                  <li>· 磁盘文件被改名或搬走后，应用会按内容指纹认领，不会重复导入。</li>
+                  <li>· frontmatter 的未知字段（<code>type</code> / <code>sources</code> / <code>related</code> 等）原样保留。</li>
+                  <li>· 同步状态记录在 <code>.aidrivenote/sync.json</code>，它就是文件与笔记的映射表。</li>
+                </>
+              ) : (
+                <>
+                  <li>· Markdown 笔记带 YAML frontmatter（含 adn_id/title/tags/folder），JSON 与 drawio 保持原生格式。</li>
+                  <li>· 笔记内嵌图片以 base64 内联在文件中，不需要也不支持单独抽离为图片文件。</li>
+                  <li>· AI 聊天附件不在同步范围内（它们挂在会话上，不属于笔记）。</li>
+                  <li>· 服务端删除笔记时，本地文件会移入 <code>.aidrivenote/trash/</code>，不会真正删除。</li>
+                  <li>· 本地删除文件时，服务端笔记走软删除，可在回收站中恢复。</li>
+                  <li>· 两端都改过同一条笔记时，本地修改会另存为 <code>标题.conflict-时间戳.扩展名</code> 副本。</li>
+                  <li>· 同步状态记录在 <code>.aidrivenote/sync.json</code>；删除它只影响差异判断，不会丢数据。</li>
+                </>
+              )}
             </ul>
           </div>
         </div>

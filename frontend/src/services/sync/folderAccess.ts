@@ -476,18 +476,34 @@ export async function listDir(
   return entries;
 }
 
+/** 遍历选项 */
+export interface ListFilesOptions {
+  /**
+   * 目录级忽略谓词：命中则不进入该目录（相对起始目录的路径）。
+   * 知识库模式下用它隔离 `raw/`、`templates/`、`archive/` 等目录。
+   */
+  ignoreDir?: (relDir: string) => boolean;
+  /**
+   * 文件级忽略谓词：命中则不收录（相对起始目录的路径）。
+   * 知识库模式下用它隔离 `AGENTS.md`、`index.md`、`log.md` 等元文件。
+   */
+  ignoreFile?: (relPath: string) => boolean;
+}
+
 /**
  * 递归收集目录树下所有文件的相对路径（跳过 `.aidrivenote` 与其它点目录）。
  * 用于「已有 vault 的初始同步」场景判断哪些文件是外部文件（孤儿）。
  * @param root 根目录句柄
  * @param baseRel 起始相对目录路径
  * @param maxFiles 安全上限，防止超大目录把浏览器拖死
+ * @param opts 忽略谓词（可选）
  * @returns 相对文件路径数组
  */
 export async function listAllFiles(
   root: SyncDirectoryHandle,
   baseRel = '',
   maxFiles = 5000,
+  opts: ListFilesOptions = {},
 ): Promise<string[]> {
   const out: string[] = [];
 
@@ -502,8 +518,10 @@ export async function listAllFiles(
       if (name.startsWith('.')) continue; // 跳过 .aidrivenote / .obsidian 等隐藏目录与文件
       const rel = prefix ? `${prefix}/${name}` : name;
       if (handle.kind === 'directory') {
+        if (opts.ignoreDir?.(rel)) continue;
         await walk(handle as SyncDirectoryHandle, rel);
       } else {
+        if (opts.ignoreFile?.(rel)) continue;
         out.push(rel);
       }
     }
