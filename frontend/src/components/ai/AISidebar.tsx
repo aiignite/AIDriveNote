@@ -13,6 +13,9 @@ import { useIsMobile } from '../../hooks/useMobile';
 import { useAIChat } from '../../hooks/useAIChat';
 import NoteChangeConfirmCard from './NoteChangeConfirmCard';
 import AIChatMarkdown from './AIChatMarkdown';
+import CitationChips from './CitationChips';
+import McpToolConfirmCard from './McpToolConfirmCard';
+import type { RagScope } from '../../services/ai/ai';
 import AIChatInput, { createPendingAttachment, type PendingAttachment } from './AIChatInput';
 import MessageAttachmentGallery from './MessageAttachmentGallery';
 import SkillActivationCard from './SkillActivationCard';
@@ -124,6 +127,13 @@ const AISidebar: React.FC = () => {
     onConversationId: setConversationId,
   });
 
+  /** 检索范围：默认全部笔记，可收窄到当前打开笔记（RAG v2 scope） */
+  const currentNoteId = pageAIContext?.selectedEntities?.find(e => e.type === 'note')?.id ?? null;
+  const [scopeMode, setScopeMode] = useState<'all' | 'note'>('all');
+  const ragScope: RagScope = scopeMode === 'note' && currentNoteId
+    ? { type: 'note', id: currentNoteId }
+    : { type: 'all' };
+
   useEffect(() => {
     if (!aiOpen) return;
     void (async () => {
@@ -162,10 +172,10 @@ const AISidebar: React.FC = () => {
     const { presetMessage, selectionText } = aiPreset;
     clearAIPreset();
     if (presetMessage) {
-      void sendMessage(presetMessage, { selectionText });
+      void sendMessage(presetMessage, { selectionText, ragScope });
     }
     inputRef.current?.focus();
-  }, [aiOpen, aiPreset, clearAIPreset, sendMessage]);
+  }, [aiOpen, aiPreset, clearAIPreset, sendMessage, ragScope]);
 
   /**
    * Esc 关闭抽屉。
@@ -317,8 +327,9 @@ const AISidebar: React.FC = () => {
       attachmentIds: validIds,
       attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
       forceSkills: pinnedSkillCodes.length > 0 ? pinnedSkillCodes : undefined,
+      ragScope,
     });
-  }, [input, pendingFiles, sendMessage, conversationId, pinnedSkillCodes]);
+  }, [input, pendingFiles, sendMessage, conversationId, pinnedSkillCodes, ragScope]);
 
   const quickActions = pageAIContext?.quickActions ?? [];
 
@@ -406,7 +417,7 @@ const AISidebar: React.FC = () => {
               key={action.label}
               type="button"
               disabled={loading}
-              onClick={() => void sendMessage(action.prompt)}
+              onClick={() => void sendMessage(action.prompt, { ragScope })}
               className={`text-xs px-2 py-1 rounded-full border ${isDark ? 'border-gray-600 text-gray-300 hover:bg-gray-800' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
             >
               {action.label}
@@ -452,9 +463,13 @@ const AISidebar: React.FC = () => {
                     />
                   )}
                   <AIChatMarkdown content={msg.content} />
+                  <CitationChips citations={msg.citations} isDark={isDark} />
                 </>
               )}
             </div>
+            {msg.role === 'assistant' && msg.mcpPending && (
+              <McpToolConfirmCard pending={msg.mcpPending} isDark={isDark} />
+            )}
             {msg.role === 'assistant' && msg.notePendingChange && !msg.notePendingChange.dismissed && (
               <NoteChangeConfirmCard
                 pending={msg.notePendingChange}
@@ -504,6 +519,31 @@ const AISidebar: React.FC = () => {
         )}
         <div ref={bottomRef} />
       </div>
+
+      {currentNoteId && (
+        <div className={`flex items-center gap-1.5 px-3 py-1.5 border-t text-[11px] ${
+          isDark ? 'border-gray-700 text-gray-400' : 'border-gray-200 text-gray-500'
+        }`}>
+          <span>检索范围</span>
+          {([
+            { mode: 'all' as const, label: '全部笔记' },
+            { mode: 'note' as const, label: '当前笔记' },
+          ]).map(option => (
+            <button
+              key={option.mode}
+              type="button"
+              onClick={() => setScopeMode(option.mode)}
+              className={`px-2 py-0.5 rounded-full border transition-colors ${
+                scopeMode === option.mode
+                  ? 'border-orange-400 bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-300'
+                  : isDark ? 'border-gray-600 hover:bg-gray-800' : 'border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <AIChatInput
         value={input}

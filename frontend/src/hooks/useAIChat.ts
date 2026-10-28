@@ -7,7 +7,9 @@ import {
   aiApi,
   buildChatPageContext,
   type ActivatedSkillInfo,
+  type CitationItem,
   type PageAIContext,
+  type RagScope,
   type ToolCallEventItem,
 } from '../services/ai/ai';
 import { noteApi } from '../services/note';
@@ -15,18 +17,29 @@ import type { NotePendingChange } from '../components/ai/NoteChangeConfirmCard';
 import type { MessageAttachmentItem } from '../components/ai/MessageAttachmentGallery';
 import { mapApiMessageAttachments, stripAttachmentMarkers } from '../utils/aiAttachmentDisplay';
 
+export interface McpPendingTool {
+  toolId: string;
+  tool: string;
+  server: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   attachments?: MessageAttachmentItem[];
   notePendingChange?: NotePendingChange;
   deletePending?: { noteId: string; noteTitle: string };
+  /** 需要用户确认后执行的 MCP 工具 */
+  mcpPending?: McpPendingTool;
   /** 本轮激活的技能列表（用于技能卡片展示） */
   activatedSkills?: ActivatedSkillInfo[];
   /** 本轮工具执行记录（用于工具卡片展示） */
   toolCalls?: ToolCallEventItem[];
   /** 本轮思考过程（用于折叠展示） */
   thinking?: string;
+  /** 本轮回答依据的笔记来源（可点击溯源） */
+  citations?: CitationItem[];
   applied?: boolean;
   dismissed?: boolean;
 }
@@ -37,6 +50,8 @@ export interface SendMessageOptions {
   attachments?: MessageAttachmentItem[];
   /** 手动固定的技能 code 列表 */
   forceSkills?: string[];
+  /** 检索范围（全部 / 当前笔记） */
+  ragScope?: RagScope;
 }
 
 export function parseNotePendingChange(result: Record<string, unknown>): NotePendingChange | null {
@@ -76,6 +91,17 @@ export function parseDeletePending(result: Record<string, unknown>): { noteId: s
   if (!result?.requires_confirmation || result.change_type !== 'delete') return null;
   if (!result.note_id) return null;
   return { noteId: String(result.note_id), noteTitle: String(result.note_title || '笔记') };
+}
+
+/** 解析 MCP「需确认」工具结果 */
+export function parseMcpPending(result: Record<string, unknown>): McpPendingTool | null {
+  if (!result?.requires_confirmation || !result.mcpToolId) return null;
+  return {
+    toolId: String(result.mcpToolId),
+    tool: String(result.tool ?? ''),
+    server: String(result.server ?? ''),
+    arguments: (result.arguments as Record<string, unknown>) ?? {},
+  };
 }
 
 function isAbortError(err: unknown): boolean {
@@ -141,8 +167,10 @@ export function useAIChat({
     let assistantContent = '';
     let pending: NotePendingChange | null = null;
     let deletePending: { noteId: string; noteTitle: string } | null = null;
+    let mcpPending: McpPendingTool | null = null;
     let activatedSkills: ActivatedSkillInfo[] = [];
     let thinkingContent = '';
+    let citations: CitationItem[] = [];
     const toolCalls: ToolCallEventItem[] = [];
     let aborted = false;
 
@@ -150,6 +178,7 @@ export function useAIChat({
       ? {
           ...pageAIContext,
           ...(options?.selectionText ? { selectionText: options.selectionText } : {}),
+          ...(options?.ragScope ? { ragScope: options.ragScope } : {}),
         }
       : null;
 
@@ -177,6 +206,8 @@ export function useAIChat({
         } else if (event.type === 'thinking' && event.content) {
           thinkingContent += event.content;
           setStreamingThinking(thinkingContent);
+        } else if (event.type === 'citations' && event.citations?.length) {
+          citations = event.citations;
         } else if (event.type === 'tool_execution_start' && event.tool) {
           toolCalls.push({ name: event.tool, status: 'running' });
           setStreamingToolCalls([...toolCalls]);
@@ -208,6 +239,8 @@ export function useAIChat({
           }
           const del = parseDeletePending(result);
           if (del) deletePending = del;
+          const mcp = parseMcpPending(result);
+          if (mcp) mcpPending = mcp;
           if (result.message && typeof result.message === 'string') {
             assistantContent += `\n\n${result.message}`;
             setStreamingContent(assistantContent);
@@ -230,9 +263,11 @@ export function useAIChat({
         ),
         notePendingChange: pending ?? undefined,
         deletePending: deletePending ?? undefined,
+        mcpPending: mcpPending ?? undefined,
         activatedSkills: activatedSkills.length > 0 ? activatedSkills : undefined,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         thinking: thinkingContent.trim() || undefined,
+        citations: citations.length > 0 ? citations : undefined,
       }]);
       setStreamingContent('');
     } catch (err) {
@@ -244,9 +279,11 @@ export function useAIChat({
           content: partial || '（已停止生成）',
           notePendingChange: pending ?? undefined,
           deletePending: deletePending ?? undefined,
+          mcpPending: mcpPending ?? undefined,
           activatedSkills: activatedSkills.length > 0 ? activatedSkills : undefined,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           thinking: thinkingContent.trim() || undefined,
+          citations: citations.length > 0 ? citations : undefined,
         }]);
         setStreamingContent('');
         setStreamingPending(null);

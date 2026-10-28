@@ -4,9 +4,10 @@
  * 由会议版 TranscriptView 精简移植：按章节分组展示时间戳 / 说话人 / 正文，
  * 并在顶部提供「AI 整理润色」「重转写」两个操作入口。
  */
-import React, { useMemo } from 'react';
-import { Hash, Loader2, RefreshCw, Sparkles, UserCircle2 } from 'lucide-react';
-import type { TranscriptSegment } from '../../../services/note/recording';
+import React, { useMemo, useState } from 'react';
+import { Check, Copy, FileText, Hash, Loader2, RefreshCw, Sparkles, UserCircle2 } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { noteRecordingApi, type TranscriptSegment } from '../../../services/note/recording';
 
 interface TranscriptPreviewProps {
   /** 转写分段 */
@@ -19,6 +20,12 @@ interface TranscriptPreviewProps {
   onRetranscribe?: () => void;
   /** AI 整理 / 润色回调（合并后的单一入口） */
   onAiOrganize?: () => void;
+  /** 录音 id：用于生成结构化纪要 */
+  recordingId?: string;
+  /** 把纪要 markdown 插入当前笔记 */
+  onInsertMinutes?: (markdown: string) => void;
+  /** 用纪要新建一条独立笔记 */
+  onCreateMinutesNote?: (markdown: string) => void | Promise<void>;
   /** 自定义类名 */
   className?: string;
 }
@@ -77,8 +84,39 @@ export const TranscriptPreview: React.FC<TranscriptPreviewProps> = ({
   busyAction = null,
   onRetranscribe,
   onAiOrganize,
+  recordingId,
+  onInsertMinutes,
+  onCreateMinutesNote,
   className,
 }) => {
+  const [minutes, setMinutes] = useState<string | null>(null);
+  const [minutesLoading, setMinutesLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleGenerateMinutes = async () => {
+    if (!recordingId) return;
+    setMinutesLoading(true);
+    try {
+      const result = await noteRecordingApi.generateMinutes(recordingId);
+      setMinutes(result.markdown);
+      toast.success('纪要已生成');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '生成纪要失败');
+    } finally {
+      setMinutesLoading(false);
+    }
+  };
+
+  const handleCopyMinutes = async () => {
+    if (!minutes) return;
+    try {
+      await navigator.clipboard.writeText(minutes);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error('复制失败');
+    }
+  };
   const sorted = useMemo(
     () => [...(segments ?? [])].sort((a, b) => a.segmentIndex - b.segmentIndex),
     [segments],
@@ -130,7 +168,49 @@ export const TranscriptPreview: React.FC<TranscriptPreviewProps> = ({
           {busyAction === 'retranscribe' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
           重转写
         </button>
+        {recordingId && (
+          <button
+            type="button"
+            onClick={() => void handleGenerateMinutes()}
+            disabled={!segments.length || minutesLoading || busyAction !== null}
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-emerald-200 text-emerald-700 hover:bg-emerald-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            title="生成摘要 / 决议 / 行动项 / 章节"
+          >
+            {minutesLoading ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
+            生成纪要
+          </button>
+        )}
       </div>
+
+      {minutes && (
+        <div className={`rounded-lg border p-2.5 ${isDark ? 'border-emerald-900 bg-emerald-950/20' : 'border-emerald-200 bg-emerald-50/50'}`}>
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className={`text-[11px] font-medium ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>结构化纪要</span>
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => void handleCopyMinutes()} className="inline-flex items-center gap-1 text-[10px] text-emerald-700 hover:underline dark:text-emerald-300">
+                {copied ? <Check size={10} /> : <Copy size={10} />} {copied ? '已复制' : '复制'}
+              </button>
+              {onInsertMinutes && (
+                <button type="button" onClick={() => onInsertMinutes(minutes)} className="text-[10px] text-orange-600 hover:underline dark:text-orange-400">
+                  插入到笔记
+                </button>
+              )}
+              {onCreateMinutesNote && (
+                <button
+                  type="button"
+                  onClick={() => void onCreateMinutesNote(minutes)}
+                  className="text-[10px] text-emerald-700 hover:underline dark:text-emerald-300"
+                >
+                  新建纪要笔记
+                </button>
+              )}
+            </div>
+          </div>
+          <pre className={`max-h-56 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+            {minutes}
+          </pre>
+        </div>
+      )}
 
       {/* 分段列表 */}
       {sorted.length === 0 ? (

@@ -52,6 +52,7 @@ const ApiTokensPage: React.FC = () => {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [expiresInDays, setExpiresInDays] = useState(0);
+  const [scopes, setScopes] = useState<Array<'read' | 'write'>>(['read', 'write']);
   /** 刚创建的明文令牌，仅用于展示一次 */
   const [createdToken, setCreatedToken] = useState<string | null>(null);
   /** 记录刚复制成功的目标，用于按钮反馈 */
@@ -105,10 +106,12 @@ const ApiTokensPage: React.FC = () => {
       const created = await apiTokenApi.create({
         name: trimmed,
         expiresInDays: expiresInDays > 0 ? expiresInDays : undefined,
+        scopes,
       });
       setCreatedToken(created.token);
       setName('');
       setExpiresInDays(0);
+      setScopes(['read', 'write']);
       toast.success('令牌已生成，请立即复制保存');
       await loadTokens();
     } catch (err) {
@@ -235,6 +238,30 @@ const ApiTokensPage: React.FC = () => {
                 {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                 {creating ? '生成中...' : '生成令牌'}
               </button>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+              <span className={muted}>权限范围</span>
+              {([
+                { value: 'read' as const, label: '读取（搜索 / 查看）' },
+                { value: 'write' as const, label: '写入（创建 / 修改）' },
+              ]).map(option => (
+                <label key={option.value} className={`inline-flex items-center gap-1.5 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                  <input
+                    type="checkbox"
+                    checked={scopes.includes(option.value)}
+                    onChange={event => {
+                      setScopes(prev => {
+                        const next = event.target.checked
+                          ? [...prev, option.value]
+                          : prev.filter(item => item !== option.value);
+                        return next.length > 0 ? next : ['read'];
+                      });
+                    }}
+                    className="accent-orange-600"
+                  />
+                  {option.label}
+                </label>
+              ))}
             </div>
           </div>
         </div>

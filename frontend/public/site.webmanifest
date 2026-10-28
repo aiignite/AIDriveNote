@@ -11,6 +11,15 @@
   "display_override": ["standalone", "minimal-ui"],
   "orientation": "any",
   "categories": ["productivity", "utilities"],
+  "share_target": {
+    "action": "./share",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
   "icons": [
     {
       "src": "icons/icon-192.png",

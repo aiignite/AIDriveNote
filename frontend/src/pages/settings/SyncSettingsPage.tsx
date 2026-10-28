@@ -25,14 +25,17 @@ import {
   isPersistent,
   isSupported,
   listDir,
+  listAllFiles,
   loadDirNameMirror,
   loadHandleFromIndexedDB,
   pickDirectory,
   queryPermission,
+  readFile,
   saveHandleToIndexedDB,
   type DirEntry,
   type SyncDirectoryHandle,
 } from '../../services/sync/folderAccess';
+import { kbApi, type KbFileInfo } from '../../services/kb';
 import {
   KB_PRESET_IGNORE,
   KB_PRESET_PROTECT,
@@ -54,7 +57,7 @@ import {
  * 并明确展示同步范围与数据安全说明（删除进回收站、冲突保留副本）。
  */
 const SyncSettingsPage: React.FC = () => {
-  const { theme } = useApp();
+  const { theme, bumpNotesRefresh } = useApp();
   const { user } = useAuth();
   const isDark = theme === 'dark';
   const supported = useMemo(() => isSupported(), []);
@@ -76,6 +79,23 @@ const SyncSettingsPage: React.FC = () => {
   const [folders, setFolders] = useState<NoteFolder[]>([]);
   const [ignoreDraft, setIgnoreDraft] = useState(() => loadKbConfig().ignore.join('\n'));
   const [protectDraft, setProtectDraft] = useState(() => loadKbConfig().protect.join('\n'));
+  const [kbAssets, setKbAssets] = useState<KbFileInfo[]>([]);
+  const [kbAssetBusy, setKbAssetBusy] = useState(false);
+  const [kbRootId, setKbRootId] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const roots = await kbApi.listRoots();
+        if (roots[0]) {
+          setKbRootId(roots[0].id);
+          setKbAssets(await kbApi.listFiles(undefined, 30));
+        }
+      } catch {
+        /* 未登录/网络异常时静默，页面其余功能不受影响 */
+      }
+    })();
+  }, []);
 
   /** 当前同步方向：启用知识库模式且已指定根文件夹时为 kb */
   const direction: SyncDirection = kb.enabled && kb.rootFolderId ? 'kb' : 'two-way';
@@ -160,6 +180,69 @@ const SyncSettingsPage: React.FC = () => {
   const handleResetPreset = () => {
     persistKb({ ...kb, ignore: [...KB_PRESET_IGNORE], protect: [...KB_PRESET_PROTECT] });
     toast.success('已恢复知识库预设规则');
+  };
+
+  /** 把绑定目录中的 PDF / 文本登记到服务端并抽取正文 */
+  const handleImportKbAssets = async () => {
+    if (!handle || !granted) {
+      toast.error('请先选择并授权本地文件夹');
+      return;
+    }
+    setKbAssetBusy(true);
+    try {
+      let rootId = kbRootId;
+      if (!rootId) {
+        const root = await kbApi.ensureRoot(dirName || '本地知识库', kb.rootFolderId ?? undefined);
+        rootId = root.id;
+        setKbRootId(rootId);
+      }
+      const allFiles = await listAllFiles(handle, '', 5000);
+      const candidates = allFiles.filter((path) => /\.(pdf|txt|md|csv|log|json|ya?ml|png|jpe?g|webp|bmp|tiff?)$/i.test(path));
+      const fileMap = new Map<string, File>();
+      const manifestFiles: Array<{ path: string; hash: string; size: number; mime?: string }> = [];
+      for (const path of candidates) {
+        const file = await readFile(handle, path);
+        if (!file) continue;
+        fileMap.set(path, file);
+        const buffer = await file.arrayBuffer();
+        const digest = await crypto.subtle.digest('SHA-256', buffer);
+        const hash = Array.from(new Uint8Array(digest))
+          .map(byte => byte.toString(16).padStart(2, '0'))
+          .join('');
+        manifestFiles.push({ path, hash, size: file.size, mime: file.type || undefined });
+      }
+
+      const plan = await kbApi.manifest(rootId, manifestFiles);
+      let uploaded = 0;
+      for (const path of plan.toUpload) {
+        const file = fileMap.get(path);
+        if (!file) continue;
+        const isProtected = kb.protect.some((prefix) => {
+          const normalized = prefix.replace(/\/$/, '');
+          return path === normalized || path.startsWith(`${normalized}/`);
+        });
+        await kbApi.uploadFile(rootId, path, file, isProtected);
+        uploaded += 1;
+      }
+      toast.success(`上传 ${uploaded} 个文件，跳过未变化 ${plan.unchanged} 个`);
+      setKbAssets(await kbApi.listFiles(undefined, 30));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '登记失败');
+    } finally {
+      setKbAssetBusy(false);
+    }
+  };
+
+  /** 知识库资产 → Markdown 笔记（之后自动进入 RAG 索引） */
+  const handleConvertKbFile = async (fileId: string) => {
+    try {
+      const result = await kbApi.convert(fileId);
+      toast.success(`已生成笔记「${result.title}」`);
+      bumpNotesRefresh();
+      setKbAssets(await kbApi.listFiles(undefined, 30));
+    } catch {
+      toast.error('转换为笔记失败');
+    }
   };
 
   /**
@@ -913,6 +996,55 @@ const SyncSettingsPage: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* 知识库资产 */}
+        <div className={card}>
+          <div className="p-5">
+            <h3 className={`text-sm font-bold mb-2 ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>
+              知识库资产（PDF / 文本）
+            </h3>
+            <p className={`text-xs mb-3 ${muted}`}>
+              把绑定目录中的 PDF、文本与图片登记到服务端并抽取正文（图片走本地 OCR）。转为笔记后会自动进入语义索引，可被 AI 检索与引用。
+              本地文件不会被修改或删除。
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleImportKbAssets()}
+                disabled={kbAssetBusy || !handle || !granted}
+                className="rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+              >
+                {kbAssetBusy ? '登记中…' : '登记目录中的资产'}
+              </button>
+              <span className={`text-[11px] ${muted}`}>已登记 {kbAssets.length} 个文件</span>
+            </div>
+            {kbAssets.length > 0 && (
+              <ul className={`mt-3 space-y-1.5 text-xs ${muted}`}>
+                {kbAssets.map((asset) => (
+                  <li key={asset.id} className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 flex-1 truncate" title={asset.path}>
+                      {asset.isProtected ? '🔒 ' : ''}{asset.path}
+                      <span className="ml-1 opacity-60">
+                        {asset.status === 'extract_failed' ? '· 无可提取文本' : asset.hasText ? '· 已抽取' : ''}
+                      </span>
+                    </span>
+                    {asset.noteId ? (
+                      <span className="shrink-0 text-[10px] text-green-600">已转笔记</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void handleConvertKbFile(asset.id)}
+                        className="shrink-0 text-[10px] text-orange-600 hover:underline"
+                      >
+                        转为笔记
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
 
         {/* 说明 */}
         <div className={card}>

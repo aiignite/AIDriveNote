@@ -136,6 +136,16 @@ export interface BrowserTranscriptSegment {
   end_time: number;
 }
 
+/** 录音结构化纪要 */
+export interface RecordingMinutes {
+  summary: string;
+  decisions: Array<{ text: string; time?: number }>;
+  actionItems: Array<{ task: string; owner?: string; due?: string; time?: number }>;
+  chapters: Array<{ title: string; start?: number; end?: number }>;
+  markdown: string;
+  model?: string | null;
+}
+
 /** 笔记录音 / 转写服务 API */
 export const noteRecordingApi = {
   /**
@@ -216,6 +226,9 @@ export const noteRecordingApi = {
    */
   refine: (id: string): Promise<NoteRecording> =>
     api.post<NoteRecording>(`/note-recordings/${id}/refine`, {}),
+
+  generateMinutes: (id: string): Promise<RecordingMinutes> =>
+    api.post<RecordingMinutes>(`/note-recordings/${id}/minutes`, {}),
 
   /**
    * 删除录音。

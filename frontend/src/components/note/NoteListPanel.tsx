@@ -240,6 +240,10 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
    * 仅在非回收站视图启用：回收站的批量语义（永久删除）与常规批量操作差异较大，
    * 先保持单选，避免误触导致不可逆操作。 */
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
+  /** 移动端滑动起点：左滑收藏、右滑置顶 */
+  const swipeStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  /** 滑动后抑制紧随其后的 click，避免误打开笔记 */
+  const suppressRowClickRef = useRef(false);
   /** Shift 连选的锚点，取最后一次点击的笔记下标 */
   const selectionAnchorRef = useRef<number | null>(null);
   /** 移动端没有 hover，checkbox 需常显 */
@@ -726,7 +730,37 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             toggleNoteChecked(note.id, noteIndex, e.shiftKey);
           }
         }}
-        onClick={e => handleRowClick(note, noteIndex, e.shiftKey)}
+        onTouchStart={e => {
+          if (!isMobile) return;
+          const touch = e.touches[0];
+          swipeStartRef.current = { id: note.id, x: touch.clientX, y: touch.clientY };
+          suppressRowClickRef.current = false;
+        }}
+        onTouchEnd={e => {
+          if (!isMobile) return;
+          const start = swipeStartRef.current;
+          swipeStartRef.current = null;
+          if (!start || start.id !== note.id) return;
+          const touch = e.changedTouches[0];
+          const dx = touch.clientX - start.x;
+          const dy = touch.clientY - start.y;
+          if (Math.abs(dx) < 56 || Math.abs(dy) > 40) return;
+          suppressRowClickRef.current = true;
+          if (dx < 0) {
+            onToggleFavorite?.(note.id, !note.isFavorite);
+            toast.success(note.isFavorite ? '已取消收藏' : '已收藏');
+          } else {
+            onPinNote?.(note.id, !note.isPinned);
+            toast.success(note.isPinned ? '已取消置顶' : '已置顶');
+          }
+        }}
+        onClick={e => {
+          if (suppressRowClickRef.current) {
+            suppressRowClickRef.current = false;
+            return;
+          }
+          handleRowClick(note, noteIndex, e.shiftKey);
+        }}
         onContextMenu={(e) => handleContextMenu(e, 'note', note.id)}
         draggable={!isMobile}
         onDragStart={e => handleNoteDragStart(e, note.id)}

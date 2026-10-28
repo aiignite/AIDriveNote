@@ -8,18 +8,23 @@
  *  → 编辑区（编辑器容器 + 可选大纲侧栏）
  *  → 页脚（字数统计 + 更新时间）
  *
- * 同时承载：⌘S 手动保存、⌘K 命令面板、文件导入、导出、移动到文件夹等面板级命令。
+ * 同时承载：⌘S 手动保存、⌘⇧K 命令面板、文件导入、导出、移动到文件夹等面板级命令。
  */
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Save, FileText, Code2, Brain, GitFork, Star, X, Plus, Tag, ChevronLeft, AlertCircle, Sparkles, Loader2, Check, Lock } from 'lucide-react';
 import toast from 'react-hot-toast';
 import NoteEditorContainer from './NoteEditorContainer';
-import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';
-import NoteCommandPalette from './NoteCommandPalette';
+import NoteMenuBar, { type NoteMenuEntry } from './NoteMenuBar';import NoteCommandPalette from './NoteCommandPalette';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import NoteOutlinePanel from './NoteOutlinePanel';
 import NoteEmailDialog from './NoteEmailDialog';
 import PasswordDialog from './PasswordDialog';
+import ConfirmDialog from '../ConfirmDialog';
+import PromptDialog from '../PromptDialog';
+import AISelectionToolbar from './AISelectionToolbar';
+import RevisionDiffDialog from './RevisionDiffDialog';
+import { contentToPlainText, diffLines } from '../../utils/noteDiff';
+import { useApp } from '../../contexts/AppContext';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
 import {
   noteApi, noteTagApi, noteTemplateApi, noteTitleApi, noteLockApi,
@@ -28,6 +33,7 @@ import {
   type NoteBacklink, type NoteRevision, type NoteShare, type LockScope,
 } from '../../services/note';
 import { getExportOptions, type ExportFormat } from '../../utils/noteExportOptions';
+import type { RelatedNote, TagSuggestion } from '../../services/note/note';
 import { useAuth } from '../../contexts/AuthContext';
 import { isNetworkError } from '../../services/client';
 import { cacheFullNote, readNote } from '../../services/offline/noteCache';
@@ -176,12 +182,14 @@ function toCommandMap(commands: NoteCommand[]): Record<string, NoteCommand> {
 /** 快捷键帮助弹窗中展示的条目 */
 const SHORTCUT_HELP: Array<{ keys: string; desc: string }> = [
   { keys: '⌘S', desc: '保存笔记' },
-  { keys: '⌘K', desc: '打开命令面板' },
+  { keys: '⌘K', desc: '全局搜索 / 操作面板（列表区）' },
+  { keys: '⌘⇧K', desc: '打开编辑器命令面板' },
   { keys: '⌘P', desc: '快速跳转到笔记' },
   { keys: '⌘N', desc: '新建笔记（列表区）' },
   { keys: '⌘⇧F', desc: '搜索笔记（列表区）' },
   { keys: '⌘J', desc: '打开 AI 助手' },
   { keys: 'Esc', desc: '关闭 AI 助手（焦点不在输入框时）' },
+  { keys: '⌘F', desc: '在笔记内查找' },
   { keys: '⌘Z / ⌘⇧Z', desc: '撤销 / 重做' },
   { keys: '⌘B / ⌘I / ⌘U', desc: '粗体 / 斜体 / 下划线' },
   { keys: 'Tab / Enter', desc: '思维导图：添加子节点 / 兄弟节点' },
@@ -202,6 +210,12 @@ interface NoteEditorPanelProps {
   refreshTrigger?: number;
   /** 移动端返回列表：传入后在顶部菜单栏显示返回按钮 */
   onBack?: () => void;
+  /** 打开相关笔记 / 反向引用来源 */
+  onOpenRelated?: (noteId: string) => void;
+  /** AI 引用跳转携带的块 id */
+  highlightChunkId?: string | null;
+  /** 关闭引用定位横幅（同时清掉 URL 上的 chunk 参数） */
+  onDismissCitation?: () => void;
 }
 
 const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
@@ -218,14 +232,28 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   isDark = false,
   refreshTrigger,
   onBack,
+  onOpenRelated,
+  highlightChunkId,
+  onDismissCitation,
 }) => {
+  const { openAI } = useApp();
+  const editorAreaRef = useRef<HTMLDivElement>(null);
+  const handleSelectionAIAction = useCallback((selectionText: string, prompt: string) => {
+    // 选区正文通过 pageContext.selectionText 传给模型，presetMessage 只放指令
+    openAI({ presetMessage: prompt, selectionText });
+  }, [openAI]);
   const [title, setTitle] = useState(note.title);
   const [noteTags, setNoteTags] = useState<NoteTag[]>(note.tags ?? []);
   const [tagInput, setTagInput] = useState('');
   const [backlinks, setBacklinks] = useState<NoteBacklink[]>([]);
   const [revisions, setRevisions] = useState<NoteRevision[]>([]);
   const [shares, setShares] = useState<NoteShare[]>([]);
-  const [showSidePanel, setShowSidePanel] = useState<'none' | 'backlinks' | 'history' | 'share'>('none');
+  const [publicLinkToken, setPublicLinkToken] = useState<string | null>(null);
+  const [showSidePanel, setShowSidePanel] = useState<'none' | 'backlinks' | 'history' | 'share' | 'related'>('none');
+  const [relatedNotes, setRelatedNotes] = useState<RelatedNote[]>([]);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+  const [tagSuggestions, setTagSuggestions] = useState<TagSuggestion[]>([]);
+  const [tagSuggestionsLoading, setTagSuggestionsLoading] = useState(false);
   const [shareUserId, setShareUserId] = useState('');
   const [sharePermission, setSharePermission] = useState<'view' | 'edit'>('view');
   const [showTagPopover, setShowTagPopover] = useState(false);
@@ -526,8 +554,17 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     }
   }, [note.id, onTagsChanged]);
 
-  const handleRestoreRevision = useCallback(async (revisionId: string) => {
-    if (!confirm('确定恢复到此版本？当前内容将保存为历史版本。')) return;
+  const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
+  const [diffRevision, setDiffRevision] = useState<NoteRevision | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findHint, setFindHint] = useState('');
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const [citationChunk, setCitationChunk] = useState<{ headingPath?: string | null; content: string; title: string } | null>(null);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+
+  const restoreRevisionNow = useCallback(async (revisionId: string) => {
     try {
       const updated = await noteApi.restoreRevision(note.id, revisionId);
       onNoteUpdated?.(updated);
@@ -541,6 +578,138 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       toast.error('恢复失败');
     }
   }, [note.id, onNoteUpdated, loadRevisions]);
+
+  const handleRestoreRevision = useCallback((revisionId: string) => {
+    setRestoreTarget(revisionId);
+  }, []);
+
+  const loadRelated = useCallback(async () => {
+    setRelatedLoading(true);
+    try {
+      setRelatedNotes(await noteApi.related(note.id, 6));
+    } catch {
+      toast.error('加载相关笔记失败');
+    } finally {
+      setRelatedLoading(false);
+    }
+  }, [note.id]);
+
+  const handleInsertRelatedLink = useCallback(async (target: RelatedNote) => {
+    try {
+      await noteApi.linkRelated(note.id, target.id);
+      const refreshed = await noteApi.get(note.id);
+      onNoteUpdated?.(refreshed);
+      setContent(refreshed.content ?? null);
+      setContentResetKey(k => k + 1);
+      toast.success(`已插入 [[${target.title}]]`);
+      await loadRelated();
+    } catch {
+      toast.error('插入链接失败');
+    }
+  }, [note.id, onNoteUpdated, loadRelated]);
+
+  const loadTagSuggestions = useCallback(async () => {
+    setTagSuggestionsLoading(true);
+    try {
+      setTagSuggestions(await noteApi.tagSuggestions(note.id, 5));
+    } catch {
+      toast.error('获取标签建议失败');
+    } finally {
+      setTagSuggestionsLoading(false);
+    }
+  }, [note.id]);
+
+  useEffect(() => {
+    if (!highlightChunkId) {
+      setCitationChunk(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void noteApi.getChunk(note.id, highlightChunkId)
+      .then(chunk => { if (!cancelled) setCitationChunk(chunk); })
+      .catch(() => { if (!cancelled) toast.error('引用原文已不可用'); });
+    return () => { cancelled = true; };
+  }, [note.id, highlightChunkId]);
+
+  const locateCitation = useCallback((chunk: { content: string; headingPath?: string | null }) => {
+    const finder = (window as unknown as {
+      find?: (text: string, caseSensitive: boolean, backwards: boolean, wrap: boolean) => boolean;
+    }).find;
+    if (!finder) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    const probes = [
+      chunk.content.trim().slice(0, 24),
+      (chunk.headingPath || '').split('>').pop()?.trim() || '',
+    ].filter(Boolean);
+    for (const probe of probes) {
+      if (finder(probe, false, false, true)) return;
+    }
+    toast('引用原文可能已被修改，已展示引用片段', { icon: 'ℹ️' });
+  }, []);
+
+  useEffect(() => {
+    if (!citationChunk || !contentLoaded) return undefined;
+    const timer = window.setTimeout(() => locateCitation(citationChunk), 600);
+    return () => window.clearTimeout(timer);
+  }, [citationChunk, contentLoaded, locateCitation]);
+
+  useEffect(() => {
+    if (showSidePanel === 'related') void loadRelated();
+  }, [showSidePanel, loadRelated]);
+
+  const runFind = useCallback((backwards = false) => {
+    const query = findQuery.trim();
+    if (!query) return;
+    // Markdown 编辑态是 textarea：直接在源码里定位，而不是依赖 window.find
+    const textarea = editorAreaRef.current?.querySelector('textarea');
+    if (textarea) {
+      const haystack = textarea.value;
+      const needle = query.toLowerCase();
+      const from = backwards
+        ? Math.max(0, (textarea.selectionStart ?? 0) - needle.length - 1)
+        : (textarea.selectionEnd ?? 0);
+      let index = haystack.toLowerCase().indexOf(needle, from);
+      if (index < 0) index = haystack.toLowerCase().indexOf(needle); // 回绕
+      if (index < 0) {
+        setFindHint('未找到');
+        return;
+      }
+      textarea.focus();
+      textarea.setSelectionRange(index, index + query.length);
+      setFindHint('');
+      return;
+    }
+    const finder = (window as unknown as {
+      find?: (text: string, caseSensitive: boolean, backwards: boolean, wrap: boolean) => boolean;
+    }).find;
+    if (!finder) {
+      setFindHint('当前浏览器不支持页内查找');
+      return;
+    }
+    const found = finder(query, false, backwards, true);
+    setFindHint(found ? '' : '未找到');
+  }, [findQuery]);
+
+  useEffect(() => {
+    if (findOpen) {
+      const timer = window.setTimeout(() => findInputRef.current?.focus(), 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [findOpen]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f' && !event.shiftKey) {
+        event.preventDefault();
+        setFindOpen(true);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
 
   const handleAddShare = useCallback(async () => {
     if (!shareUserId.trim()) return;
@@ -565,6 +734,36 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       toast.error('移除分享失败');
     }
   }, [note.id, loadShares]);
+
+  const handleCreatePublicLink = useCallback(async () => {
+    try {
+      const link = await noteApi.createPublicLink(note.id);
+      setPublicLinkToken(link.token);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '创建公开链接失败');
+    }
+  }, [note.id]);
+
+  const handleCopyPublicLink = useCallback(async () => {
+    if (!publicLinkToken) return;
+    const url = new URL(`${import.meta.env.BASE_URL}p/${publicLinkToken}`, window.location.origin).toString();
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('公开链接已复制');
+    } catch {
+      toast.error('复制失败，请手动复制');
+    }
+  }, [publicLinkToken]);
+
+  const handleRevokePublicLink = useCallback(async () => {
+    try {
+      await noteApi.revokePublicLink(note.id);
+      setPublicLinkToken(null);
+      toast.success('公开链接已撤销');
+    } catch {
+      toast.error('撤销失败');
+    }
+  }, [note.id]);
 
   // Auto-save title (debounce 1s)
   const handleTitleChange = useCallback((newTitle: string) => {
@@ -745,12 +944,17 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     }
   }, [note.id, title, content, onNoteUpdated, persistOffline, userId, currentUnlockToken]);
 
-  const handleSaveAsTemplate = useCallback(async () => {
-    const name = prompt('模板名称', `${title || '无标题'} 模板`);
-    if (!name?.trim()) return;
+  const handleSaveAsTemplate = useCallback(() => {
+    setTemplateName(`${title || '无标题'} 模板`);
+    setTemplateDialogOpen(true);
+  }, [title]);
+
+  const handleSaveAsTemplateConfirmed = useCallback(async () => {
+    const name = templateName.trim();
+    if (!name) return;
     try {
       await noteTemplateApi.create({
-        name: name.trim(),
+        name,
         noteType: note.noteType,
         description: description || undefined,
         content: content != null ? (content as Record<string, unknown>) : undefined,
@@ -759,7 +963,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     } catch {
       toast.error('保存模板失败');
     }
-  }, [title, description, content, note.noteType]);
+  }, [templateName, description, content, note.noteType]);
 
   /* ────── 面板级命令实现 ────── */
 
@@ -936,15 +1140,16 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         run: () => onDeleteNote?.(note.id),
         isEnabled: () => Boolean(onDeleteNote),
       },
-      { id: 'view.palette', label: '命令面板', shortcut: 'Mod+K', keywords: 'command palette 命令', run: () => setPaletteOpen(true) },
+      { id: 'view.palette', label: '命令面板', shortcut: 'Mod+Shift+K', keywords: 'command palette 命令', run: () => setPaletteOpen(true) },
       { id: 'view.outline', label: '显示大纲', keywords: 'outline toc 大纲 目录', run: () => setShowOutline(v => !v), isEnabled: () => outlineAvailable, isChecked: () => showOutline },
       { id: 'view.fullscreen', label: isFullscreen ? '退出全屏' : '全屏编辑', keywords: 'fullscreen 全屏', run: () => onToggleFullscreen?.(), isEnabled: () => Boolean(onToggleFullscreen), isChecked: () => isFullscreen },
       { id: 'view.backlinks', label: '反向引用', keywords: 'backlink 反向引用 链接', run: () => setShowSidePanel(v => (v === 'backlinks' ? 'none' : 'backlinks')), isChecked: () => showSidePanel === 'backlinks' },
+      { id: 'view.related', label: '相关笔记', keywords: 'related 相关 建议链接 语义', run: () => setShowSidePanel(v => (v === 'related' ? 'none' : 'related')), isChecked: () => showSidePanel === 'related' },
       { id: 'view.history', label: '版本历史', keywords: 'history revision 版本 历史', run: () => { void loadRevisions(); setShowSidePanel(v => (v === 'history' ? 'none' : 'history')); }, isChecked: () => showSidePanel === 'history' },
       { id: 'view.share', label: '分享笔记', keywords: 'share 分享', run: () => { void loadShares(); setShowSidePanel(v => (v === 'share' ? 'none' : 'share')); }, isChecked: () => showSidePanel === 'share' },
       { id: 'view.tags', label: '管理标签', keywords: 'tag 标签', run: () => setShowTagPopover(v => !v) },
       { id: 'help.shortcuts', label: '快捷键说明', keywords: 'shortcut help 快捷键 帮助', run: () => setShowShortcuts(true) },
-      { id: 'help.about', label: '关于笔记编辑器', keywords: 'about 关于', run: () => toast(`AIDriveNote · ${TYPE_META[note.noteType]?.label ?? note.noteType} 编辑器\n按 ⌘K 可搜索全部命令`, { icon: 'ℹ️' }) },
+      { id: 'help.about', label: '关于笔记编辑器', keywords: 'about 关于', run: () => toast(`AIDriveNote · ${TYPE_META[note.noteType]?.label ?? note.noteType} 编辑器\n按 ⌘⇧K 可搜索全部命令`, { icon: 'ℹ️' }) },
     ];
     return commands;
   }, [
@@ -1071,7 +1276,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     };
   }, [flushContentSave]);
 
-  // Ctrl+S 保存 / Ctrl+K 命令面板
+  // Ctrl+S 保存 / Ctrl+Shift+K 命令面板（⌘K 留给全局搜索面板）
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
@@ -1079,7 +1284,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         handleManualSave();
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen(v => !v);
       }
@@ -1087,6 +1292,13 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [handleManualSave]);
+
+  // 统一 ⌘K 面板里的「打开编辑器命令」入口
+  useEffect(() => {
+    const openPalette = () => setPaletteOpen(true);
+    window.addEventListener('aidrivenote:open-command-palette', openPalette);
+    return () => window.removeEventListener('aidrivenote:open-command-palette', openPalette);
+  }, []);
 
   const typeMeta = TYPE_META[note.noteType] || TYPE_META.rich_text;
 
@@ -1185,6 +1397,16 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               <AlertCircle size={12} /> 保存失败，点击重试
             </button>
           )}
+          {note.indexStatus === 'pending' && (
+            <span className={`text-[11px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`} title="正在建立语义索引，完成后可被 AI 检索">
+              索引中…
+            </span>
+          )}
+          {note.indexStatus === 'failed' && (
+            <span className="text-[11px] text-red-500" title="语义索引失败：保存一次可重试，或运行回填脚本">
+              索引失败
+            </span>
+          )}
           {saving && (
             <span className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>保存中...</span>
           )}
@@ -1196,9 +1418,9 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
                 ? 'border-gray-600 text-gray-400 hover:bg-gray-700'
                 : 'border-gray-200 text-gray-500 hover:bg-gray-100'
             }`}
-            title="打开命令面板 (⌘K)"
+            title="打开命令面板 (⌘⇧K)"
           >
-            ⌘K 命令
+            ⌘⇧K 命令
           </button>
           <button
             type="button"
@@ -1313,6 +1535,19 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>+{noteTags.length - 2}</span>
             )}
           </div>
+          {/* Related notes trigger */}
+          <button
+            type="button"
+            onClick={() => setShowSidePanel(v => (v === 'related' ? 'none' : 'related'))}
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
+              showSidePanel === 'related'
+                ? (isDark ? 'bg-orange-900/40 text-orange-300' : 'bg-orange-50 text-orange-600')
+                : (isDark ? 'text-gray-400 hover:bg-gray-700 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700')
+            }`}
+            title="相关笔记 / 建议链接"
+          >
+            <Sparkles size={13} />
+          </button>
           {/* Tag popover trigger */}
           <div className="relative shrink-0" ref={tagPopoverRef}>
             <button
@@ -1373,6 +1608,34 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
                     <Plus size={12} />
                   </button>
                 </div>
+                <div className="mt-2 pt-2 border-t" style={{ borderColor: isDark ? '#374151' : '#e5e7eb' }}>
+                  <button
+                    type="button"
+                    onClick={() => void loadTagSuggestions()}
+                    disabled={tagSuggestionsLoading}
+                    className="text-[10px] text-orange-600 hover:underline disabled:opacity-50 dark:text-orange-400"
+                  >
+                    {tagSuggestionsLoading ? '分析中…' : '✨ 建议标签'}
+                  </button>
+                  {tagSuggestions.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {tagSuggestions.map(suggestion => (
+                        <button
+                          key={suggestion.name}
+                          type="button"
+                          onClick={() => {
+                            void handleAddTag(suggestion.name);
+                            setTagSuggestions(prev => prev.filter(item => item.name !== suggestion.name));
+                          }}
+                          className="text-[10px] px-1.5 py-0.5 rounded-full border border-orange-200 text-orange-600 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-900/30"
+                          title={suggestion.existing ? '已有标签，正文中出现' : '从正文提取的新标签'}
+                        >
+                          + {suggestion.name}{suggestion.existing ? ' ·已有' : ''}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {allTags.filter(t => !noteTags.some(nt => nt.id === t.id)).length > 0 && (
                   <div className="mt-2 pt-2 border-t border-dashed flex flex-wrap gap-1 max-h-24 overflow-y-auto"
                     style={{ borderColor: isDark ? '#374151' : '#e5e7eb' }}
@@ -1428,8 +1691,52 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               {backlinks.length === 0 ? (
                 <p className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>暂无其他笔记链接到此笔记</p>
               ) : backlinks.map(bl => (
-                <div key={bl.linkId} className={`text-xs py-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                <button
+                  key={bl.linkId}
+                  type="button"
+                  onClick={() => onOpenRelated?.(bl.sourceId)}
+                  className={`block w-full text-left text-xs py-1 hover:text-orange-600 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}
+                  title={onOpenRelated ? '打开来源笔记' : undefined}
+                >
                   [[{bl.linkText}]] ← {bl.sourceTitle} ({bl.sourceNoteNo})
+                </button>
+              ))}
+            </div>
+          )}
+          {showSidePanel === 'related' && (
+            <div>
+              <h4 className={`text-xs font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                相关笔记 {relatedLoading ? '…' : `(${relatedNotes.length})`}
+              </h4>
+              {relatedNotes.length === 0 ? (
+                <p className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+                  暂无相关笔记。多写几篇或等待语义索引完成后会自动出现。
+                </p>
+              ) : relatedNotes.map(item => (
+                <div key={item.id} className="flex items-start justify-between gap-2 py-1">
+                  <div className="min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => onOpenRelated?.(item.id)}
+                      className="block max-w-full truncate text-left text-xs text-orange-600 hover:underline dark:text-orange-400"
+                    >
+                      {item.title}
+                    </button>
+                    <p className={`truncate text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+                      {item.snippet}
+                    </p>
+                  </div>
+                  {item.linked ? (
+                    <span className={`shrink-0 text-[10px] ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>已链接</span>
+                  ) : (note.noteType === 'markdown' || note.noteType === 'rich_text') ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleInsertRelatedLink(item)}
+                      className="shrink-0 text-[10px] text-orange-500 hover:underline"
+                    >
+                      插入链接
+                    </button>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -1449,6 +1756,12 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
                     className="text-orange-500 hover:underline shrink-0 ml-2"
                   >
                     恢复
+                  </button>
+                  <button
+                    onClick={() => setDiffRevision(rev)}
+                    className={`shrink-0 ml-2 hover:underline ${isDark ? 'text-gray-400' : 'text-gray-500'}`}
+                  >
+                    对比
                   </button>
                 </div>
               ))}
@@ -1480,14 +1793,88 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
                   <button onClick={() => handleRemoveShare(s.sharedWithUserId)} className="text-red-500 hover:underline">移除</button>
                 </div>
               ))}
+              <div className={`mt-3 pt-2 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+                {publicLinkToken ? (
+                  <>
+                    <p className={`text-[11px] ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                      公开只读链接已开启（拿到链接的人无需登录即可阅读）
+                    </p>
+                    <input
+                      readOnly
+                      value={new URL(`${import.meta.env.BASE_URL}p/${publicLinkToken}`, window.location.origin).toString()}
+                      onFocus={event => event.currentTarget.select()}
+                      className={`mt-1 w-full rounded border px-2 py-1 text-[10px] ${isDark ? 'bg-gray-900 border-gray-600 text-gray-300' : 'bg-white border-gray-200 text-gray-600'}`}
+                    />
+                    <div className="mt-1 flex gap-2">
+                      <button type="button" onClick={() => void handleCopyPublicLink()} className="text-[11px] text-orange-600 hover:underline">复制链接</button>
+                      <button type="button" onClick={() => void handleRevokePublicLink()} className="text-[11px] text-red-500 hover:underline">撤销</button>
+                    </div>
+                  </>
+                ) : note.isEncrypted ? (
+                  <p className={`text-[11px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>加密笔记不支持公开链接</p>
+                ) : (
+                  <button type="button" onClick={() => void handleCreatePublicLink()} className="text-[11px] text-orange-600 hover:underline">
+                    创建公开只读链接
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
       )}
 
       {/* Editor + outline */}
-      <div className="flex-1 min-h-0 flex overflow-hidden">
-        <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {citationChunk && (
+          <div className={`flex shrink-0 items-start gap-2 border-b px-3 py-2 text-xs ${
+            isDark ? 'border-emerald-900 bg-emerald-950/30 text-emerald-200' : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+          }`}>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">
+                来自 AI 引用{citationChunk.headingPath ? ` · ${citationChunk.headingPath}` : ''}
+              </p>
+              <p className="truncate opacity-80">“{citationChunk.content.slice(0, 160)}”</p>
+            </div>
+            <button type="button" onClick={() => locateCitation(citationChunk)} className="shrink-0 underline underline-offset-2">
+              定位
+            </button>
+            <button
+              type="button"
+              onClick={() => { setCitationChunk(null); onDismissCitation?.(); }}
+              className="shrink-0 opacity-70 hover:opacity-100"
+              aria-label="关闭引用定位"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
+        {findOpen && (
+          <div className={`flex shrink-0 items-center gap-2 border-b px-3 py-1.5 ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-gray-50'}`}>
+            <input
+              ref={findInputRef}
+              value={findQuery}
+              onChange={event => { setFindQuery(event.target.value); setFindHint(''); }}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  runFind(event.shiftKey);
+                } else if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setFindOpen(false);
+                  setFindHint('');
+                }
+              }}
+              placeholder="在笔记内查找…（Enter 下一个，Shift+Enter 上一个）"
+              className={`w-64 rounded-md border px-2 py-1 text-xs outline-none ${isDark ? 'bg-gray-900 border-gray-600 text-gray-100' : 'bg-white border-gray-200'}`}
+            />
+            <button type="button" onClick={() => runFind(false)} className="text-[11px] text-orange-600 hover:underline">下一个</button>
+            <button type="button" onClick={() => runFind(true)} className="text-[11px] text-orange-600 hover:underline">上一个</button>
+            {findHint && <span className="text-[11px] text-red-500">{findHint}</span>}
+            <button type="button" onClick={() => { setFindOpen(false); setFindHint(''); }} className="ml-auto text-[11px] text-gray-500 hover:underline">关闭</button>
+          </div>
+        )}
+        <div className="flex-1 min-h-0 flex overflow-hidden">
+        <div ref={editorAreaRef} className="flex-1 min-w-0 min-h-0 overflow-hidden">
           {!contentLoaded && content == null ? (
             <div className={`flex flex-col items-center justify-center h-full ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600 mb-2" />
@@ -1517,6 +1904,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
             isDark={isDark}
           />
         )}
+        </div>
       </div>
 
       {/* Footer: stats + last save hint */}
@@ -1636,6 +2024,54 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           </div>
         </div>
       )}
+
+      <RevisionDiffDialog
+        open={diffRevision !== null}
+        isDark={isDark}
+        title={diffRevision?.title ?? ''}
+        lines={diffRevision
+          ? diffLines(
+              contentToPlainText(note.noteType, diffRevision.contentSnapshot),
+              contentToPlainText(note.noteType, content),
+            )
+          : []}
+        onClose={() => setDiffRevision(null)}
+      />
+
+      <AISelectionToolbar
+        containerRef={editorAreaRef}
+        isDark={isDark}
+        onAction={handleSelectionAIAction}
+      />
+
+      <ConfirmDialog
+        isOpen={restoreTarget !== null}
+        onClose={() => setRestoreTarget(null)}
+        onConfirm={() => {
+          const revisionId = restoreTarget;
+          setRestoreTarget(null);
+          if (revisionId) void restoreRevisionNow(revisionId);
+        }}
+        title="恢复到历史版本"
+        message="当前内容会先保存为一条历史版本，然后恢复到所选版本。"
+        confirmLabel="恢复"
+        cancelLabel="取消"
+        variant="warning"
+      />
+
+      <PromptDialog
+        isOpen={templateDialogOpen}
+        title="另存为模板"
+        label="模板名称"
+        value={templateName}
+        onChange={setTemplateName}
+        onCancel={() => setTemplateDialogOpen(false)}
+        onConfirm={() => {
+          setTemplateDialogOpen(false);
+          void handleSaveAsTemplateConfirmed();
+        }}
+        confirmLabel="保存模板"
+      />
     </div>
   );
 };

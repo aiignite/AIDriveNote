@@ -19,6 +19,9 @@ const GuestEventsPage = lazy(() => import('./pages/settings/GuestEventsPage'));
 const SyncSettingsPage = lazy(() => import('./pages/settings/SyncSettingsPage'));
 const OfflineSettingsPage = lazy(() => import('./pages/settings/OfflineSettingsPage'));
 const ApiTokensPage = lazy(() => import('./pages/settings/ApiTokensPage'));
+const McpSettingsPage = lazy(() => import('./pages/settings/McpSettingsPage'));
+const PublicNotePage = lazy(() => import('./pages/PublicNotePage'));
+const ShareTargetPage = lazy(() => import('./pages/ShareTargetPage'));
 
 /** 动态 import 的模块类型 */
 type LazyModule<P> = () => Promise<{ default: React.ComponentType<P> }>;
@@ -89,9 +92,18 @@ const App: React.FC = () => (
         <Routes>
           <Route path="/login" element={withSuspense(<LoginPage />)} />
           <Route path="/register" element={withSuspense(<RegisterPage />)} />
+          <Route path="/p/:token" element={withSuspense(<PublicNotePage />)} />
           <Route
             path="/"
             element={<ProtectedRoute>{withSuspense(<NotesRoute />)}</ProtectedRoute>}
+          />
+          <Route
+            path="/note/:noteId"
+            element={<ProtectedRoute>{withSuspense(<NotesRoute />)}</ProtectedRoute>}
+          />
+          <Route
+            path="/share"
+            element={<ProtectedRoute>{withSuspense(<ShareTargetPage />)}</ProtectedRoute>}
           />
           <Route
             path="/settings"
@@ -108,6 +120,7 @@ const App: React.FC = () => (
             <Route path="sync" element={<GuestDisabledRoute>{withSuspense(<SyncSettingsPage />)}</GuestDisabledRoute>} />
             <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
             <Route path="tokens" element={<GuestDisabledRoute>{withSuspense(<ApiTokensPage />)}</GuestDisabledRoute>} />
+            <Route path="mcp" element={<GuestDisabledRoute>{withSuspense(<McpSettingsPage />)}</GuestDisabledRoute>} />
             <Route
               path="users"
               element={

@@ -26,6 +26,8 @@ export interface Note {
   tags?: NoteTag[];
   /** 该笔记是否启用了笔记级加密 */
   isEncrypted?: boolean;
+  /** RAG 索引状态：pending / ok / failed / skipped */
+  indexStatus?: string | null;
   /** 当前请求是否处于锁定态（自身加密或受加密文件夹保护且未解锁） */
   isLocked?: boolean;
   /** 锁定来源：note（笔记自身）/ folder（加密文件夹） */
@@ -134,6 +136,23 @@ export interface NoteSearchResponse {
   highlights: Record<string, string>;
 }
 
+export interface RelatedNote {
+  id: string;
+  noteNo?: string | null;
+  title: string;
+  noteType: string;
+  snippet: string;
+  score: number;
+  linked: boolean;
+}
+
+export interface TagSuggestion {
+  name: string;
+  color?: string | null;
+  existing: boolean;
+  score: number;
+}
+
 // ── API ──────────────────────────────────────────────
 
 export const noteApi = {
@@ -155,11 +174,50 @@ export const noteApi = {
   listTrash: (params?: { skip?: number; limit?: number; search?: string }) =>
     api.get<NoteListResponse>(`/notes/trash/list${buildQuery(params)}`),
 
-  search: (q: string, params?: { skip?: number; limit?: number }) =>
-    api.get<NoteSearchResponse>(`/notes/search/fulltext${buildQuery({ q, ...params })}`),
+  search: (q: string, params?: { skip?: number; limit?: number; include_shared?: boolean }) =>
+    api.get<NoteSearchResponse>(`/notes/search/fulltext${buildQuery({
+      q,
+      skip: params?.skip,
+      limit: params?.limit,
+      include_shared: params?.include_shared,
+    })}`),
 
   get: (id: string, unlockToken?: string | null) =>
     api.get<Note>(`/notes/${id}`, buildUnlockHeader(unlockToken)),
+
+  getChunk: (noteId: string, chunkId: string) =>
+    api.get<{ chunkId: string; noteId: string; headingPath?: string | null; content: string; title: string }>(
+      `/notes/${noteId}/chunks/${chunkId}`,
+    ),
+
+  related: (id: string, limit = 6) =>
+    api.get<RelatedNote[]>(`/notes/${id}/related?limit=${limit}`),
+
+  linkRelated: (id: string, targetId: string) =>
+    api.post<{ success: boolean }>(`/notes/${id}/related/${targetId}/link`, {}),
+
+  tagSuggestions: (id: string, limit = 5) =>
+    api.get<TagSuggestion[]>(`/notes/${id}/tag-suggestions?limit=${limit}`),
+
+  createPublicLink: (id: string) =>
+    api.post<{ token: string; expiresAt?: string | null }>(`/notes/${id}/public-link`, {}),
+
+  revokePublicLink: (id: string) =>
+    api.delete<{ success: boolean; revoked: number }>(`/notes/${id}/public-link`),
+
+  dailyToday: (date?: string) =>
+    api.get<Note>(`/notes/daily/today${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+
+  dailyReview: (date?: string) =>
+    api.post<{ date: string; markdown: string; noteCount: number; model?: string | null }>(
+      `/notes/daily/review${date ? `?date=${encodeURIComponent(date)}` : ''}`,
+      {},
+    ),
+
+  publicGet: (token: string) =>
+    api.get<{ title: string; noteType: string; content: unknown; updatedAt?: string | null }>(
+      `/public/notes/${encodeURIComponent(token)}`,
+    ),
 
   create: (data: NoteCreate) => api.post<Note>('/notes', data),
 

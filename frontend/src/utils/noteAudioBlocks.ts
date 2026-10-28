@@ -8,7 +8,10 @@
  */
 import type { PartialBlock } from '@blocknote/core';
 import { resolveAssetUrl } from '../services/client';
-import type { TranscriptSegment } from '../services/note/recording';
+import type { RecordingMinutes, TranscriptSegment } from '../services/note/recording';
+
+/** 纪要转块时仅需要 markdown 字段 */
+export type MinutesInput = Pick<RecordingMinutes, 'markdown'>;
 
 /** BlockNote 块公共默认 props */
 const BASE_PROPS = { textColor: 'default', backgroundColor: 'default', textAlignment: 'left' };
@@ -104,5 +107,44 @@ export function transcriptToBlocks(
     } as PartialBlock);
   }
 
+  return blocks;
+}
+
+/**
+ * 把结构化纪要 markdown 转成 BlockNote 块（标题 / 要点 / 段落）。
+ * @param markdown 纪要 markdown
+ * @returns BlockNote 块数组
+ */
+export function minutesToBlocks(markdown: string): PartialBlock[] {
+  const blocks: PartialBlock[] = [];
+  for (const raw of (markdown ?? '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('### ')) {
+      blocks.push({
+        type: 'heading',
+        props: { ...BASE_PROPS, level: 3 },
+        content: [{ type: 'text', text: line.slice(4), styles: {} }],
+      } as PartialBlock);
+    } else if (line.startsWith('## ')) {
+      blocks.push({
+        type: 'heading',
+        props: { ...BASE_PROPS, level: 2 },
+        content: [{ type: 'text', text: line.slice(3), styles: {} }],
+      } as PartialBlock);
+    } else if (line.startsWith('- ')) {
+      blocks.push({
+        type: 'bulletListItem',
+        props: { ...BASE_PROPS },
+        content: [{ type: 'text', text: line.slice(2), styles: {} }],
+      } as PartialBlock);
+    } else {
+      blocks.push({
+        type: 'paragraph',
+        props: { ...BASE_PROPS },
+        content: [{ type: 'text', text: line, styles: {} }],
+      } as PartialBlock);
+    }
+  }
   return blocks;
 }

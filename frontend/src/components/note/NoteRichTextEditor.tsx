@@ -929,7 +929,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
       cmd('format.bold', '粗体', () => toggleStyle('bold'), 'Mod+B', 'bold 加粗'),
       cmd('format.italic', '斜体', () => toggleStyle('italic'), 'Mod+I', 'italic 倾斜'),
       cmd('format.underline', '下划线', () => toggleStyle('underline'), 'Mod+U', 'underline'),
-      cmd('format.strike', '删除线', () => toggleStyle('strike'), 'Mod+Shift+S', 'strike 删除线'),
+      cmd('format.strike', '删除线', () => toggleStyle('strike'), 'Mod+Shift+X', 'strike 删除线'),
       cmd('format.code', '行内代码', () => toggleStyle('code'), 'Mod+E', 'code 代码'),
       cmd('format.clear', '清除格式', clearFormatting, undefined, 'clear 清除 样式 格式'),
       // 插入 - 块类型
@@ -958,7 +958,7 @@ const NoteRichTextEditorCore: React.FC<NoteRichTextEditorProps> = ({
         run: speech.toggle,
         isEnabled: () => !readOnlyRef.current && speech.supported,
       },
-      cmd('insert.link', '插入链接', insertLink, 'Mod+K', 'link url 超链接'),
+      cmd('insert.link', '插入链接', insertLink, 'Mod+Shift+L', 'link url 超链接'),
       // 视图 - 对齐
       cmd('view.align.left', '左对齐', () => setAlignment('left'), undefined, 'align left 左对齐'),
       cmd('view.align.center', '居中', () => setAlignment('center'), undefined, 'align center 居中'),

@@ -11,6 +11,7 @@
  * pre 层面接管，避免 `<pre>` 被包进 `<p>` 导致 hydration 报错。
  */
 import React, { memo, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -19,6 +20,26 @@ import { Check, Copy } from 'lucide-react';
 import { extractThinkingContent } from './ChatThinkingIndicator';
 
 export type AIChatMarkdownVariant = 'default' | 'inverted';
+
+/** 模型按提示词写出的 `note_id=<uuid>` 链接 → 应用内笔记跳转 */
+const NoteCitationLink: React.FC<{
+  noteId: string;
+  inverted: boolean;
+  children: React.ReactNode;
+}> = ({ noteId, inverted, children }) => {
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(`/note/${noteId}`)}
+      className={`underline underline-offset-2 ${
+        inverted ? 'text-white hover:text-white/80' : 'text-blue-600 hover:text-blue-700 dark:text-blue-400'
+      }`}
+    >
+      {children}
+    </button>
+  );
+};
 
 interface AIChatMarkdownProps {
   content: string;
@@ -241,20 +262,31 @@ const buildMarkdownComponents = (variant: AIChatMarkdownVariant): Partial<Compon
     img: ({ src, alt }) => (
       <MarkdownImagePreview src={typeof src === 'string' ? src : undefined} alt={alt} />
     ),
-    a: ({ href, children }) => (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={
-          isInverted
-            ? 'text-white underline underline-offset-2 hover:text-white/80'
-            : 'text-blue-600 underline underline-offset-2 hover:text-blue-700 dark:text-blue-400'
-        }
-      >
-        {children}
-      </a>
-    ),
+    a: ({ href, children }) => {
+      // RAG 提示词要求模型用 [标题](note_id=...) 标注来源；这种"链接"不是
+      // 合法 URL，必须转成应用内跳转，否则会打开一个 404 新标签页。
+      if (href && href.startsWith('note_id=')) {
+        return (
+          <NoteCitationLink noteId={href.slice('note_id='.length)} inverted={isInverted}>
+            {children}
+          </NoteCitationLink>
+        );
+      }
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={
+            isInverted
+              ? 'text-white underline underline-offset-2 hover:text-white/80'
+              : 'text-blue-600 underline underline-offset-2 hover:text-blue-700 dark:text-blue-400'
+          }
+        >
+          {children}
+        </a>
+      );
+    },
     p: ({ children }) => <p className={`my-2 leading-relaxed ${textStrong}`}>{children}</p>,
     ul: ({ children }) => <ul className={`${listClass} list-disc ${textStrong}`}>{children}</ul>,
     ol: ({ children }) => <ol className={`${listClass} list-decimal ${textStrong}`}>{children}</ol>,

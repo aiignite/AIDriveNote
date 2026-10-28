@@ -5,9 +5,10 @@
  * 支持可拖拽调整宽度、全屏模式、暗色主题、文件夹管理
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   FileText,
-  Code2, Brain, GitFork, PanelLeftOpen,
+  Code2, Brain, GitFork, PanelLeftOpen, Plus,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../contexts/AppContext';
@@ -37,7 +38,19 @@ import NoteListPanel, { type NoteCategory } from '../components/note/NoteListPan
 import NoteEditorPanel from '../components/note/NoteEditorPanel';
 import NoteTemplateGallery from '../components/note/NoteTemplateGallery';
 import NoteQuickSwitcher from '../components/note/NoteQuickSwitcher';
+import GlobalCommandPalette from '../components/note/GlobalCommandPalette';
+import QuickCaptureDialog from '../components/note/QuickCaptureDialog';
 import PasswordDialog, { type PasswordDialogMode } from '../components/note/PasswordDialog';
+import ConfirmDialog from '../components/ConfirmDialog';
+
+/** 页面级确认框状态：替代原生 confirm()，避免样式不可控与被浏览器拦截 */
+interface ConfirmState {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  variant?: 'danger' | 'warning' | 'info';
+  action: () => void | Promise<void>;
+}
 
 /**
  * 加密文档对话框的上下文。
@@ -60,7 +73,7 @@ interface LockDialogState {
 }
 
 const NotesPage: React.FC = () => {
-  const { theme, setPageAIContext, bumpNotesRefresh, notesRefreshToken } = useApp();
+  const { theme, setPageAIContext, bumpNotesRefresh, notesRefreshToken, openAI } = useApp();
   const { user } = useAuth();
   const userId = user?.id ?? null;
   const isDark = theme === 'dark';
@@ -84,86 +97,93 @@ const NotesPage: React.FC = () => {
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
   const [notesTotal, setNotesTotal] = useState(0);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
-  /* ────── 浏览器历史集成：打开/关闭笔记 ↔ 返回/前进 ──────
+  /* ────── 路由 ↔ 笔记深链 ──────
    *
-   * 打开笔记时 pushState 一条记录（URL 不变，仅在 state 里带笔记 id），
-   * 移动端返回手势与浏览器返回键就变成「回到列表」而不是退出应用；
-   * 前进键可重新打开刚关闭的笔记。笔记间直接切换（快速切换器等）
-   * 用 replaceState，避免历史里堆积多条笔记记录。
+   * /note/:noteId 是笔记的唯一地址：可收藏、可多标签页、可被 AI 引用跳转。
+   * 列表切换只改 URL；刷新 / 直达 / 前进后退由 URL 反推选中笔记。
    */
-  /** pushState 携带的标记：state 里有它即代表该历史条目对应一条打开的笔记 */
-  interface NoteHistoryState { aidrivenoteNoteId: string }
-  /** 已为当前打开笔记推入的历史条目 id；null 表示当前条目尚未推入 */
-  const pushedNoteIdRef = useRef<string | null>(null);
-  /** UI 关闭笔记触发了 history.back() 但 popstate 尚未落定；期间暂不 push 新条目 */
-  const pendingBackRef = useRef(false);
-  /** 当前打开笔记 id 镜像，供 popstate（异步事件）读取最新值 */
+  const navigate = useNavigate();
+  const { noteId: routeNoteId } = useParams<{ noteId: string }>();
+  const [searchParams] = useSearchParams();
+  /** AI 引用跳转携带的块 id（/note/:id?chunk=...） */
+  const citationChunkId = searchParams.get('chunk');
+  /** 当前打开笔记 id 镜像，供异步回调读取最新值 */
   const selectedNoteIdRef = useRef<string | null>(null);
-  /** 笔记列表镜像，供 popstate 按 id 查找笔记 */
+  /** 笔记列表镜像，供路由同步按 id 查找笔记 */
   const notesRef = useRef<Note[]>(notes);
   notesRef.current = notes;
+  /** 曾经打开过笔记：用于区分"主动关闭"与"深链首次挂载尚未加载" */
+  const hadSelectedNoteRef = useRef(false);
 
-  /** 打开笔记时同步历史条目；同一 id 的对象更新（自动保存等）不会重复 push */
+  /** 选中笔记 → URL：列表内切换用 replace，避免历史里堆积一长串笔记 */
   useEffect(() => {
     selectedNoteIdRef.current = selectedNote?.id ?? null;
-    if (!selectedNote) return;
-    const id = selectedNote.id;
-    if (pushedNoteIdRef.current === id || pendingBackRef.current) return;
-    const state: NoteHistoryState = { aidrivenoteNoteId: id };
-    if (pushedNoteIdRef.current) {
-      window.history.replaceState(state, '');
-    } else {
-      window.history.pushState(state, '');
+    if (!selectedNote) {
+      // 首次挂载时 URL 可能自带 noteId（深链/刷新），此时不能重定向回首页，
+      // 交给下面的「URL → 选中笔记」effect 去加载。
+      if (hadSelectedNoteRef.current && routeNoteId) navigate('/', { replace: true });
+      hadSelectedNoteRef.current = false;
+      return;
     }
-    pushedNoteIdRef.current = id;
-  }, [selectedNote]);
+    hadSelectedNoteRef.current = true;
+    if (routeNoteId === selectedNote.id) return;
+    navigate(`/note/${selectedNote.id}`, { replace: Boolean(routeNoteId) });
+  }, [selectedNote, routeNoteId, navigate]);
 
-  /** 关闭当前笔记：消耗已推入的历史条目，使历史保持在列表一层 */
-  const handleCloseNote = useCallback(() => {
-    if (!selectedNoteIdRef.current) return;
-    if (pushedNoteIdRef.current) {
-      pendingBackRef.current = true;
-      pushedNoteIdRef.current = null;
-      window.history.back();
-    }
-    setSelectedNote(null);
-  }, []);
-
-  /** 返回/前进：按历史 state 关闭或恢复笔记 */
+  /** URL → 选中笔记：支持深链与前进/后退；不在当前筛选结果里时按 id 补拉 */
   useEffect(() => {
-    const onPopState = (event: PopStateEvent) => {
-      pendingBackRef.current = false;
-      const state = event.state as NoteHistoryState | null;
-      const noteId = state?.aidrivenoteNoteId ?? null;
-      if (noteId) {
-        if (selectedNoteIdRef.current === noteId) return;
-        const target = notesRef.current.find(n => n.id === noteId);
-        if (target) {
-          pushedNoteIdRef.current = noteId; // 条目已存在，避免 effect 重复 push
-          setSelectedNote(target);
-          localStorage.setItem('note_last_opened_id', target.id);
-        }
-        return;
-      }
-      if (selectedNoteIdRef.current) {
-        pushedNoteIdRef.current = null;
-        setSelectedNote(null);
-      }
-    };
-    window.addEventListener('popstate', onPopState);
-    // 从设置页等路由返回时，残留的历史 state 会让多按一次返回；直接清掉
-    if ((window.history.state as NoteHistoryState | null)?.aidrivenoteNoteId) {
-      window.history.replaceState(null, '');
+    if (!routeNoteId) {
+      if (selectedNoteIdRef.current) setSelectedNote(null);
+      return;
     }
-    return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+    if (selectedNoteIdRef.current === routeNoteId) return;
+
+    const target = notesRef.current.find(n => n.id === routeNoteId);
+    if (target) {
+      setSelectedNote(target);
+      localStorage.setItem('note_last_opened_id', target.id);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const cached = await readNote(routeNoteId);
+      let resolved: Note | null = cached ? toNote(cached) : null;
+      if (!resolved) {
+        try {
+          resolved = await noteApi.get(routeNoteId);
+        } catch {
+          resolved = null;
+        }
+      }
+      if (cancelled) return;
+      if (resolved) {
+        setSelectedNote(resolved);
+        localStorage.setItem('note_last_opened_id', resolved.id);
+      } else {
+        toast.error('笔记不存在或已被删除');
+        navigate('/', { replace: true });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [routeNoteId, notes.length, navigate]);
+
+  /** 关闭当前笔记：回到列表地址 */
+  const handleCloseNote = useCallback(() => {
+    setSelectedNote(null);
+    if (routeNoteId) navigate('/');
+  }, [navigate, routeNoteId]);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [editorRefreshTrigger, setEditorRefreshTrigger] = useState(0);
   const [showNewNotePopover, setShowNewNotePopover] = useState(false);
   /** 快速切换器（⌘P）开关：与命令面板（⌘K）职责分离，一个定位笔记，一个执行命令 */
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
+  /** 统一 ⌘K 面板：笔记检索 + 最近笔记 + 全局操作 */
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showQuickCapture, setShowQuickCapture] = useState(false);
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   /** 加密/解锁/取消加密/改密 对话框上下文；null 表示关闭 */
   const [lockDialog, setLockDialog] = useState<LockDialogState | null>(null);
@@ -350,6 +370,22 @@ const NotesPage: React.FC = () => {
     if (updated) setSelectedNote(updated);
   }, [notes, notesRefreshToken, selectedNote?.id]);
 
+  /** 索引中：轮询列表，索引完成/失败后把状态同步到当前编辑器 */
+  useEffect(() => {
+    if (selectedNote?.indexStatus !== 'pending') return;
+    const timer = window.setInterval(() => { fetchNotes(); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [selectedNote?.indexStatus, fetchNotes]);
+
+  useEffect(() => {
+    if (!routeNoteId) return;
+    const fresh = notes.find(n => n.id === routeNoteId);
+    if (fresh && selectedNote && fresh.indexStatus !== selectedNote.indexStatus) {
+      setSelectedNote(fresh);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes, routeNoteId]);
+
   // Ctrl+N / Cmd+Shift+F shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -366,10 +402,22 @@ const NotesPage: React.FC = () => {
         e.preventDefault();
         setShowQuickSwitcher(true);
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !e.shiftKey) {
+        // 统一入口：笔记搜索 + 全局操作（编辑器命令用 ⌘⇧K 或本面板内的入口）
+        // 捕获阶段拦下并阻止继续传播：Markdown 编辑器自身也把 Ctrl+K 绑定为插入图片
+        e.preventDefault();
+        e.stopPropagation();
+        setShowCommandPalette(true);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowQuickCapture(true);
+      }
       if (e.key === 'Escape') setShowNewNotePopover(false);
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
   }, []);
 
   // Provide page context to AI sidebar
@@ -503,12 +551,8 @@ const NotesPage: React.FC = () => {
   }, [resolveCreateFolderId, notifyIfOffline]);
 
   // Delete note
-  const handleDeleteNote = useCallback(async (id: string) => {
+  const deleteNoteNow = useCallback(async (id: string) => {
     const isTrash = selectedCategory.type === 'trash';
-    const msg = isTrash
-      ? '确定永久删除这条笔记吗？此操作无法恢复。'
-      : '确定删除这条笔记吗？笔记将移入回收站。';
-    if (!confirm(msg)) return;
     try {
       if (isTrash) {
         await noteApi.permanentDelete(id);
@@ -536,6 +580,19 @@ const NotesPage: React.FC = () => {
       toast.error('删除失败');
     }
   }, [selectedNote, fetchNotes, selectedCategory.type, handleCloseNote]);
+
+  const handleDeleteNote = useCallback((id: string) => {
+    const isTrash = selectedCategory.type === 'trash';
+    setConfirmState({
+      title: isTrash ? '永久删除笔记' : '删除笔记',
+      message: isTrash
+        ? '确定永久删除这条笔记吗？此操作无法恢复。'
+        : '删除后笔记会移入回收站，可随时恢复。',
+      confirmLabel: isTrash ? '永久删除' : '移入回收站',
+      variant: isTrash ? 'danger' : 'warning',
+      action: () => deleteNoteNow(id),
+    });
+  }, [selectedCategory.type, deleteNoteNow]);
 
   const handleRestoreNote = useCallback(async (id: string) => {
     try {
@@ -643,8 +700,7 @@ const NotesPage: React.FC = () => {
     }
   }, [fetchNotes, notifyIfOffline]);
 
-  const handleDeleteFolder = useCallback(async (id: string) => {
-    if (!confirm('删除文件夹？其中的笔记将移至根目录。')) return;
+  const deleteFolderNow = useCallback(async (id: string) => {
     try {
       await noteFolderApi.delete(id);
       toast.success('文件夹已删除');
@@ -654,6 +710,16 @@ const NotesPage: React.FC = () => {
       toast.error('删除文件夹失败');
     }
   }, [fetchNotes, notifyIfOffline]);
+
+  const handleDeleteFolder = useCallback((id: string) => {
+    setConfirmState({
+      title: '删除文件夹',
+      message: '确定删除该文件夹吗？其中的笔记将移至根目录。',
+      confirmLabel: '删除文件夹',
+      variant: 'warning',
+      action: () => deleteFolderNow(id),
+    });
+  }, [deleteFolderNow]);
 
   // Note updated from editor panel
   const handleNoteUpdated = useCallback((updated: Note) => {
@@ -670,6 +736,39 @@ const NotesPage: React.FC = () => {
     setSelectedNote(note);
     localStorage.setItem('note_last_opened_id', note.id);
   }, []);
+
+  const handleQuickCaptureSave = useCallback(async (text: string) => {
+    const firstLine = text.split('\n').find(line => line.trim())?.trim() ?? '';
+    const title = (firstLine || '随手记').slice(0, 60);
+    const folderId = resolveCreateFolderId();
+    try {
+      const note = await noteApi.create({
+        title,
+        noteType: 'markdown',
+        content: { text },
+        folderId,
+      });
+      setNotes(prev => [note, ...prev]);
+      setNotesTotal(total => total + 1);
+      setSelectedNote(note);
+      toast.success('已捕获到笔记');
+    } catch (err) {
+      if (isNetworkError(err) && userId) {
+        const local = await createOfflineNote({ userId, title, noteType: 'markdown', folderId });
+        await saveOfflineEdit({
+          note: local,
+          payload: { title, content: { text } } as OutboxPayload,
+        });
+        const note = toNote(local);
+        setNotes(prev => [note, ...prev]);
+        setNotesTotal(total => total + 1);
+        setSelectedNote(note);
+        toast.success('已离线捕获，联网后同步');
+        return;
+      }
+      toast.error('捕获失败');
+    }
+  }, [resolveCreateFolderId, userId]);
 
   /* ────── 加密文档 / 加密文件夹 ────── */
 
@@ -799,6 +898,8 @@ const NotesPage: React.FC = () => {
   useEffect(() => {
     // 移动端默认停留在列表页，不自动跳进上次打开的笔记
     if (isMobile) return;
+    // 深链（/note/:id）优先，不能再用"上次打开"覆盖它
+    if (routeNoteId) return;
     if (notes.length === 0) return;
     const lastId = localStorage.getItem('note_last_opened_id');
     if (lastId && !selectedNote) {
@@ -806,7 +907,7 @@ const NotesPage: React.FC = () => {
       if (found) setSelectedNote(found);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notes]);
+  }, [notes, routeNoteId]);
 
   // Resize drag handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -922,6 +1023,15 @@ const NotesPage: React.FC = () => {
       isDark={isDark}
       refreshTrigger={combinedRefreshTrigger}
       onBack={isMobile ? handleCloseNote : undefined}
+      onOpenRelated={(id) => {
+        const target = notes.find(n => n.id === id);
+        if (target) handleSelectNote(target);
+        else navigate(`/note/${id}`);
+      }}
+      highlightChunkId={citationChunkId}
+      onDismissCitation={() => {
+        if (routeNoteId) navigate(`/note/${routeNoteId}`, { replace: true });
+      }}
     />
   ) : (
     <div className={`h-full flex flex-col items-center justify-center ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
@@ -961,7 +1071,7 @@ const NotesPage: React.FC = () => {
   );
 
   return (
-    <div className={`h-full flex overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50' : ''} ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
+    <div className={`h-full flex overflow-hidden ${isMobile ? 'pb-14' : ''} ${isFullscreen ? 'fixed inset-0 z-50' : ''} ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
       {isMobile ? (
         /* 移动端：单列前进 / 返回。未选中显示列表，选中显示全屏编辑器（顶部带返回按钮） */
         <div className="flex-1 min-w-0 h-full min-h-0">
@@ -1012,6 +1122,88 @@ const NotesPage: React.FC = () => {
         selectedNoteId={selectedNote?.id ?? null}
         onSelect={handleQuickSwitch}
         isDark={isDark}
+      />
+
+      {/* ⌘K 统一面板：笔记检索（服务端高亮）+ 全局操作 */}
+      <GlobalCommandPalette
+        open={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        notes={notes}
+        selectedNoteId={selectedNote?.id ?? null}
+        onSelectNote={handleQuickSwitch}
+        isDark={isDark}
+        actions={[
+          { id: 'note.new.rich', label: '新建富文本笔记', hint: '⌘N', keywords: 'new note', run: () => { void handleCreateNote('rich_text'); } },
+          { id: 'note.capture', label: '快速捕获…', hint: '⌘⇧N', keywords: 'capture inbox 速记 随手记', run: () => setShowQuickCapture(true) },
+          { id: 'note.new.markdown', label: '新建 Markdown 笔记', keywords: 'new md', run: () => { void handleCreateNote('markdown'); } },
+          { id: 'note.new.mindmap', label: '新建思维导图', keywords: 'mindmap', run: () => { void handleCreateNote('mindmap'); } },
+          { id: 'note.new.flowchart', label: '新建流程图', keywords: 'drawio flowchart', run: () => { void handleCreateNote('flowchart'); } },
+          { id: 'daily.today', label: '今日笔记', keywords: 'daily journal 日记 今日', run: () => { void noteApi.dailyToday().then(note => setSelectedNote(note)).catch(() => toast.error('打开今日笔记失败')); } },
+          { id: 'daily.review', label: '生成今日回顾', keywords: 'review daily 回顾 AI', run: () => { void noteApi.dailyReview().then(async review => { const created = await noteApi.create({ title: `回顾 ${review.date}`, noteType: 'markdown', content: { text: review.markdown } }); setSelectedNote(created); toast.success('回顾已生成'); }).catch(() => toast.error('生成回顾失败')); } },
+          { id: 'note.template', label: '从模板新建', keywords: 'template 模板', run: () => setShowTemplateGallery(true) },
+          { id: 'editor.commands', label: '打开编辑器命令…', hint: '⌘⇧K', keywords: 'palette 命令', run: () => window.dispatchEvent(new Event('aidrivenote:open-command-palette')) },
+          { id: 'ai.open', label: '打开 AI 助手', hint: '⌘J', keywords: 'ai chat 助手', run: () => openAI() },
+          { id: 'nav.sync', label: '本地同步 / 知识库设置', keywords: 'sync kb 知识库', run: () => navigate('/settings/sync') },
+          { id: 'nav.settings', label: '打开设置', keywords: 'settings', run: () => navigate('/settings/models') },
+        ]}
+      />
+
+      <QuickCaptureDialog
+        open={showQuickCapture}
+        isDark={isDark}
+        onClose={() => setShowQuickCapture(false)}
+        onSave={handleQuickCaptureSave}
+      />
+
+      {/* 移动端底部导航：列表 / 搜索 / 新建 / AI */}
+      {isMobile && (
+        <nav className={`fixed inset-x-0 bottom-0 z-40 flex h-14 items-center justify-around border-t text-[11px] backdrop-blur ${
+          isDark ? 'border-gray-700 bg-gray-900/95 text-gray-300' : 'border-gray-200 bg-white/95 text-gray-600'
+        }`}>
+          <button type="button" onClick={handleCloseNote} className="flex flex-1 flex-col items-center gap-0.5 py-1">
+            <FileText size={17} />
+            列表
+          </button>
+          <button type="button" onClick={() => searchInputRef.current?.focus()} className="flex flex-1 flex-col items-center gap-0.5 py-1">
+            <Code2 size={17} />
+            搜索
+          </button>
+          <button type="button" onClick={() => setShowNewNotePopover(true)} className="flex flex-1 flex-col items-center gap-0.5 py-1 text-orange-600">
+            <Plus size={18} />
+            新建
+          </button>
+          <button type="button" onClick={() => openAI()} className="flex flex-1 flex-col items-center gap-0.5 py-1">
+            <Brain size={17} />
+            AI
+          </button>
+        </nav>
+      )}
+
+      {/* 移动端快速捕获入口 */}
+      {isMobile && !selectedNote && (
+        <button
+          type="button"
+          onClick={() => setShowQuickCapture(true)}
+          className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-orange-600 text-white shadow-lg active:scale-95"
+          title="快速捕获 (⌘⇧N)"
+        >
+          <Plus size={22} />
+        </button>
+      )}
+
+      <ConfirmDialog
+        isOpen={confirmState !== null}
+        onClose={() => setConfirmState(null)}
+        onConfirm={() => {
+          const pending = confirmState;
+          setConfirmState(null);
+          if (pending) void pending.action();
+        }}
+        title={confirmState?.title ?? ''}
+        message={confirmState?.message ?? ''}
+        confirmLabel={confirmState?.confirmLabel ?? '确定'}
+        cancelLabel="取消"
+        variant={confirmState?.variant ?? 'warning'}
       />
 
       {/* Ctrl+N new note popover */}

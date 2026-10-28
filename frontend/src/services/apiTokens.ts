@@ -7,6 +7,8 @@ export interface ApiToken {
   id: string;
   name: string;
   tokenPrefix: string;
+  /** 逗号分隔的权限范围：read / write / ask */
+  scopes?: string;
   lastUsedAt?: string;
   expiresAt?: string;
   isRevoked: boolean;
@@ -25,7 +27,7 @@ export const apiTokenApi = {
   list: () => api.get<ApiToken[]>('/api-tokens'),
 
   /** 签发新令牌，响应中携带明文（仅此一次） */
-  create: (data: { name: string; expiresInDays?: number }) =>
+  create: (data: { name: string; expiresInDays?: number; scopes?: Array<'read' | 'write' | 'ask'> }) =>
     api.post<ApiTokenCreated>('/api-tokens', data),
 
   /** 撤销指定令牌 */

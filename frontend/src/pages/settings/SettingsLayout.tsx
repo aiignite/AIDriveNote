@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Activity, ArrowLeft, Bot, Brain, BookOpen, CloudOff, FolderSync, KeyRound, Mic, Save, Settings, Sparkles, Users } from 'lucide-react';
+import { Activity, ArrowLeft, Bot, Brain, BookOpen, CloudOff, FolderSync, KeyRound, Mic, Plug, Save, Settings, Sparkles, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../../contexts/AppContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -15,6 +15,7 @@ const aiNavItems = [
   { to: '/settings/sync', label: '本地同步', icon: FolderSync, accent: 'orange' as const },
   { to: '/settings/offline', label: '离线缓存', icon: CloudOff, accent: 'orange' as const },
   { to: '/settings/tokens', label: '访问令牌', icon: KeyRound, accent: 'orange' as const },
+  { to: '/settings/mcp', label: 'MCP 工具', icon: Plug, accent: 'orange' as const },
 ];
 
 /**
@@ -31,6 +32,7 @@ const aiNavItems = [
 const guestHiddenPaths = new Set([
   '/settings/sync',
   '/settings/tokens',
+  '/settings/mcp',
   '/settings/asr',
   '/settings/common-terms',
 ]);

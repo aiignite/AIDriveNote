@@ -11,6 +11,12 @@ export interface QuickAction {
   prompt: string;
 }
 
+/** RAG 检索范围：默认全部笔记，可收窄到当前笔记 */
+export interface RagScope {
+  type: 'all' | 'note' | 'folder' | 'tag';
+  id?: string;
+}
+
 export interface PageAIContext {
   pageName: 'notes';
   moduleName: 'note';
@@ -21,6 +27,7 @@ export interface PageAIContext {
   quickActions?: QuickAction[];
   selectedEntities?: ChatPageContextEntity[];
   presetMessage?: string;
+  ragScope?: RagScope;
 }
 
 export interface ChatPageContext {
@@ -31,6 +38,7 @@ export interface ChatPageContext {
   selectionText?: string;
   quickActions?: QuickAction[];
   selectedEntities?: ChatPageContextEntity[];
+  ragScope?: RagScope;
 }
 
 export const buildChatPageContext = (
@@ -45,6 +53,7 @@ export const buildChatPageContext = (
     selectionText: pageAIContext.selectionText,
     quickActions: pageAIContext.quickActions,
     selectedEntities: pageAIContext.selectedEntities,
+    ragScope: pageAIContext.ragScope,
   };
 };
 
@@ -201,6 +210,18 @@ export interface ToolCallEventItem {
   message?: string;
 }
 
+/** RAG 引用的结构化来源（后端 citations 事件下发） */
+export interface CitationItem {
+  noteId: string;
+  noteNo?: number;
+  title: string;
+  /** 命中片段，用于 hover 预览与跳转后校验 */
+  quote?: string;
+  chunkId?: string | null;
+  headingPath?: string | null;
+  source?: 'current' | 'retrieval';
+}
+
 export interface ChatStreamEvent {
   type:
     | 'content'
@@ -210,7 +231,8 @@ export interface ChatStreamEvent {
     | 'skill_match'
     | 'skill_activated'
     | 'tool_execution_start'
-    | 'thinking';
+    | 'thinking'
+    | 'citations';
   content?: string;
   tool?: string;
   result?: Record<string, unknown>;
@@ -219,6 +241,8 @@ export interface ChatStreamEvent {
   reason?: string;
   /** 多技能激活列表（skill_activated 事件） */
   skills?: ActivatedSkillInfo[];
+  /** 本轮回答依据的笔记来源（citations 事件） */
+  citations?: CitationItem[];
 }
 
 export const aiApi = {

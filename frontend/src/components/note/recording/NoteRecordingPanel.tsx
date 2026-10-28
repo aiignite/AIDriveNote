@@ -17,7 +17,9 @@ import { Mic, Upload, Trash2, X, FileAudio, Loader2, PlusCircle } from 'lucide-r
 import toast from 'react-hot-toast';
 import { useNoteRecording } from '../../../hooks/useNoteRecording';
 import { noteRecordingApi, resolveAudioUrl, type BrowserTranscriptSegment } from '../../../services/note/recording';
-import { transcriptToBlocks, buildAudioBlock } from '../../../utils/noteAudioBlocks';
+import { transcriptToBlocks, buildAudioBlock, minutesToBlocks } from '../../../utils/noteAudioBlocks';
+import { useApp } from '../../../contexts/AppContext';
+import { noteApi } from '../../../services/note';
 import { AudioRecorder, type AudioRecorderHandle } from './AudioRecorder';
 import { AudioUploader } from './AudioUploader';
 import { RecordingStatusBadge } from './RecordingStatusBadge';
@@ -131,6 +133,7 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
     onStatusChange,
     onRecordingStateChange,
   }, ref) => {
+  const { bumpNotesRefresh } = useApp();
   const {
     recordings,
     activeRecording,
@@ -591,6 +594,21 @@ export const NoteRecordingPanel = forwardRef<NoteRecordingPanelHandle, NoteRecor
                           segments={transcriptSegments}
                           isDark={isDark}
                           busyAction={busyAction}
+                          recordingId={activeRecording.id}
+                          onInsertMinutes={(markdown) => {
+                            onInsert(minutesToBlocks(markdown));
+                            toast.success('纪要已插入笔记');
+                          }}
+                          onCreateMinutesNote={async (markdown) => {
+                            const title = `${activeRecording.fileName.replace(/\.[^.]+$/, '')} 纪要`;
+                            await noteApi.create({
+                              title: title.slice(0, 80),
+                              noteType: 'markdown',
+                              content: { text: markdown },
+                            });
+                            bumpNotesRefresh();
+                            toast.success('纪要笔记已创建');
+                          }}
                           onAiOrganize={() => void refine(activeRecording)}
                           onRetranscribe={() => void retranscribe(activeRecording)}
                         />

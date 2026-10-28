@@ -29,6 +29,7 @@ import type {
   NoteOutlineState,
 } from '../../utils/noteCommands';
 import { useSpeechInput } from '../../hooks/useSpeechInput';
+import { noteApi } from '../../services/note';
 import 'katex/dist/katex.min.css';
 import 'highlight.js/styles/github.css';
 import 'highlight.js/styles/github-dark.css';
@@ -155,6 +156,17 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
   // 默认进入纯预览：打开笔记即可阅读渲染结果，需要改源码时用顶部按钮切回编辑/实时预览
   const [preview, setPreview] = useState<PreviewType>('preview');
   const prevNoteIdRef = useRef(noteId);
+  /** 双链补全候选（笔记标题） */
+  const [wikiCandidates, setWikiCandidates] = useState<Array<{ id: string; title: string; noteNo?: string }>>([]);
+  /** 当前 `[[` 补全状态；null 表示未激活 */
+  const [wikiSuggest, setWikiSuggest] = useState<{
+    query: string;
+    start: number;
+    end: number;
+    left: number;
+    top: number;
+    active: number;
+  } | null>(null);
 
   /**
    * 获取编辑器内的 textarea 元素
@@ -163,6 +175,111 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
   const getTextarea = useCallback((): HTMLTextAreaElement | null => {
     return rootRef.current?.querySelector('textarea') ?? null;
   }, []);
+
+  /** 加载双链候选标题（最多 300 篇，按标题过滤） */
+  useEffect(() => {
+    let cancelled = false;
+    void noteApi.list({ limit: 300 })
+      .then(result => {
+        if (cancelled) return;
+        setWikiCandidates(
+          result.items.map(note => ({ id: note.id, title: note.title, noteNo: note.noteNo })),
+        );
+      })
+      .catch(() => { /* 离线时静默，仍可手写 [[标题]] */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  /** 根据 textarea 光标前的 `[[query` 更新补全面板 */
+  const updateWikiSuggest = useCallback(() => {
+    const el = getTextarea();
+    if (!el) {
+      setWikiSuggest(null);
+      return;
+    }
+    const pos = el.selectionStart ?? 0;
+    const before = el.value.slice(0, pos);
+    const match = /\[\[([^[\]\n]{0,50})$/.exec(before);
+    if (!match) {
+      setWikiSuggest(null);
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    setWikiSuggest({
+      query: match[1],
+      start: pos - match[0].length,
+      end: pos,
+      left: Math.max(8, Math.min(rect.left + 16, window.innerWidth - 320)),
+      top: Math.max(60, Math.min(rect.top + 48, window.innerHeight - 320)),
+      active: 0,
+    });
+  }, [getTextarea]);
+
+  const wikiItems = useMemo(() => {
+    if (!wikiSuggest) return [];
+    const query = wikiSuggest.query.trim().toLowerCase();
+    return wikiCandidates
+      .filter(item => !query || item.title.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [wikiSuggest, wikiCandidates]);
+
+  /** 用选中标题替换 `[[query`，并恢复光标 */
+  const applyWikiLink = useCallback((title: string) => {
+    const el = getTextarea();
+    const suggest = wikiSuggest;
+    if (!el || !suggest) return;
+    const replacement = `[[${title}]]`;
+    const next = el.value.slice(0, suggest.start) + replacement + el.value.slice(suggest.end);
+    valueRef.current = next;
+    setValue(next);
+    onChangeRef.current?.(next);
+    setWikiSuggest(null);
+    window.requestAnimationFrame(() => {
+      el.focus();
+      const caret = suggest.start + replacement.length;
+      el.setSelectionRange(caret, caret);
+    });
+  }, [getTextarea, wikiSuggest]);
+
+  /** textarea 上的 `[[` 补全输入与键盘选择 */
+  useEffect(() => {
+    if (readOnly || preview === 'preview') return undefined;
+    const el = getTextarea();
+    if (!el) return undefined;
+
+    const handleInput = () => updateWikiSuggest();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || !wikiSuggest) return;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        event.stopPropagation();
+        setWikiSuggest(current => {
+          if (!current) return current;
+          const delta = event.key === 'ArrowDown' ? 1 : -1;
+          return { ...current, active: Math.min(Math.max(current.active + delta, 0), Math.max(0, wikiItems.length - 1)) };
+        });
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
+        const picked = wikiItems[wikiSuggest.active] ?? wikiItems[0];
+        if (picked) {
+          event.preventDefault();
+          event.stopPropagation();
+          applyWikiLink(picked.title);
+        }
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        setWikiSuggest(null);
+      }
+    };
+
+    el.addEventListener('input', handleInput);
+    el.addEventListener('click', handleInput);
+    el.addEventListener('keydown', handleKeyDown);
+    return () => {
+      el.removeEventListener('input', handleInput);
+      el.removeEventListener('click', handleInput);
+      el.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [preview, readOnly, wikiSuggest, wikiItems, applyWikiLink, updateWikiSuggest, getTextarea]);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -735,6 +852,41 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
           }`}
         >
           {charCount} 字符 · 约 {readingMinutes} 分钟
+        </div>
+      )}
+
+      {/* 双链补全 */}
+      {wikiSuggest && wikiItems.length > 0 && (
+        <div
+          className={`fixed z-[80] w-72 overflow-hidden rounded-lg border shadow-xl ${
+            isDark ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'
+          }`}
+          style={{ left: wikiSuggest.left, top: wikiSuggest.top }}
+        >
+          <div className={`px-2.5 py-1.5 text-[10px] ${isDark ? 'text-gray-400 border-b border-gray-700' : 'text-gray-500 border-b border-gray-100'}`}>
+            插入双链（↑↓ 选择，Enter 确认）
+          </div>
+          <div className="max-h-56 overflow-y-auto py-1">
+            {wikiItems.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                onMouseDown={event => event.preventDefault()}
+                onClick={() => applyWikiLink(item.title)}
+                onMouseEnter={() => setWikiSuggest(current => current ? { ...current, active: index } : current)}
+                className={`flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs ${
+                  index === wikiSuggest.active
+                    ? (isDark ? 'bg-gray-700 text-white' : 'bg-orange-50 text-orange-700')
+                    : (isDark ? 'text-gray-300' : 'text-gray-700')
+                }`}
+              >
+                <span className="truncate">{item.title || '无标题'}</span>
+                {item.noteNo && (
+                  <span className={`shrink-0 text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{item.noteNo}</span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
