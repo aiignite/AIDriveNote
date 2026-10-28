@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { width: 320px; margin: 0; padding: 12px; font: 13px/1.5 -apple-system, "PingFang SC", sans-serif; color: #1f2937; }
+      h1 { margin: 0 0 8px; font-size: 14px; }
+      label { display: block; margin-top: 8px; font-size: 11px; color: #6b7280; }
+      input, textarea { width: 100%; box-sizing: border-box; margin-top: 3px; padding: 6px; border: 1px solid #e5e7eb; border-radius: 6px; font: inherit; }
+      textarea { height: 90px; resize: vertical; }
+      .row { display: flex; gap: 6px; margin-top: 10px; }
+      button { flex: 1; padding: 7px; border: 0; border-radius: 6px; cursor: pointer; font: inherit; }
+      #save { background: #ff6b35; color: #fff; }
+      #load { background: #f3f4f6; color: #374151; }
+      .hint { margin-top: 8px; font-size: 10px; color: #9ca3af; }
+    </style>
+  </head>
+  <body>
+    <h1>保存到 AIDriveNote</h1>
+    <label>API 地址<input id="apiBase" placeholder="http://localhost:3275/api/v1" /></label>
+    <label>访问令牌<input id="token" type="password" placeholder="adn_..." /></label>
+    <label>内容<textarea id="text" placeholder="选中文字后点「载入选区」"></textarea></label>
+    <div class="row">
+      <button id="load" type="button">载入选区</button>
+      <button id="save" type="button">保存剪藏</button>
+    </div>
+    <p class="hint">令牌在「设置 → 访问令牌」生成，需勾选「写入」权限。</p>
+    <script src="popup.js"></script>
+  </body>
+</html>

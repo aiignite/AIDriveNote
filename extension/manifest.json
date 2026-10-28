@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "AIDriveNote Web Clipper",
+  "version": "1.0.0",
+  "description": "把网页选区保存到 AIDriveNote（需要访问令牌）",
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "host_permissions": ["http://localhost:3275/*", "https://*/*"],
+  "action": {
+    "default_title": "保存到 AIDriveNote",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

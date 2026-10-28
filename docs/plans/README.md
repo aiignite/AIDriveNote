@@ -17,4 +17,7 @@
 | [AIDriveNote 优化方向分析](./AIDriveNote-优化方向分析.md) | draft | 2026-10-06 | 工程层：架构、性能、安全、CI 门禁 |
 | [AIDriveNote 全量优化方案](./AIDriveNote-全量优化方案.md) | draft | 2026-10-06 | 会话起草稿：现状/差距诊断 + 五项系统级优化 + 路线图 |
 | [AIDriveNote 产品能力演进方案](./AIDriveNote-产品能力演进方案.md) | draft | 2026-10-06 | **代码核实版**：13 项新发现缺陷 + 块级双链/图谱/画布/属性/CRDT/Graph-RAG 分级方案 |
+| [AIDriveNote 产品优化方案 v2](./AIDriveNote-产品优化方案-v2.md) | draft | 2026-10-27 | **代码核实版**：对标 Notion/Obsidian/Reflect；RAG v2（分块+pgvector+引用契约）、AI 写作现场化（选区工具条/相关笔记/引用溯源）、MCP 双向平台化、笔记 URL/全局搜索/快速捕获、KB 2.0，含 P0/P1/P2 路线图 |
+| [AIDriveNote 产品优化方案 v2 · 实施与差距](./AIDriveNote-产品优化方案-v2-实施与差距.md) | implemented-p0-p2 | 2026-10-28 | **实施记录**：P0/P1/P2 全部任务落地（块引用为 spike 结论）；275 后端测试 + 8 前端单测 + 真实 PG/pgvector + 浏览器 E2E 通过；差距与补差设计 |
+| [AIDriveNote 块引用技术验证](./AIDriveNote-块引用技术验证.md) | spike-completed | 2026-10-28 | BlockNote 块锚点 vs 自定义内联节点：Go/Hold/No-Go 结论与分阶段落地建议 |
 | [AIDriveNote 知识库管理模式方案](./AIDriveNote-知识库管理模式方案.md) | P0 implemented | 2026-10-26 | **代码核实版**：7 项同步冲突（含 2 处数据丢失）+ 知识库根文件夹模型 + 忽略/保护目录 + 单向导入与不删不覆盖规则 |
