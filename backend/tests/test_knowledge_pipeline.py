@@ -363,3 +363,29 @@ async def test_knowledge_settings_api(client, test_user):
     assert patched.status_code == 200, patched.text
     assert patched.json()["allowExternal"] is True
     assert patched.json()["dailyLimit"] == 7
+
+
+@pytest.mark.asyncio
+async def test_knowledge_distill_model_selection(client, test_user):
+    access_token, _ = AuthService.create_access_token(test_user.id)
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    current = await client.get("/api/v1/knowledge/settings", headers=headers)
+    assert current.status_code == 200, current.text
+    assert "defaultModel" in current.json()
+
+    patched = await client.patch(
+        "/api/v1/knowledge/settings",
+        json={"model": "qwen-max"},
+        headers=headers,
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["model"] == "qwen-max"
+
+    cleared = await client.patch(
+        "/api/v1/knowledge/settings",
+        json={"model": ""},
+        headers=headers,
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["model"] in (None, "")

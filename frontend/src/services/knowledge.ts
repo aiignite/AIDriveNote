@@ -74,6 +74,7 @@ export interface KnowledgeSettings {
   allowExternal: boolean;
   dailyLimit: number;
   model: string | null;
+  defaultModel?: string | null;
   configured: boolean;
   usedToday: number;
   tokensToday: number;
@@ -166,6 +167,7 @@ export const knowledgeApi = {
     distillEnabled?: boolean;
     allowExternal?: boolean;
     dailyLimit?: number;
+    model?: string | null;
   }): Promise<KnowledgeSettings> => api.patch('/knowledge/settings', body),
 
   reindexDocument: (

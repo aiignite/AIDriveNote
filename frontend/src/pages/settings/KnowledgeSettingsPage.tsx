@@ -1,19 +1,41 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Brain, Loader2, Save, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { knowledgeApi, type KnowledgeSettings } from '../../services/knowledge';
+import { aiApi, type AIModel } from '../../services/ai/ai';
 
 const KnowledgeSettingsPage: React.FC = () => {
   const [settings, setSettings] = useState<KnowledgeSettings | null>(null);
+  const [models, setModels] = useState<AIModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    void knowledgeApi.getSettings()
-      .then(setSettings)
+    Promise.all([knowledgeApi.getSettings(), aiApi.listModels()])
+      .then(([nextSettings, nextModels]) => {
+        setSettings(nextSettings);
+        setModels(nextModels);
+      })
       .catch(() => toast.error('加载知识设置失败'))
       .finally(() => setLoading(false));
   }, []);
+
+  /** 下拉展示名：文本能力优先，蒸馏不需要图片模型；同名模型用 provider 区分 */
+  const modelOptions = useMemo(() => {
+    const options = models
+      .filter((model) => model.supportsText !== false)
+      .map((model) => ({
+        value: model.name,
+        label: `${model.name}${model.provider ? ` · ${model.provider}` : ''}${
+          model.isDefault ? '（默认）' : ''
+        }`,
+      }));
+    const current = settings?.model;
+    if (current && !options.some((option) => option.value === current)) {
+      options.unshift({ value: current, label: `${current}（环境变量配置）` });
+    }
+    return options;
+  }, [models, settings?.model]);
 
   const save = async () => {
     if (!settings) return;
@@ -23,6 +45,7 @@ const KnowledgeSettingsPage: React.FC = () => {
         distillEnabled: settings.distillEnabled,
         allowExternal: settings.allowExternal,
         dailyLimit: settings.dailyLimit,
+        model: settings.model ?? '',
       });
       setSettings(next);
       toast.success('知识设置已保存');
@@ -96,9 +119,28 @@ const KnowledgeSettingsPage: React.FC = () => {
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div>
-            <label className="text-xs text-gray-500 dark:text-gray-400">蒸馏模型</label>
-            <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
-              {settings.configured ? settings.model : '未配置（使用用户默认模型 / 本地 Ollama）'}
+            <label className="text-xs text-gray-500 dark:text-gray-400" htmlFor="distill-model">
+              蒸馏模型
+            </label>
+            <select
+              id="distill-model"
+              value={settings.model ?? ''}
+              onChange={(event) =>
+                setSettings({ ...settings, model: event.target.value || null })
+              }
+              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 outline-none focus:border-orange-400 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+            >
+              <option value="">
+                {`默认模型${settings.defaultModel ? `（${settings.defaultModel}）` : '（本地 Ollama）'}`}
+              </option>
+              {modelOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-gray-400">
+              从「AI 模型」清单中选择；选默认即跟随当前用户的默认模型，清单外的模型不可用。
             </p>
           </div>
           <div>

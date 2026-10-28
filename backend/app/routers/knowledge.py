@@ -54,6 +54,7 @@ class KnowledgeSettingsUpdate(CamelRequest):
     distill_enabled: Optional[bool] = None
     allow_external: Optional[bool] = None
     daily_limit: Optional[int] = None
+    model: Optional[str] = None
 
 
 class EntityPageRequest(CamelRequest):
@@ -351,6 +352,9 @@ async def update_kb_status(
 
 async def _knowledge_settings_payload(db: AsyncSession, user_id: UUID) -> dict:
     prefs = await KnowledgeSettingsService.effective(db, user_id)
+    from app.services.ai.ownership import resolve_default_model
+
+    default_model = await resolve_default_model(db, user_id)
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     used_today = await db.scalar(
         select(func.count()).select_from(KnowledgeCard).where(
@@ -385,6 +389,7 @@ async def _knowledge_settings_payload(db: AsyncSession, user_id: UUID) -> dict:
         "allowExternal": prefs.allow_external,
         "dailyLimit": prefs.daily_limit,
         "model": prefs.model or None,
+        "defaultModel": default_model.name if default_model else None,
         "configured": prefs.configured,
         "usedToday": int(used_today or 0),
         "tokensToday": int(today_in or 0) + int(today_out or 0),
@@ -600,6 +605,7 @@ async def update_knowledge_settings(
         distill_enabled=body.distill_enabled,
         allow_external=body.allow_external,
         daily_limit=body.daily_limit,
+        model=body.model,
     )
     return await _knowledge_settings_payload(db, user.id)
 

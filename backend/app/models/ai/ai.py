@@ -152,6 +152,7 @@ class UserAISettings(Base):
     knowledge_distill_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     knowledge_allow_external: Mapped[bool] = mapped_column(Boolean, default=False)
     knowledge_daily_limit: Mapped[int] = mapped_column(Integer, default=100)
+    knowledge_distill_model: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),

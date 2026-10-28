@@ -45,7 +45,7 @@ class KnowledgeSettingsService:
         db: AsyncSession, user_id: uuid.UUID,
     ) -> EffectiveKnowledgeSettings:
         row = await KnowledgeSettingsService.get_or_create(db, user_id)
-        model = get_settings().KNOWLEDGE_DISTILL_MODEL
+        model = (row.knowledge_distill_model or "").strip() or get_settings().KNOWLEDGE_DISTILL_MODEL
         return EffectiveKnowledgeSettings(
             distill_enabled=bool(row.knowledge_distill_enabled),
             allow_external=bool(row.knowledge_allow_external),
@@ -62,6 +62,7 @@ class KnowledgeSettingsService:
         distill_enabled: bool | None = None,
         allow_external: bool | None = None,
         daily_limit: int | None = None,
+        model: str | None = None,
     ) -> UserAISettings:
         row = await KnowledgeSettingsService.get_or_create(db, user_id)
         if distill_enabled is not None:
@@ -70,6 +71,8 @@ class KnowledgeSettingsService:
             row.knowledge_allow_external = allow_external
         if daily_limit is not None:
             row.knowledge_daily_limit = max(0, daily_limit)
+        if model is not None:
+            row.knowledge_distill_model = model.strip()[:255] or None
         await db.commit()
         await db.refresh(row)
         return row
