@@ -8,13 +8,13 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models.note.note import Note
-from app.services.ai.chunking_service import chunk_note
+from app.services.ai.chunking_service import NoteChunk, chunk_note
 from app.services.ai.embedding_service import EmbeddingService
 from app.services.ai.rag_v2_schema import rag_v2_available
 
@@ -74,20 +74,22 @@ async def _mark_document(
     *,
     status: str = "ok",
     error: str | None = None,
+    embedding_model: str | None = None,
 ) -> None:
     await db.execute(
         text(
             """
             INSERT INTO rag_documents
-              (note_id, user_id, content_hash, chunk_count, status, error, indexed_at)
-            VALUES (:note_id, :user_id, :content_hash, :chunk_count, :status, :error, now())
+              (note_id, user_id, content_hash, chunk_count, status, error, indexed_at, embedding_model)
+            VALUES (:note_id, :user_id, :content_hash, :chunk_count, :status, :error, now(), :embedding_model)
             ON CONFLICT (note_id) DO UPDATE SET
               user_id = EXCLUDED.user_id,
               content_hash = EXCLUDED.content_hash,
               chunk_count = EXCLUDED.chunk_count,
               status = EXCLUDED.status,
               error = EXCLUDED.error,
-              indexed_at = now()
+              indexed_at = now(),
+              embedding_model = EXCLUDED.embedding_model
             """
         ),
         {
@@ -97,42 +99,121 @@ async def _mark_document(
             "chunk_count": chunk_count,
             "status": status,
             "error": error,
+            "embedding_model": embedding_model,
         },
     )
 
 
-async def index_note(db: AsyncSession, note: Note) -> int:
-    """重建单篇笔记的块与向量，返回块数。"""
-    settings = get_settings()
-    note_id = str(note.id)
-    user_id = str(note.created_by or "")
+async def _note_meta(db: AsyncSession, note: Note) -> tuple[dict[str, Any], Any]:
+    """从知识卡/来源文档构建 chunk 元数据；无知识卡时只有 note_type。"""
+    from app.models.knowledge import IngestDocument, KnowledgeCard, NoteSource
 
-    if note.is_deleted or note.is_encrypted:
-        await _delete_note_chunks(db, note_id)
-        await _mark_document(
-            db, note_id, user_id, "", 0, status="skipped", error="deleted_or_encrypted",
+    meta: dict[str, Any] = {"note_type": note.note_type}
+    card_result = await db.execute(
+        select(KnowledgeCard)
+        .where(
+            KnowledgeCard.note_id == note.id,
+            KnowledgeCard.status.in_(["approved", "merged"]),
         )
-        await db.commit()
-        return 0
+        .order_by(KnowledgeCard.decided_at.desc())
+        .limit(1)
+    )
+    card = card_result.scalar_one_or_none()
+    if card is not None:
+        payload = card.payload or {}
+        meta.update(
+            {
+                "knowledge_type": card.knowledge_type,
+                "keywords": payload.get("keywords") or [],
+                "card_id": str(card.id),
+                "summary": card.summary,
+            }
+        )
 
-    chunks = chunk_note(
-        note.title,
-        note.content if isinstance(note.content, dict) else {},
-        note.note_type,
-        target_chars=settings.RAG_V2_CHUNK_SIZE,
-        overlap_chars=settings.RAG_V2_CHUNK_OVERLAP,
+    source_result = await db.execute(
+        select(IngestDocument)
+        .join(NoteSource, NoteSource.document_id == IngestDocument.id)
+        .where(NoteSource.note_id == note.id)
+        .limit(1)
+    )
+    source = source_result.scalar_one_or_none()
+    if source is not None:
+        meta.update(
+            {
+                "source_type": source.source_type,
+                "source_id": str(source.id),
+                "source_url": source.url,
+                "occurred_at": source.occurred_at.isoformat() if source.occurred_at else None,
+            }
+        )
+    return meta, card
+
+
+def _summary_chunk(card: Any) -> NoteChunk | None:
+    if card is None or not (card.summary or "").strip():
+        return None
+    payload = card.payload or {}
+    key_points = [
+        str(point).strip() for point in payload.get("key_points") or [] if str(point).strip()
+    ]
+    content = card.summary.strip()
+    if key_points:
+        content += "\n" + "\n".join(f"- {point}" for point in key_points[:7])
+    return NoteChunk(
+        index=0,
+        content=content,
+        heading_path="摘要",
+        token_count=max(1, len(content) // 2),
+        is_summary=True,
     )
 
-    await _delete_note_chunks(db, note_id)
 
+async def _existing_chunks(db: AsyncSession, note_id: str) -> dict[tuple[str, str], tuple[str, int]]:
+    result = await db.execute(
+        text(
+            "SELECT id, heading_path, content_hash, chunk_index FROM rag_chunks "
+            "WHERE note_id = :note_id"
+        ),
+        {"note_id": note_id},
+    )
+    existing: dict[tuple[str, str], tuple[str, int]] = {}
+    for row in result.fetchall():
+        existing[(row[1] or "", row[2])] = (str(row[0]), int(row[3]))
+    return existing
+
+
+async def _sync_chunks(
+    db: AsyncSession,
+    note: Note,
+    user_id: str,
+    chunks: list[NoteChunk],
+    meta: dict[str, Any],
+) -> int:
+    """增量同步：未变块保留原 embedding，只嵌入新增块，删除消失块。"""
+    note_id = str(note.id)
+    existing = await _existing_chunks(db, note_id)
+    used: set[str] = set()
     inserted = 0
+
     for chunk in chunks:
+        key = (chunk.heading_path or "", chunk.content_hash)
+        if key in existing and existing[key][0] not in used:
+            chunk_id, old_index = existing[key]
+            used.add(chunk_id)
+            if old_index != chunk.index:
+                await db.execute(
+                    text("UPDATE rag_chunks SET chunk_index = :index WHERE id = :id"),
+                    {"index": chunk.index, "id": chunk_id},
+                )
+            continue
+
         embedding = await EmbeddingService.embed_text(
             f"{note.title}\n{chunk.heading_path}\n{chunk.content}"[:8000],
         )
         if not embedding:
             await db.rollback()
             raise RuntimeError("嵌入服务不可用，索引任务将重试")
+        chunk_meta = {**meta, "is_summary": chunk.is_summary}
         await db.execute(
             text(
                 """
@@ -155,15 +236,59 @@ async def index_note(db: AsyncSession, note: Note) -> int:
                 "content": chunk.content,
                 "content_hash": chunk.content_hash,
                 "token_count": chunk.token_count,
-                "meta": json.dumps({"note_type": note.note_type}, ensure_ascii=False),
+                "meta": json.dumps(chunk_meta, ensure_ascii=False),
                 "embedding": json.dumps(embedding),
             },
         )
         inserted += 1
 
-    await _mark_document(db, note_id, user_id, _content_hash(note), inserted)
-    await db.commit()
+    for chunk_id, _index in existing.values():
+        if chunk_id not in used:
+            await db.execute(
+                text("DELETE FROM rag_chunks WHERE id = :id"), {"id": chunk_id},
+            )
     return inserted
+
+
+async def index_note(db: AsyncSession, note: Note) -> int:
+    """重建单篇笔记的块与向量，返回块数。"""
+    settings = get_settings()
+    note_id = str(note.id)
+    user_id = str(note.created_by or "")
+
+    if note.is_deleted or note.is_encrypted:
+        await _delete_note_chunks(db, note_id)
+        await _mark_document(
+            db, note_id, user_id, "", 0, status="skipped", error="deleted_or_encrypted",
+        )
+        await db.commit()
+        return 0
+
+    meta, card = await _note_meta(db, note)
+    chunks = chunk_note(
+        note.title,
+        note.content if isinstance(note.content, dict) else {},
+        note.note_type,
+        target_chars=settings.RAG_V2_CHUNK_SIZE,
+        overlap_chars=settings.RAG_V2_CHUNK_OVERLAP,
+    )
+    summary = _summary_chunk(card)
+    if summary is not None:
+        chunks = [summary] + chunks
+    for index, chunk in enumerate(chunks):
+        chunk.index = index
+
+    await _sync_chunks(db, note, user_id, chunks, meta)
+    await _mark_document(
+        db,
+        note_id,
+        user_id,
+        _content_hash(note),
+        len(chunks),
+        embedding_model=settings.OLLAMA_EMBED_MODEL,
+    )
+    await db.commit()
+    return len(chunks)
 
 
 async def _claim_jobs(db: AsyncSession, limit: int) -> list[dict[str, Any]]:

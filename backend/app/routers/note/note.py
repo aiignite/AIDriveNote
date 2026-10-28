@@ -207,10 +207,19 @@ class BacklinkOut(BaseModel):
     link_text: str
 
 
+class SearchKnowledgeOut(BaseModel):
+    summary: Optional[str] = None
+    keywords: list[str] = []
+    source_type: Optional[str] = None
+    knowledge_type: Optional[str] = None
+    confidence: Optional[str] = None
+
+
 class SearchResultOut(BaseModel):
     items: list[NoteOut]
     total: int
     highlights: dict[str, str] = {}
+    knowledge: dict[str, SearchKnowledgeOut] = {}
 
 
 class RelatedNoteOut(BaseModel):
@@ -501,6 +510,39 @@ async def list_trash_notes(
     return NoteListOut(items=enriched, total=total)
 
 
+async def _knowledge_search_meta(
+    db: AsyncSession, note_ids: list[UUID],
+) -> dict[str, SearchKnowledgeOut]:
+    """给搜索结果补充知识卡摘要/关键词/来源；每篇笔记只取最新一张已批准卡。"""
+    if not note_ids:
+        return {}
+    from app.models.knowledge import IngestDocument, KnowledgeCard
+
+    rows = await db.execute(
+        select(KnowledgeCard, IngestDocument)
+        .join(IngestDocument, IngestDocument.id == KnowledgeCard.document_id)
+        .where(
+            KnowledgeCard.note_id.in_(note_ids),
+            KnowledgeCard.status.in_(["approved", "merged"]),
+        )
+        .order_by(KnowledgeCard.decided_at.desc())
+    )
+    result: dict[str, SearchKnowledgeOut] = {}
+    for card, doc in rows.all():
+        key = str(card.note_id)
+        if key in result:
+            continue
+        payload = card.payload or {}
+        result[key] = SearchKnowledgeOut(
+            summary=(card.summary or "")[:300] or None,
+            keywords=[str(item) for item in payload.get("keywords") or []][:8],
+            source_type=doc.source_type,
+            knowledge_type=card.knowledge_type,
+            confidence=card.confidence,
+        )
+    return result
+
+
 @router.get("/search/fulltext", response_model=SearchResultOut)
 async def search_notes_fulltext(
     q: str,
@@ -524,7 +566,10 @@ async def search_notes_fulltext(
         )
         for n in items
     }
-    return SearchResultOut(items=enriched, total=total, highlights=highlights)
+    knowledge = await _knowledge_search_meta(db, [n.id for n in items])
+    return SearchResultOut(
+        items=enriched, total=total, highlights=highlights, knowledge=knowledge,
+    )
 
 
 @router.get("/tags/list", response_model=list[TagOut])

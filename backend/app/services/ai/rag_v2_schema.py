@@ -25,9 +25,11 @@ _DDL_STATEMENTS: tuple[str, ...] = (
       chunk_count int NOT NULL DEFAULT 0,
       status varchar(20) NOT NULL DEFAULT 'pending',
       error text,
-      indexed_at timestamptz
+      indexed_at timestamptz,
+      embedding_model varchar(120)
     )
     """,
+    "ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS embedding_model varchar(120)",
     f"""
     CREATE TABLE IF NOT EXISTS rag_chunks (
       id uuid PRIMARY KEY,
@@ -48,6 +50,8 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_rag_chunks_user ON rag_chunks(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_rag_chunks_hnsw ON rag_chunks USING hnsw (embedding vector_cosine_ops)",
     "CREATE INDEX IF NOT EXISTS idx_rag_chunks_tsv ON rag_chunks USING gin (tsv)",
+    "CREATE INDEX IF NOT EXISTS ix_rag_chunks_meta ON rag_chunks USING gin (meta jsonb_path_ops)",
+    "CREATE INDEX IF NOT EXISTS ix_rag_chunks_source ON rag_chunks ((meta->>'source_type'))",
     """
     CREATE TABLE IF NOT EXISTS rag_index_jobs (
       id bigserial PRIMARY KEY,

@@ -1,6 +1,7 @@
 """RAG v2 检索：块级向量 + 全文 RRF 融合，输出结构化引用。"""
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any
@@ -92,6 +93,24 @@ def _filters(
     return (" AND " + " AND ".join(clauses)) if clauses else "", params
 
 
+def _knowledge_filters(filters: dict[str, Any] | None) -> tuple[list[str], dict[str, Any]]:
+    """来源类型 / 知识类型 / 起始时间过滤（走 rag_chunks.meta 索引）。"""
+    if not filters:
+        return [], {}
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if filters.get("sourceType"):
+        clauses.append("c.meta->>'source_type' = :k_source_type")
+        params["k_source_type"] = str(filters["sourceType"])
+    if filters.get("knowledgeType"):
+        clauses.append("c.meta->>'knowledge_type' = :k_knowledge_type")
+        params["k_knowledge_type"] = str(filters["knowledgeType"])
+    if filters.get("occurredFrom"):
+        clauses.append("(c.meta->>'occurred_at') >= :k_occurred_from")
+        params["k_occurred_from"] = str(filters["occurredFrom"])
+    return clauses, params
+
+
 async def search_chunks(
     db: AsyncSession,
     user_id: uuid.UUID,
@@ -99,6 +118,7 @@ async def search_chunks(
     *,
     top_k: int = 8,
     scope: dict[str, Any] | None = None,
+    knowledge_filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """返回按 RRF 融合排序的块；RAG v2 不可用时返回 None。"""
     if not await rag_v2_available(db):
@@ -113,6 +133,10 @@ async def search_chunks(
         (scope or {}).get("noteType") if scope else None,
         (scope or {}).get("dateFrom") if scope else None,
     )
+    extra_clauses, extra_params = _knowledge_filters(knowledge_filters)
+    if extra_clauses:
+        filter_sql += " AND " + " AND ".join(extra_clauses)
+        filter_params.update(extra_params)
 
     query_embedding = await EmbeddingService.embed_text(query)
     base_params: dict[str, Any] = {
@@ -123,6 +147,7 @@ async def search_chunks(
         "like_short": f"%{query.strip()[:8]}%",
         "candidates": candidates,
         "top_k": fetch_k,
+        "summary_boost": settings.KNOWLEDGE_SUMMARY_CHUNK_BOOST,
         **filter_params,
     }
 
@@ -168,12 +193,15 @@ async def search_chunks(
               FROM vector_hits v
               FULL OUTER JOIN fts_hits f ON v.id = f.id
             )
-            SELECT c.id, c.note_id, c.chunk_index, c.heading_path, c.content,
-                   m.score, n.title, n.note_no, n.note_type
+            SELECT c.id, c.note_id, c.chunk_index, c.heading_path, c.content, c.meta,
+                   (m.score + CASE WHEN c.meta->>'is_summary' = 'true'
+                                   THEN :summary_boost ELSE 0 END) AS score,
+                   n.title, n.note_no, n.note_type
             FROM merged m
             JOIN rag_chunks c ON c.id = m.id
             JOIN note_notes n ON n.id = c.note_id
-            ORDER BY m.score DESC
+            ORDER BY (m.score + CASE WHEN c.meta->>'is_summary' = 'true'
+                                     THEN :summary_boost ELSE 0 END) DESC
             LIMIT :top_k
         """
         base_params["vec"] = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
@@ -199,12 +227,15 @@ async def search_chunks(
                 {filter_sql}
               LIMIT :candidates
             )
-            SELECT c.id, c.note_id, c.chunk_index, c.heading_path, c.content,
-                   (1.0 / ({RRF_K} + f.rank)) AS score, n.title, n.note_no, n.note_type
+            SELECT c.id, c.note_id, c.chunk_index, c.heading_path, c.content, c.meta,
+                   ((1.0 / ({RRF_K} + f.rank))
+                    + CASE WHEN c.meta->>'is_summary' = 'true' THEN :summary_boost ELSE 0 END) AS score,
+                   n.title, n.note_no, n.note_type
             FROM fts_hits f
             JOIN rag_chunks c ON c.id = f.id
             JOIN note_notes n ON n.id = c.note_id
-            ORDER BY f.rank
+            ORDER BY ((1.0 / ({RRF_K} + f.rank))
+                      + CASE WHEN c.meta->>'is_summary' = 'true' THEN :summary_boost ELSE 0 END) DESC
             LIMIT :top_k
         """
 
@@ -231,10 +262,13 @@ async def build_context(
     *,
     top_k: int = 5,
     page_context: dict[str, Any] | None = None,
+    knowledge_filters: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]]] | None:
     """返回 (上下文文本, 结构化引用)；v2 不可用或无命中时返回 None。"""
     scope = (page_context or {}).get("ragScope")
-    rows = await search_chunks(db, user_id, query, top_k=top_k, scope=scope)
+    rows = await search_chunks(
+        db, user_id, query, top_k=top_k, scope=scope, knowledge_filters=knowledge_filters,
+    )
     if rows is None:
         return None
     # 同一笔记多个块命中时只保留最高分块，避免上下文被单篇笔记刷屏
@@ -257,8 +291,16 @@ async def build_context(
         heading = row.get("heading_path") or ""
         label = row["title"] + (f" > {heading}" if heading else "")
         content = (row.get("content") or "").strip()
+        meta = row.get("meta") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except json.JSONDecodeError:
+                meta = {}
+        summary = str(meta.get("summary") or "").strip()
+        prefix = f"[摘要：{summary[:200]}] " if summary else ""
         lines.append(
-            f"- [{label}](note_id={row['note_id']}): {content[:600]}"
+            f"- [{label}](note_id={row['note_id']}): {prefix}{content[:600]}"
         )
         citations.append({
             "noteId": str(row["note_id"]),
@@ -268,6 +310,10 @@ async def build_context(
             "chunkId": str(row["id"]),
             "headingPath": heading or None,
             "source": "retrieval",
+            "summary": summary or None,
+            "knowledgeType": meta.get("knowledge_type"),
+            "sourceType": meta.get("source_type"),
+            "sourceUrl": meta.get("source_url"),
         })
 
     context = (

@@ -19,6 +19,7 @@ class NoteChunk:
     content: str
     heading_path: str
     token_count: int
+    is_summary: bool = False
 
     @property
     def content_hash(self) -> str:
