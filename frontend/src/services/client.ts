@@ -176,7 +176,7 @@ export function resolveAssetUrl(url: string): string {
   return base ? `${base}${raw}` : raw;
 }
 
-async function refreshAccessToken(): Promise<boolean> {
+async function performRefresh(): Promise<boolean> {
   const refresh = typeof window !== 'undefined'
     ? window.localStorage.getItem(REFRESH_KEY)
     : null;
@@ -195,6 +195,26 @@ async function refreshAccessToken(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** 续期中的共享 Promise：把并发的 401 收敛成一次续期请求 */
+let refreshInFlight: Promise<boolean> | null = null;
+
+/**
+ * 续期访问令牌。
+ *
+ * 并发调用共享同一个 in-flight 请求：首屏会同时发出 notes / folders / tags /
+ * ai-settings 等多个接口，若各自独立续期，会在同一瞬间打出 N 个
+ * `/auth/refresh`（服务端日志里能看到成组出现），既浪费也可能互相覆盖令牌。
+ * @returns 是否续期成功
+ */
+function refreshAccessToken(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = performRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
 }
 
 async function request<T>(
