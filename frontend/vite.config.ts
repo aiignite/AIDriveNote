@@ -25,6 +25,13 @@ const ASSET_HASH_RE = /-[A-Za-z0-9_-]{8}$/;
 const LEGACY_FONT_RE = /^(KaTeX_.+)\.(woff|ttf)$/;
 
 /**
+ * 重量级文档查看器资源：只在用户真正打开文档时动态加载。
+ * 不进入 SW 空闲预热清单，避免所有用户被动下载数 MB 解析器与字体。
+ */
+const HEAVY_DOCUMENT_ASSET_RE =
+  /^(pdfjs\/|assets\/(pdf-|xlsx-|pptx-preview|docx-preview|jszip\.min-))/;
+
+/**
  * 递归收集目录下所有文件的相对路径。
  * @param dir 当前目录绝对路径
  * @param prefix 当前相对路径前缀
@@ -96,6 +103,11 @@ function swPrecachePlugin(base: string): Plugin {
 
       const toUrls = (rels: string[]): string[] => rels.map((rel) => `${prefix}${rel}`);
 
+      // 文档查看器资源按需加载：首次打开时由 SW 的 fetch 兜底缓存，不参与后台预热
+      const rest = all.filter(
+        (rel) => !critical.has(rel) && !HEAVY_DOCUMENT_ASSET_RE.test(rel),
+      );
+
       fs.writeFileSync(
         path.join(DIST_DIR, CRITICAL_MANIFEST),
         JSON.stringify(toUrls([...critical]), null, 2),
@@ -103,7 +115,7 @@ function swPrecachePlugin(base: string): Plugin {
       );
       fs.writeFileSync(
         path.join(DIST_DIR, REST_MANIFEST),
-        JSON.stringify(toUrls(all.filter((rel) => !critical.has(rel))), null, 2),
+        JSON.stringify(toUrls(rest), null, 2),
         'utf-8',
       );
     },

@@ -6,7 +6,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import {
-  Search, Plus, FileText, Code2, Brain, GitFork,
+  Search, Plus, FileText, Code2, Brain, GitFork, FileType,
   MoreHorizontal, Trash2, ArrowUpDown, Folder, FolderOpen,
   FolderPlus, ChevronRight, ChevronDown, Pencil, FolderInput, Copy, Pin, PinOff,
   BookTemplate, RotateCcw, Star, RefreshCw, Maximize2, Minimize2, FolderSync, Clock,
@@ -21,7 +21,7 @@ import {
 import { ensurePermission, isSupported as isSyncSupported, loadHandleFromIndexedDB } from '../../services/sync/folderAccess';
 import { runSync } from '../../services/sync/syncEngine';
 import { KB_CONFIG_EVENT, loadKbConfig } from '../../services/sync/kbConfig';
-import { getUnlockToken, type Note, type NoteFolder, type NoteTag } from '../../services/note';
+import { getUnlockToken, NOTE_TYPES, EDITABLE_NOTE_TYPES, type Note, type NoteFolder, type NoteTag } from '../../services/note';
 
 /* ── helpers ────────────────────────────────────── */
 
@@ -46,6 +46,11 @@ const TYPE_ICON: Record<string, { icon: React.ReactNode; color: string; bgColor:
     color: 'text-orange-600 dark:text-orange-400',
     bgColor: 'bg-orange-50 dark:bg-orange-900/20',
   },
+  document: {
+    icon: <FileType size={14} />,
+    color: 'text-blue-600 dark:text-blue-400',
+    bgColor: 'bg-blue-50 dark:bg-blue-900/20',
+  },
 };
 
 /** 笔记类型的中文名，用于筛选按钮的 title / aria-label（图标本身不显示文字） */
@@ -54,6 +59,7 @@ const TYPE_LABEL: Record<string, string> = {
   markdown: 'Markdown',
   mindmap: '思维导图',
   flowchart: '流程图',
+  document: '文档',
 };
 
 // 相对时间格式化
@@ -131,6 +137,8 @@ export interface NoteListPanelProps {
   selectedNoteId: string | null;
   onSelectNote: (note: Note) => void;
   onCreateNote: (noteType: string, folderId?: string) => void;
+  /** 打开文档导入（选择文件后由页面创建文档笔记） */
+  onImportDocument?: () => void;
   onDeleteNote: (id: string) => void;
   onRestoreNote?: (id: string) => void;
   onPermanentDeleteNote?: (id: string) => void;
@@ -180,6 +188,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   selectedNoteId,
   onSelectNote,
   onCreateNote,
+  onImportDocument,
   onDeleteNote,
   onRestoreNote,
   onPermanentDeleteNote,
@@ -1227,7 +1236,8 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             </button>
             {showAddMenu && (
               <div className={`absolute right-0 top-full mt-1 w-44 rounded-lg shadow-lg border z-50 py-1 ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
-                {Object.entries(TYPE_ICON).map(([key, { icon, color }]) => {
+                {EDITABLE_NOTE_TYPES.map((key) => {
+                  const { icon, color } = TYPE_ICON[key];
                   return (
                     <button
                       key={key}
@@ -1239,6 +1249,18 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                     </button>
                   );
                 })}
+                {onImportDocument && (
+                  <>
+                    <div className={`my-1 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`} />
+                    <button
+                      onClick={() => { setShowAddMenu(false); onImportDocument(); }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                    >
+                      <span className="text-blue-600 dark:text-blue-400"><FileType size={14} /></span>
+                      导入文档…
+                    </button>
+                  </>
+                )}
                 {onOpenTemplateGallery && (
                   <>
                     <div className={`my-1 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`} />
@@ -1333,7 +1355,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
           >
             <LayoutGrid size={14} />
           </button>
-          {(['rich_text', 'markdown', 'mindmap', 'flowchart'] as const).map(key => {
+          {NOTE_TYPES.map(key => {
             const cfg = TYPE_ICON[key];
             const active = filterType === key;
             return (
@@ -1713,7 +1735,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                   && getUnlockToken(tokenScope, tokenId) !== null;
                 return (
                   <>
-                    {!selfEncrypted && !folderProtected && (
+                    {!selfEncrypted && !folderProtected && note.noteType !== 'document' && (
                       <button
                         onClick={() => { onNoteLockAction?.('encrypt', contextMenu.id); setContextMenu(null); }}
                         className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}

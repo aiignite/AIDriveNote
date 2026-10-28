@@ -197,12 +197,19 @@ const SyncSettingsPage: React.FC = () => {
         setKbRootId(rootId);
       }
       const allFiles = await listAllFiles(handle, '', 5000);
-      const candidates = allFiles.filter((path) => /\.(pdf|txt|md|csv|log|json|ya?ml|png|jpe?g|webp|bmp|tiff?)$/i.test(path));
+      const candidates = allFiles
+        .filter((path) => /\.(pdf|docx?|xlsx?|pptx?|html?|txt|md|csv|log|json|ya?ml|png|jpe?g|webp|bmp|tiff?)$/i.test(path))
+        .slice(0, 200);
       const fileMap = new Map<string, File>();
       const manifestFiles: Array<{ path: string; hash: string; size: number; mime?: string }> = [];
+      let skippedLarge = 0;
       for (const path of candidates) {
         const file = await readFile(handle, path);
         if (!file) continue;
+        if (file.size > 50 * 1024 * 1024) {
+          skippedLarge += 1;
+          continue;
+        }
         fileMap.set(path, file);
         const buffer = await file.arrayBuffer();
         const digest = await crypto.subtle.digest('SHA-256', buffer);
@@ -225,6 +232,9 @@ const SyncSettingsPage: React.FC = () => {
         uploaded += 1;
       }
       toast.success(`上传 ${uploaded} 个文件，跳过未变化 ${plan.unchanged} 个`);
+      if (skippedLarge > 0) {
+        toast(`另有 ${skippedLarge} 个文件超过 50MB 已跳过`);
+      }
       setKbAssets(await kbApi.listFiles(undefined, 30));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '登记失败');
@@ -233,15 +243,27 @@ const SyncSettingsPage: React.FC = () => {
     }
   };
 
-  /** 知识库资产 → Markdown 笔记（之后自动进入 RAG 索引） */
+  /** 知识库资产 → 文档笔记 / Markdown 笔记（之后自动进入 RAG 索引） */
   const handleConvertKbFile = async (fileId: string) => {
     try {
       const result = await kbApi.convert(fileId);
-      toast.success(`已生成笔记「${result.title}」`);
+      toast.success(
+        result.noteType === 'document'
+          ? `已生成文档笔记「${result.title}」`
+          : `已生成笔记「${result.title}」`,
+      );
       bumpNotesRefresh();
       setKbAssets(await kbApi.listFiles(undefined, 30));
     } catch {
       toast.error('转换为笔记失败');
+    }
+  };
+
+  const handleDownloadKbFile = async (fileId: string, path: string) => {
+    try {
+      await kbApi.downloadFile(fileId, path.split('/').pop() || 'document');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '下载失败');
     }
   };
 
@@ -889,6 +911,7 @@ const SyncSettingsPage: React.FC = () => {
                 )}
                 <Stat label="新建文件夹" value={report.uploadedFolders.length} isDark={isDark} />
                 <Stat label="跳过加密文档" value={report.skippedEncrypted} isDark={isDark} />
+                <Stat label="跳过文档笔记" value={report.skippedDocuments} isDark={isDark} />
                 {report.direction === 'kb' && (
                   <Stat label="跳过非文本文件" value={report.skippedUnsupported} isDark={isDark} />
                 )}
@@ -1001,10 +1024,11 @@ const SyncSettingsPage: React.FC = () => {
         <div className={card}>
           <div className="p-5">
             <h3 className={`text-sm font-bold mb-2 ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>
-              知识库资产（PDF / 文本）
+              知识库资产（PDF / Office / HTML / 文本）
             </h3>
             <p className={`text-xs mb-3 ${muted}`}>
-              把绑定目录中的 PDF、文本与图片登记到服务端并抽取正文（图片走本地 OCR）。转为笔记后会自动进入语义索引，可被 AI 检索与引用。
+              把绑定目录中的 PDF、Word、Excel、PPT、HTML、文本与图片登记到服务端：可预览格式会保留原文件，
+              转为笔记后可直接在应用内查看；正文同时进入语义索引，可被 AI 检索与引用。
               本地文件不会被修改或删除。
             </p>
             <div className="flex flex-wrap items-center gap-2">
@@ -1025,20 +1049,31 @@ const SyncSettingsPage: React.FC = () => {
                     <span className="min-w-0 flex-1 truncate" title={asset.path}>
                       {asset.isProtected ? '🔒 ' : ''}{asset.path}
                       <span className="ml-1 opacity-60">
-                        {asset.status === 'extract_failed' ? '· 无可提取文本' : asset.hasText ? '· 已抽取' : ''}
+                        {asset.viewable ? '· 可预览' : asset.status === 'extract_failed' ? '· 无可提取文本' : asset.hasText ? '· 已抽取' : ''}
                       </span>
                     </span>
-                    {asset.noteId ? (
-                      <span className="shrink-0 text-[10px] text-green-600">已转笔记</span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => void handleConvertKbFile(asset.id)}
-                        className="shrink-0 text-[10px] text-orange-600 hover:underline"
-                      >
-                        转为笔记
-                      </button>
-                    )}
+                    <span className="flex shrink-0 items-center gap-2">
+                      {asset.viewable && (
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadKbFile(asset.id, asset.path)}
+                          className="text-[10px] text-gray-500 hover:underline"
+                        >
+                          下载
+                        </button>
+                      )}
+                      {asset.noteId ? (
+                        <span className="text-[10px] text-green-600">已转笔记</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void handleConvertKbFile(asset.id)}
+                          className="text-[10px] text-orange-600 hover:underline"
+                        >
+                          {asset.viewable ? '查看文档' : '转为笔记'}
+                        </button>
+                      )}
+                    </span>
                   </li>
                 ))}
               </ul>

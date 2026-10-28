@@ -329,8 +329,10 @@ async function applyCreate(op: OutboxOp): Promise<void> {
  */
 async function applyUpdate(op: OutboxOp, result: OutboxRunResult): Promise<void> {
   const remote = await noteApi.get(op.noteId);
+  // 文档笔记正文不可编辑：离线改动只可能是标题/文件夹等元数据，不生成冲突副本
+  const isDocument = remote.noteType === 'document';
 
-  if (op.baseUpdatedAt && remote.updatedAt && remote.updatedAt !== op.baseUpdatedAt) {
+  if (!isDocument && op.baseUpdatedAt && remote.updatedAt && remote.updatedAt !== op.baseUpdatedAt) {
     // 冲突：服务端在离线期间被改过。把本地版本另存为副本，不做覆盖。
     const copy = await noteApi.create({
       title: `${op.title}（冲突副本 ${stamp()}）`,
@@ -351,7 +353,7 @@ async function applyUpdate(op: OutboxOp, result: OutboxRunResult): Promise<void>
 
   const updated = await noteApi.update(op.noteId, {
     title: op.payload.title,
-    content: op.payload.content,
+    content: isDocument ? undefined : op.payload.content,
     folderId: op.payload.folderId,
     description: op.payload.description,
     isPinned: op.payload.isPinned,

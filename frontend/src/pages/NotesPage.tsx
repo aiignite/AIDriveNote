@@ -8,7 +8,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   FileText,
-  Code2, Brain, GitFork, PanelLeftOpen, Plus,
+  Code2, Brain, GitFork, PanelLeftOpen, Plus, FileType, Upload,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useApp } from '../contexts/AppContext';
@@ -23,7 +23,7 @@ import {
 import { buildNoteQuickActions } from '../utils/noteAIActions';
 import { isNetworkError } from '../services/client';
 import {
-  noteApi, noteFolderApi, noteTemplateApi, noteTagApi, noteLockApi,
+  noteApi, noteDocumentApi, noteFolderApi, noteTemplateApi, noteTagApi, noteLockApi,
   setUnlockToken, clearUnlockToken,
   type Note, type NoteCreate, type NoteUpdate, type NoteFolder, type NoteTag, type LockScope,
 } from '../services/note';
@@ -534,6 +534,70 @@ const NotesPage: React.FC = () => {
     }
   }, [resolveCreateFolderId, userId]);
 
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
+  const dragCounterRef = useRef(0);
+  const [docDragOver, setDocDragOver] = useState(false);
+  const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+  const DOCUMENT_ACCEPT = '.pdf,.docx,.xlsx,.pptx,.html,.htm,.doc,.xls,.ppt';
+
+  const handleImportDocument = useCallback(() => {
+    const input = documentInputRef.current;
+    if (!input) return;
+    input.value = '';
+    input.click();
+  }, []);
+
+  const importDocuments = useCallback(async (files: File[]) => {
+    const candidates = files
+      .filter(file => /\.(pdf|docx?|xlsx?|pptx?|html?)$/i.test(file.name))
+      .slice(0, 5);
+    if (candidates.length === 0) {
+      toast.error('请选择 PDF / Word / Excel / PPT / HTML 文件');
+      return;
+    }
+    let imported = 0;
+    for (const file of candidates) {
+      if (file.size > MAX_DOCUMENT_BYTES) {
+        toast.error(`${file.name} 超过 25MB，已跳过`);
+        continue;
+      }
+      try {
+        const newNote = await noteDocumentApi.upload(file, {
+          folderId: resolveCreateFolderId(),
+        });
+        setNotes(prev => [newNote, ...prev]);
+        setNotesTotal(total => total + 1);
+        setSelectedNote(newNote);
+        if (userId) void cacheNoteMetas([newNote], userId);
+        imported += 1;
+      } catch (err) {
+        toast.error(`${file.name}: ${err instanceof Error ? err.message : '导入失败'}`);
+      }
+    }
+    if (imported > 0) toast.success(`已导入 ${imported} 个文档`);
+  }, [resolveCreateFolderId, userId]);
+
+  const handleDocumentDrop = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    dragCounterRef.current = 0;
+    setDocDragOver(false);
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length > 0) void importDocuments(files);
+  }, [importDocuments]);
+
+  const handleDocumentDragEnter = useCallback((event: React.DragEvent) => {
+    if (!Array.from(event.dataTransfer.types || []).includes('Files')) return;
+    event.preventDefault();
+    dragCounterRef.current += 1;
+    setDocDragOver(true);
+  }, []);
+
+  const handleDocumentDragLeave = useCallback((event: React.DragEvent) => {
+    if (!Array.from(event.dataTransfer.types || []).includes('Files')) return;
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setDocDragOver(false);
+  }, []);
+
   // Create note from template
   const handleCreateFromTemplate = useCallback(async (templateId: string) => {
     try {
@@ -974,6 +1038,7 @@ const NotesPage: React.FC = () => {
       selectedNoteId={selectedNote?.id || null}
       onSelectNote={handleSelectNote}
       onCreateNote={handleCreateNote}
+      onImportDocument={handleImportDocument}
       onDeleteNote={handleDeleteNote}
       onRestoreNote={handleRestoreNote}
       onPermanentDeleteNote={handlePermanentDeleteNote}
@@ -1028,6 +1093,7 @@ const NotesPage: React.FC = () => {
         if (target) handleSelectNote(target);
         else navigate(`/note/${id}`);
       }}
+      onImportDocument={handleImportDocument}
       highlightChunkId={citationChunkId}
       onDismissCitation={() => {
         if (routeNoteId) navigate(`/note/${routeNoteId}`, { replace: true });
@@ -1067,15 +1133,51 @@ const NotesPage: React.FC = () => {
           </button>
         ))}
       </div>
+      <button
+        type="button"
+        onClick={handleImportDocument}
+        className={`mt-4 inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs transition-colors ${
+          isDark
+            ? 'border-gray-700 bg-gray-800/50 text-gray-300 hover:border-gray-600'
+            : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+        }`}
+      >
+        <Upload size={14} />
+        导入文档（PDF / Word / Excel / PPT / HTML）
+      </button>
     </div>
   );
 
+  /** 文档拖拽只绑定在笔记列表区域，避免抢占编辑器内的图片拖放 */
+  const listDropProps = {
+    onDragEnter: handleDocumentDragEnter,
+    onDragOver: (event: React.DragEvent) => {
+      if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault();
+    },
+    onDragLeave: handleDocumentDragLeave,
+    onDrop: handleDocumentDrop,
+  };
+
   return (
-    <div className={`h-full flex overflow-hidden ${isMobile ? 'pb-14' : ''} ${isFullscreen ? 'fixed inset-0 z-50' : ''} ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
+    <div
+      className={`h-full flex overflow-hidden ${isMobile ? 'pb-14' : ''} ${isFullscreen ? 'fixed inset-0 z-50' : ''} ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}
+    >
+      {docDragOver && (
+        <div className="pointer-events-none fixed inset-0 z-[9998] flex flex-col items-center justify-center gap-3 border-4 border-dashed border-orange-500 bg-orange-500/10">
+          <Upload size={44} className="text-orange-600" />
+          <div className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-orange-600 shadow-lg dark:bg-gray-800">
+            松开以导入文档（PDF / Word / Excel / PPT / HTML）
+          </div>
+        </div>
+      )}
       {isMobile ? (
         /* 移动端：单列前进 / 返回。未选中显示列表，选中显示全屏编辑器（顶部带返回按钮） */
         <div className="flex-1 min-w-0 h-full min-h-0">
-          {selectedNote ? editorPanelEl : noteListPanelEl}
+          {selectedNote ? (
+            editorPanelEl
+          ) : (
+            <div className="h-full min-h-0" {...listDropProps}>{noteListPanelEl}</div>
+          )}
         </div>
       ) : leftCollapsed ? (
         /* 桌面端 · 折叠态：收成窄条，仅保留展开按钮 */
@@ -1096,7 +1198,7 @@ const NotesPage: React.FC = () => {
             className={`shrink-0 border-r ${isDark ? 'border-gray-700' : 'border-gray-200'}`}
             style={{ width: leftWidth }}
           >
-            {noteListPanelEl}
+            <div className="h-full min-h-0" {...listDropProps}>{noteListPanelEl}</div>
           </div>
 
           {/* Resize handle */}
@@ -1207,6 +1309,17 @@ const NotesPage: React.FC = () => {
       />
 
       {/* Ctrl+N new note popover */}
+      <input
+        ref={documentInputRef}
+        type="file"
+        accept={DOCUMENT_ACCEPT}
+        multiple
+        className="hidden"
+        onChange={event => {
+          const files = Array.from(event.target.files || []);
+          if (files.length > 0) void importDocuments(files);
+        }}
+      />
       {showNewNotePopover && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowNewNotePopover(false)}>
           <div
@@ -1237,6 +1350,16 @@ const NotesPage: React.FC = () => {
                 </button>
               ))}
             </div>
+            <button
+              type="button"
+              onClick={() => { setShowNewNotePopover(false); handleImportDocument(); }}
+              className={`mt-2 flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs transition-colors ${
+                isDark ? 'border-gray-700 text-gray-300 hover:bg-gray-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <FileType size={14} />
+              导入文档…
+            </button>
           </div>
         </div>
       )}

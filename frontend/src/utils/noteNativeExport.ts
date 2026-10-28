@@ -21,6 +21,8 @@ export function getNativeExtension(noteType: string): string {
       return '.json';
     case 'flowchart':
       return '.drawio';
+    case 'document':
+      return '.bin';
     default:
       return '.json';
   }
@@ -56,6 +58,8 @@ export function isEmptyContent(noteType: string, content: Record<string, unknown
       return !Array.isArray(content.blocks) || content.blocks.length === 0;
     case 'mindmap':
       return !content.data && (!content.children || (content.children as unknown[]).length === 0);
+    case 'document':
+      return true;
     default:
       return Object.keys(content).length === 0;
   }

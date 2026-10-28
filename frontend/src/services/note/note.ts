@@ -1,7 +1,23 @@
-import { api, buildQuery } from '../client';
+import { API_BASE, api, buildQuery, fetchWithAuth } from '../client';
+import { keysToCamel } from '../../utils/caseConverter';
 import { buildUnlockHeader } from './unlockStore';
+import type { NoteType } from './noteTypes';
+
+export type { NoteType } from './noteTypes';
+export { NOTE_TYPE_LABEL, NOTE_TYPES, EDITABLE_NOTE_TYPES, isDocumentType } from './noteTypes';
 
 // ── 类型定义 ──────────────────────────────────────────────
+
+export interface NoteDocumentMeta {
+  fileName: string;
+  mime: string;
+  ext: string;
+  sizeBytes: number;
+  pageCount?: number | null;
+  etag: string;
+  viewable: boolean;
+  extractStatus: string;
+}
 
 export interface NoteTag {
   id: string;
@@ -13,8 +29,9 @@ export interface Note {
   id: string;
   noteNo: string;
   title: string;
-  noteType: 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
+  noteType: NoteType;
   content?: Record<string, unknown>;
+  document?: NoteDocumentMeta | null;
   folderId?: string;
   description?: string;
   status: string;
@@ -42,7 +59,7 @@ export interface Note {
 
 export interface NoteCreate {
   title: string;
-  noteType: 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
+  noteType: NoteType;
   content?: Record<string, unknown>;
   folderId?: string;
   description?: string;
@@ -51,7 +68,7 @@ export interface NoteCreate {
 
 export interface NoteUpdate {
   title?: string;
-  noteType?: 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
+  noteType?: NoteType;
   content?: Record<string, unknown>;
   folderId?: string;
   description?: string;
@@ -224,9 +241,14 @@ export const noteApi = {
     ),
 
   publicGet: (token: string) =>
-    api.get<{ title: string; noteType: string; content: unknown; updatedAt?: string | null }>(
-      `/public/notes/${encodeURIComponent(token)}`,
-    ),
+    api.get<{
+      title: string;
+      noteType: string;
+      content: unknown;
+      description?: string | null;
+      document?: NoteDocumentMeta | null;
+      updatedAt?: string | null;
+    }>(`/public/notes/${encodeURIComponent(token)}`),
 
   create: (data: NoteCreate) => api.post<Note>('/notes', data),
 
@@ -262,6 +284,58 @@ export const noteApi = {
 
   removeShare: (noteId: string, userId: string) =>
     api.delete(`/notes/${noteId}/shares/${userId}`),
+};
+
+// ── 文档笔记 API ──────────────────────────────────────
+
+export interface DocumentUploadOptions {
+  title?: string;
+  folderId?: string;
+  description?: string;
+}
+
+async function readError(res: Response): Promise<string> {
+  const text = await res.text().catch(() => '');
+  try {
+    const detail = JSON.parse(text)?.detail;
+    if (typeof detail === 'string') return detail;
+  } catch {
+    /* ignore */
+  }
+  return text || `请求失败（${res.status}）`;
+}
+
+export const noteDocumentApi = {
+  /** 上传 PDF / Office / HTML，生成文档笔记。 */
+  upload: async (file: File, opts: DocumentUploadOptions = {}): Promise<Note> => {
+    const form = new FormData();
+    form.append('file', file);
+    if (opts.title) form.append('title', opts.title);
+    if (opts.folderId) form.append('folder_id', opts.folderId);
+    if (opts.description) form.append('description', opts.description);
+    const res = await fetchWithAuth('/notes/documents', { method: 'POST', body: form });
+    if (!res.ok) throw new Error(await readError(res));
+    const text = await res.text();
+    return keysToCamel<Note>(text ? JSON.parse(text) : {});
+  },
+
+  /** 取回原文件字节；锁定笔记需带解锁票据。 */
+  fetchBytes: async (noteId: string, unlockToken?: string | null): Promise<Blob> => {
+    const res = await fetchWithAuth(`/notes/${noteId}/document`, {
+      headers: buildUnlockHeader(unlockToken),
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    return res.blob();
+  },
+
+  /** 公开分享页取回原文件字节（无鉴权，仅 token）。 */
+  publicFetchBytes: async (token: string): Promise<Blob> => {
+    const res = await fetch(
+      `${API_BASE}/public/notes/${encodeURIComponent(token)}/document`,
+    );
+    if (!res.ok) throw new Error(await readError(res));
+    return res.blob();
+  },
 };
 
 // ── 加密文档 API ──────────────────────────────────────
@@ -404,7 +478,7 @@ export const noteTitleApi = {
 export interface NoteTemplate {
   id: string;
   name: string;
-  noteType: 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
+  noteType: NoteType;
   description?: string;
   content?: Record<string, unknown>;
   thumbnail?: string;
@@ -419,7 +493,7 @@ export interface NoteTemplate {
 
 export interface TemplateCreate {
   name: string;
-  noteType: 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
+  noteType: NoteType;
   description?: string;
   content?: Record<string, unknown>;
   thumbnail?: string;
@@ -428,7 +502,7 @@ export interface TemplateCreate {
 
 export interface TemplateUpdate {
   name?: string;
-  noteType?: 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
+  noteType?: NoteType;
   description?: string;
   content?: Record<string, unknown>;
   thumbnail?: string;

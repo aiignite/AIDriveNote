@@ -47,6 +47,8 @@ export function getExportOptions(noteType: string): ExportOption[] {
         { format: 'pdf', label: '导出 PDF', icon: 'FileText' },
         { format: 'xml', label: '导出 XML 源文件', icon: 'Code' },
       ];
+    case 'document':
+      return [];
     default:
       return [{ format: 'pdf', label: '导出 PDF', icon: 'FileText' }];
   }

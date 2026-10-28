@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { FileText } from 'lucide-react';
-import { noteApi } from '../services/note';
+import { noteApi, type NoteDocumentMeta } from '../services/note';
 import { contentToPlainText } from '../utils/noteDiff';
+import NoteDocumentViewer from '../components/note/document/NoteDocumentViewer';
 
 /** 公开只读笔记页（无需登录，按分享 token 访问）。 */
 const PublicNotePage: React.FC = () => {
@@ -13,6 +14,8 @@ const PublicNotePage: React.FC = () => {
     title: string;
     noteType: string;
     content: unknown;
+    description?: string | null;
+    document?: NoteDocumentMeta | null;
     updatedAt?: string | null;
   } | null>(null);
 
@@ -49,9 +52,20 @@ const PublicNotePage: React.FC = () => {
                 更新于 {new Date(note.updatedAt).toLocaleString('zh-CN')}
               </p>
             )}
-            <pre className="mt-5 whitespace-pre-wrap break-words font-sans text-sm leading-7 text-gray-700 dark:text-gray-300">
-              {contentToPlainText(note.noteType as never, note.content)}
-            </pre>
+            {note.noteType !== 'document' && (
+              <pre className="mt-5 whitespace-pre-wrap break-words font-sans text-sm leading-7 text-gray-700 dark:text-gray-300">
+                {contentToPlainText(note.noteType as never, note.content)}
+              </pre>
+            )}
+            {note.noteType === 'document' && note.document && token && (
+              <div className="mt-5 h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
+                <NoteDocumentViewer
+                  noteId=""
+                  meta={note.document}
+                  publicToken={token}
+                />
+              </div>
+            )}
           </>
         )}
       </div>

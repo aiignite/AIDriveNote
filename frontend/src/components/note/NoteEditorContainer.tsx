@@ -7,22 +7,25 @@
 import React, { Suspense, useCallback, useMemo, lazy, forwardRef } from 'react';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
 import type { NoteEditorRegistry, NoteOutlineState } from '../../utils/noteCommands';
+import type { NoteDocumentMeta, NoteType } from '../../services/note/note';
 
 const NoteRichTextEditor = lazy(() => import('./NoteRichTextEditor'));
 const NoteMarkdownEditor = lazy(() => import('./NoteMarkdownEditor'));
 const NoteMindMapEditor = lazy(() => import('./NoteMindMapEditor'));
 const NoteFlowchartEditor = lazy(() => import('./NoteFlowchartEditor'));
-
-type NoteType = 'rich_text' | 'markdown' | 'mindmap' | 'flowchart';
+const NoteDocumentViewer = lazy(() => import('./document/NoteDocumentViewer'));
 
 interface NoteEditorContainerProps {
   noteId: string;
   noteType: NoteType;
   content?: unknown;
+  document?: NoteDocumentMeta | null;
   contentResetKey?: number;
   onChange?: (content: unknown) => void;
   readOnly?: boolean;
   isDark?: boolean;
+  unlockToken?: string | null;
+  publicToken?: string | null;
   /** 编辑器上报可用命令与菜单组 */
   onRegistryChange?: (registry: NoteEditorRegistry) => void;
   /** 大纲上报：编辑器上报大纲数据（无大纲能力时上报 null） */
@@ -55,10 +58,13 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
   noteId,
   noteType,
   content,
+  document,
   contentResetKey = 0,
   onChange,
   readOnly = false,
   isDark = false,
+  unlockToken,
+  publicToken,
   onRegistryChange,
   onOutlineChange,
   onRegisterImageInsert,
@@ -128,6 +134,25 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
             readOnly={readOnly}
             isDark={isDark}
             onRegistryChange={onRegistryChange}
+          />
+        </Suspense>
+      );
+    case 'document':
+      if (!document) {
+        return (
+          <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
+            文档信息缺失或笔记已锁定
+          </div>
+        );
+      }
+      return (
+        <Suspense fallback={<EditorFallback isDark={isDark} />}>
+          <NoteDocumentViewer
+            noteId={noteId}
+            meta={document}
+            isDark={isDark}
+            unlockToken={unlockToken}
+            publicToken={publicToken}
           />
         </Suspense>
       );

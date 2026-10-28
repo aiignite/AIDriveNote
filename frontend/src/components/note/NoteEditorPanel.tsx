@@ -34,6 +34,7 @@ import {
   type NoteBacklink, type NoteRevision, type NoteShare, type LockScope,
 } from '../../services/note';
 import { getExportOptions, type ExportFormat } from '../../utils/noteExportOptions';
+import { formatBytes, pageUnit } from './document/documentLimits';
 import type { RelatedNote, TagSuggestion } from '../../services/note/note';
 import { knowledgeApi } from '../../services/knowledge';
 import { useAuth } from '../../contexts/AuthContext';
@@ -59,6 +60,7 @@ const TYPE_META: Record<string, { icon: React.ReactNode; label: string; badgeCol
   markdown: { icon: <Code2 size={14} />, label: 'Markdown', badgeColor: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
   mindmap: { icon: <Brain size={14} />, label: '思维导图', badgeColor: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' },
   flowchart: { icon: <GitFork size={14} />, label: '流程图', badgeColor: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+  document: { icon: <FileText size={14} />, label: '文档', badgeColor: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
 };
 
 /** BlockNote 块的公共默认 props */
@@ -214,6 +216,8 @@ interface NoteEditorPanelProps {
   onBack?: () => void;
   /** 打开相关笔记 / 反向引用来源 */
   onOpenRelated?: (noteId: string) => void;
+  /** 打开文档导入（选择文件后创建新的文档笔记） */
+  onImportDocument?: () => void;
   /** AI 引用跳转携带的块 id */
   highlightChunkId?: string | null;
   /** 关闭引用定位横幅（同时清掉 URL 上的 chunk 参数） */
@@ -235,6 +239,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   refreshTrigger,
   onBack,
   onOpenRelated,
+  onImportDocument,
   highlightChunkId,
   onDismissCitation,
 }) => {
@@ -265,7 +270,9 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   const tagPopoverRef = useRef<HTMLDivElement>(null);
   const tagInputRef = useRef<HTMLInputElement>(null);
   const [content, setContent] = useState<unknown>(note.content ?? null);
-  const [contentLoaded, setContentLoaded] = useState(Boolean(note.content));
+  const [contentLoaded, setContentLoaded] = useState(
+    Boolean(note.content) || note.noteType === 'document',
+  );
   const [contentResetKey, setContentResetKey] = useState(0);
   const [description, setDescription] = useState(note.description ?? '');
   const [saving, setSaving] = useState(false);
@@ -404,7 +411,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     setShowDescField(Boolean(note.description));
     setShowTagPopover(false);
     setContent(note.content ?? null);
-    setContentLoaded(Boolean(note.content));
+    setContentLoaded(Boolean(note.content) || note.noteType === 'document');
     contentLoadAtRef.current = Date.now();
 
     noteApi.get(note.id, currentUnlockToken()).then(full => {
@@ -911,6 +918,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
 
   // Auto-save content (debounce 2s) — AI 刷新后 1.5s 内忽略编辑器初始化 onChange
   const handleContentChange = useCallback((newContent: unknown) => {
+    if (note.noteType === 'document') return;
     if (Date.now() - contentLoadAtRef.current < 1500) return;
     contentDirtyRef.current = true;
     setContent(newContent);
@@ -922,14 +930,16 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       pendingContentRef.current = null;
       void flushContentSave(payload);
     }, 2000);
-  }, [flushContentSave]);
+  }, [flushContentSave, note.noteType]);
 
   // Manual save
   const handleManualSave = useCallback(async () => {
     // data 在 try 外声明：离线分支需要在 catch 中复用同一份待保存载荷
     const data: NoteUpdate = {};
     if (title.trim()) data.title = title;
-    if (content !== null) data.content = content as Record<string, unknown>;
+    if (note.noteType !== 'document' && content !== null) {
+      data.content = content as Record<string, unknown>;
+    }
     try {
       setSaving(true);
       const updated = await noteApi.update(note.id, data, currentUnlockToken());
@@ -946,7 +956,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [note.id, title, content, onNoteUpdated, persistOffline, userId, currentUnlockToken]);
+  }, [note.id, note.noteType, title, content, onNoteUpdated, persistOffline, userId, currentUnlockToken]);
 
   const handleSaveAsTemplate = useCallback(() => {
     setTemplateName(`${title || '无标题'} 模板`);
@@ -1022,6 +1032,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
    * @param editorCommandMap 合并后的命令字典
    */
   const handleImport = useCallback((editorCommandMap: Record<string, NoteCommand>) => {
+    if (note.noteType === 'document') return;
     const delegateId = note.noteType === 'mindmap'
       ? 'mindmap.import'
       : note.noteType === 'flowchart' ? 'flowchart.import' : null;
@@ -1040,6 +1051,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
    * @param file 用户选择的文件
    */
   const handleImportFile = useCallback(async (file: File) => {
+    if (note.noteType === 'document') return;
     if (file.size > 2 * 1024 * 1024) {
       toast.error('文件过大，导入上限 2MB');
       return;
@@ -1100,28 +1112,37 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
 
   /** 面板级命令（文件 / 视图 / 帮助） */
   const panelCommands = useMemo<NoteCommand[]>(() => {
-    const exportOptions = getExportOptions(note.noteType);
+    const isDocument = note.noteType === 'document';
+    const exportOptions = isDocument ? [] : getExportOptions(note.noteType);
     const commands: NoteCommand[] = [
-      { id: 'file.save', label: '保存笔记', shortcut: 'Mod+S', keywords: 'save 保存', run: handleManualSave },
-      {
+      { id: 'file.save', label: isDocument ? '保存标题/描述' : '保存笔记', shortcut: 'Mod+S', keywords: 'save 保存', run: handleManualSave },
+      ...(isDocument ? [] : [{
         id: 'file.import',
         label: '导入文件…',
         keywords: 'import 导入 打开',
         run: () => handleImport(currentCommandMapRef.current),
-      },
+      }]),
+      ...(onImportDocument ? [{
+        id: 'file.importDocument',
+        label: '导入文档为新笔记…',
+        keywords: 'import document pdf word excel ppt html 导入 文档',
+        run: onImportDocument,
+      }] : []),
       ...exportOptions.map(opt => ({
         id: `file.export.${opt.format}`,
         label: opt.label,
         keywords: `export 导出 ${opt.format}`,
         run: () => handleExport(opt.format),
       })),
-      { id: 'file.saveAsTemplate', label: '另存为模板…', keywords: 'template 模板', run: handleSaveAsTemplate },
-      {
-        id: 'file.sendEmail',
-        label: '发送到邮箱…',
-        keywords: 'email mail 邮件 发信 发送',
-        run: () => setShowEmailDialog(true),
-      },
+      ...(isDocument ? [] : [
+        { id: 'file.saveAsTemplate', label: '另存为模板…', keywords: 'template 模板', run: handleSaveAsTemplate },
+        {
+          id: 'file.sendEmail',
+          label: '发送到邮箱…',
+          keywords: 'email mail 邮件 发信 发送',
+          run: () => setShowEmailDialog(true),
+        },
+      ]),
       {
         id: 'file.duplicate',
         label: '复制笔记',
@@ -1149,10 +1170,21 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       { id: 'view.fullscreen', label: isFullscreen ? '退出全屏' : '全屏编辑', keywords: 'fullscreen 全屏', run: () => onToggleFullscreen?.(), isEnabled: () => Boolean(onToggleFullscreen), isChecked: () => isFullscreen },
       { id: 'view.backlinks', label: '反向引用', keywords: 'backlink 反向引用 链接', run: () => setShowSidePanel(v => (v === 'backlinks' ? 'none' : 'backlinks')), isChecked: () => showSidePanel === 'backlinks' },
       { id: 'view.related', label: '相关笔记', keywords: 'related 相关 建议链接 语义', run: () => setShowSidePanel(v => (v === 'related' ? 'none' : 'related')), isChecked: () => showSidePanel === 'related' },
-      { id: 'view.history', label: '版本历史', keywords: 'history revision 版本 历史', run: () => { void loadRevisions(); setShowSidePanel(v => (v === 'history' ? 'none' : 'history')); }, isChecked: () => showSidePanel === 'history' },
+      ...(isDocument ? [] : [{
+        id: 'view.history',
+        label: '版本历史',
+        keywords: 'history revision 版本 历史',
+        run: () => { void loadRevisions(); setShowSidePanel(v => (v === 'history' ? 'none' : 'history')); },
+        isChecked: () => showSidePanel === 'history',
+      }]),
       { id: 'view.share', label: '分享笔记', keywords: 'share 分享', run: () => { void loadShares(); setShowSidePanel(v => (v === 'share' ? 'none' : 'share')); }, isChecked: () => showSidePanel === 'share' },
       { id: 'view.tags', label: '管理标签', keywords: 'tag 标签', run: () => setShowTagPopover(v => !v) },
-      { id: 'knowledge.distill', label: '抽取知识', keywords: 'knowledge distill 知识 蒸馏 抽取', run: () => { void knowledgeApi.distillNote(note.id).then(() => toast.success('已送入知识收件箱，审核后生成知识笔记')).catch((err: unknown) => toast.error(err instanceof Error ? err.message : '抽取知识失败')); } },
+      ...(isDocument ? [] : [{
+        id: 'knowledge.distill',
+        label: '抽取知识',
+        keywords: 'knowledge distill 知识 蒸馏 抽取',
+        run: () => { void knowledgeApi.distillNote(note.id).then(() => toast.success('已送入知识收件箱，审核后生成知识笔记')).catch((err: unknown) => toast.error(err instanceof Error ? err.message : '抽取知识失败')); },
+      }]),
       { id: 'help.shortcuts', label: '快捷键说明', keywords: 'shortcut help 快捷键 帮助', run: () => setShowShortcuts(true) },
       { id: 'help.about', label: '关于笔记编辑器', keywords: 'about 关于', run: () => toast(`AIDriveNote · ${TYPE_META[note.noteType]?.label ?? note.noteType} 编辑器\n按 ⌘⇧K 可搜索全部命令`, { icon: 'ℹ️' }) },
     ];
@@ -1161,6 +1193,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     note.noteType, note.id, note.folderId, handleManualSave, handleImport, handleExport,
     handleSaveAsTemplate, onDuplicateNote, onDeleteNote, onMoveNote, onToggleFullscreen,
     outlineAvailable, showOutline, isFullscreen, showSidePanel, loadRevisions, loadShares,
+    onImportDocument,
   ]);
 
   /** 面板命令字典（编辑器命令的合并基准） */
@@ -1178,17 +1211,22 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
 
   /** 面板菜单组 */
   const panelGroups = useMemo<NoteMenuGroup[]>(() => {
-    const exportItems: NoteMenuItem[] = getExportOptions(note.noteType)
-      .map(opt => ({ commandId: `file.export.${opt.format}` }));
+    const isDocument = note.noteType === 'document';
+    const exportItems: NoteMenuItem[] = isDocument
+      ? []
+      : getExportOptions(note.noteType).map(opt => ({ commandId: `file.export.${opt.format}` }));
 
     return [
       {
         id: 'file',
         items: [
           { commandId: 'file.save' },
-          { commandId: 'file.import', separatorBefore: true },
-          { children: exportItems, labelOverride: '导出为…' },
-          { commandId: 'file.saveAsTemplate', separatorBefore: true },
+          ...(isDocument ? [] : [
+            { commandId: 'file.import', separatorBefore: true },
+            ...(exportItems.length > 0 ? [{ children: exportItems, labelOverride: '导出为…' }] : []),
+            { commandId: 'file.saveAsTemplate', separatorBefore: true },
+          ]),
+          ...(onImportDocument ? [{ commandId: 'file.importDocument' }] : []),
           { commandId: 'file.duplicate' },
           { commandId: 'file.move' },
           { commandId: 'file.delete', separatorBefore: true },
@@ -1201,7 +1239,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           { commandId: 'view.fullscreen' },
           { commandId: 'view.palette' },
           { commandId: 'view.backlinks', separatorBefore: true },
-          { commandId: 'view.history' },
+          ...(isDocument ? [] : [{ commandId: 'view.history' }]),
           { commandId: 'view.share' },
           { commandId: 'view.tags' },
         ],
@@ -1214,7 +1252,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         ],
       },
     ];
-  }, [note.noteType, outlineAvailable]);
+  }, [note.noteType, outlineAvailable, onImportDocument]);
 
   /** 最终菜单：面板组与编辑器组按 id 合并 */
   const menus = useMemo<NoteMenuEntry[]>(() => {
@@ -1909,11 +1947,13 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               ref={note.noteType === 'mindmap' ? mindMapEditorRef : undefined}
               key={note.id}
               noteId={note.id}
-              noteType={note.noteType as 'rich_text' | 'markdown' | 'mindmap' | 'flowchart'}
+              noteType={note.noteType}
               content={contentForEditor}
+              document={note.document}
               contentResetKey={contentResetKey}
               onChange={handleContentChange}
               isDark={isDark}
+              unlockToken={currentUnlockToken()}
               onRegistryChange={handleRegistryChange}
               onOutlineChange={handleOutlineChange}
               onRegisterImageInsert={handleRegisterImageInsert}
@@ -1935,14 +1975,21 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       {/* Footer: stats + last save hint */}
       <div className={`flex items-center justify-between py-1.5 border-t shrink-0 safe-bottom safe-x ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50'}`}>
         <span className={`text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
-          {calcStats(note.noteType, content)}
+          {note.noteType === 'document' && note.document
+            ? [
+                formatBytes(note.document.sizeBytes),
+                note.document.pageCount ? `${note.document.pageCount}${pageUnit(note.document.ext)}` : '',
+                note.document.extractStatus === 'failed' ? '正文抽取失败' : '',
+              ].filter(Boolean).join(' · ')
+            : calcStats(note.noteType, content)}
         </span>
         <span className={`text-xs hidden sm:inline ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
           {note.updatedAt ? `更新于 ${new Date(note.updatedAt).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}
         </span>
       </div>
 
-      {/* 隐藏的导入文件输入 */}
+      {/* 隐藏的导入文件输入（文档笔记不支持覆盖正文） */}
+      {note.noteType !== 'document' && (
       <input
         ref={importInputRef}
         type="file"
@@ -1955,6 +2002,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
           if (file) void handleImportFile(file);
         }}
       />
+      )}
 
       {/* 命令面板 */}
       <NoteCommandPalette

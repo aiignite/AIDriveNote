@@ -42,6 +42,8 @@ export interface CachedNote {
   title: string;
   /** 笔记类型 */
   noteType: Note['noteType'];
+  /** 文档笔记元数据（不含原文件字节） */
+  document?: Note['document'];
   /** 正文（列表缓存时不写入） */
   content?: Record<string, unknown>;
   /** 所属文件夹 ID */

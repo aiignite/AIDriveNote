@@ -17,6 +17,7 @@ export interface KbFileInfo {
   isProtected: boolean;
   noteId?: string | null;
   hasText: boolean;
+  viewable?: boolean;
   updatedAt?: string | null;
 }
 
@@ -38,7 +39,22 @@ export const kbApi = {
     files: Array<{ path: string; hash: string; size?: number; mime?: string }>,
   ) => api.post<KbManifestResult>(`/kb/roots/${rootId}/manifest`, { files }),
   convert: (fileId: string) =>
-    api.post<{ noteId: string; title: string }>(`/kb/files/${fileId}/to-note`, {}),
+    api.post<{ noteId: string; title: string; noteType?: string }>(
+      `/kb/files/${fileId}/to-note`,
+      {},
+    ),
+  downloadFile: async (fileId: string, fileName: string): Promise<void> => {
+    const response = await fetchWithAuth(`/kb/files/${fileId}/content`);
+    if (!response.ok) throw new Error('原文件下载失败');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.rel = 'noopener';
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  },
   uploadFile: async (
     rootId: string,
     path: string,

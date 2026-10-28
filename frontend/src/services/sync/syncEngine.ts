@@ -137,6 +137,8 @@ export interface SyncReport {
   skippedLocalChanges: string[];
   /** 因加密/锁定而跳过的笔记条数（正文不下发，不参与本地同步） */
   skippedEncrypted: number;
+  /** 文档笔记：原文件不参与本地文本镜像 */
+  skippedDocuments: number;
   /** 是否处于 hash 降级模式（非安全上下文） */
   hashDegraded: boolean;
   /** 单条失败记录，不影响整体流程 */
@@ -399,8 +401,8 @@ function computeRemotePaths(
   const map = new Map<string, string>();
 
   for (const note of sorted) {
-    // 加密/锁定笔记不参与本地同步：既不下发正文，也不写入本地文件
-    if (isProtectedNote(note)) continue;
+    // 加密/锁定笔记与文档笔记不参与本地同步：既不下发正文，也不写入本地文件
+    if (isProtectedNote(note) || note.noteType === 'document') continue;
     if (isEmptyContent(note.noteType, note.content)) continue;
     const folderPath = toScopedPath(buildFolderPath(note.folderId, folders), rootPath);
     if (folderPath === null) continue;
@@ -849,6 +851,7 @@ export async function runSync(
     skippedOrphans: [],
     skippedLocalChanges: [],
     skippedEncrypted: 0,
+    skippedDocuments: 0,
     hashDegraded: isHashDegraded(),
     errors: [],
     durationMs: 0,
@@ -916,6 +919,11 @@ export async function runSync(
   report.skippedEncrypted = notes.filter(
     (n) =>
       isProtectedNote(n) &&
+      toScopedPath(buildFolderPath(n.folderId, folders), rootPath) !== null,
+  ).length;
+  report.skippedDocuments = notes.filter(
+    (n) =>
+      n.noteType === 'document' &&
       toScopedPath(buildFolderPath(n.folderId, folders), rootPath) !== null,
   ).length;
   const remotePaths = computeRemotePaths(notes, folders, rootPath);

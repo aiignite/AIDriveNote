@@ -61,6 +61,7 @@ export function contentToPlainText(noteType: Note['noteType'], content: unknown)
     const xml = String((content as { xml?: unknown }).xml ?? '');
     return Array.from(xml.matchAll(/value="([^"]*)"/g)).map(match => match[1]).join('\n');
   }
+  if (noteType === 'document') return '';
   return typeof content === 'string' ? content : JSON.stringify(content, null, 2);
 }
 
