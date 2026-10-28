@@ -1098,7 +1098,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
           className={`w-72 max-h-80 rounded-xl shadow-2xl border overflow-hidden ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}
           onClick={e => e.stopPropagation()}
         >
-          <div className={`px-4 py-3 border-b text-sm font-medium ${isDark ? 'border-gray-700 text-gray-200' : 'border-gray-200 text-gray-800'}`}>
+          <div className={`px-[var(--app-gutter)] py-3 border-b text-sm font-medium ${isDark ? 'border-gray-700 text-gray-200' : 'border-gray-200 text-gray-800'}`}>
             移动到文件夹
           </div>
           <div className="overflow-y-auto max-h-60 py-1">
@@ -1126,12 +1126,12 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   return (
     <div className={`h-full flex flex-col ${isDark ? 'bg-[#15232a]' : 'bg-white'}`}>
       {/* Header */}
-      <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+      <div className={`flex items-center justify-between px-[var(--app-gutter)] py-3 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
         <div className="flex items-center gap-1.5 min-w-0">
           {onToggleCollapse ? (
             <button
               onClick={() => onToggleCollapse()}
-              className={`p-1 -ml-1 rounded-md transition-colors ${isDark ? 'text-gray-400 hover:text-white hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+              className={`p-1.5 rounded-md transition-colors ${isDark ? 'text-gray-400 hover:text-white hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
               title="折叠侧栏"
             >
               <PanelLeftClose size={15} />
@@ -1297,7 +1297,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
       </div>
 
       {/* Search */}
-      <div className={`px-3 py-2 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
+      <div className={`px-[var(--app-gutter)] py-2 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
         <div className="relative">
           <Search size={14} className={`absolute left-2.5 top-1/2 -translate-y-1/2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`} />
           <input

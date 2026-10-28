@@ -252,7 +252,7 @@ const KnowledgeInboxPage: React.FC = () => {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-slate-50 dark:bg-gray-950">
-      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-900">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-[var(--app-gutter)] py-3 dark:border-gray-700 dark:bg-gray-900">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Link

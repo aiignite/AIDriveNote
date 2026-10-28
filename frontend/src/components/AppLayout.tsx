@@ -85,8 +85,9 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return (
     <div className={`app-viewport flex flex-col ${isDark ? 'dark bg-gray-900' : 'bg-gray-50'}`}>
       {/* 用 min-h-14 而非 h-14：safe-top 的内边距需要撑高头部，固定高度会把内容压扁 */}
-      <header className={`min-h-14 shrink-0 flex items-center justify-between px-3 md:px-4 border-b safe-top safe-x ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
-        <Link to="/" className="flex items-center gap-2.5 shrink-0">
+      <header className={`min-h-14 shrink-0 flex items-center justify-between border-b safe-top safe-x ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
+        {/* pl-2：Logo 是裸图无按钮内距，补 8px 让它的可见内缩与右侧 p-2 图标按钮一致 */}
+        <Link to="/" className="flex items-center gap-2.5 shrink-0 pl-2">
           <Logo size={30} />
           <span className={`font-bold text-base tracking-tight hidden sm:inline ${isDark ? 'text-white' : 'text-gray-900'}`}>
             AIDriveNote

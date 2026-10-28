@@ -4,6 +4,14 @@
   --color-brand: #f97316;
   --color-brand-dark: #ea580c;
   --color-brand-light: #fff7ed;
+  /* 面板水平留白，见 docs/guides/UI-边距规范.md */
+  --app-gutter: 12px;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --app-gutter: 16px;
+  }
 }
 
 body {
@@ -22,7 +30,11 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* 安全区内边距工具类：配合 viewport-fit=cover，避开刘海与底部手势条 */
+/*
+ * 安全区内边距工具类：配合 viewport-fit=cover，避开刘海与底部手势条。
+ * 本文件在 Tailwind 之后加载，会覆盖同行元素上的 px-*/py-* 工具类，
+ * 因此 safe-* 元素不要再写水平留白，统一由 --app-gutter 提供。
+ */
 .safe-top {
   padding-top: env(safe-area-inset-top);
 }
@@ -32,8 +44,8 @@ body {
 }
 
 .safe-x {
-  padding-left: env(safe-area-inset-left);
-  padding-right: env(safe-area-inset-right);
+  padding-left: calc(var(--app-gutter) + env(safe-area-inset-left));
+  padding-right: calc(var(--app-gutter) + env(safe-area-inset-right));
 }
 
 /* 隐藏滚动条（仍可滚动），用于移动端横向滚动的工具栏 */

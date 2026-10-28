@@ -1321,7 +1321,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     return (
       <div className={`h-full flex flex-col ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
         {/* 顶部返回条（移动端用于回到列表） */}
-        <div className={`flex items-center gap-2 px-3 py-1.5 border-b shrink-0 safe-x ${
+        <div className={`flex items-center gap-2 py-1.5 border-b shrink-0 safe-x ${
           isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'
         }`}>
           {onBack ? (
@@ -1381,7 +1381,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
   return (
     <div className={`h-full flex flex-col ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
       {/* 菜单栏 + 保存 */}
-      <div className={`flex items-center justify-between gap-2 px-3 py-1.5 border-b shrink-0 safe-x ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
+      <div className={`flex items-center justify-between gap-2 py-1.5 border-b shrink-0 safe-x ${isDark ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'}`}>
         <div className="flex items-center gap-2 min-w-0">
           {onBack ? (
             <button
@@ -1446,7 +1446,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       </div>
 
       {/* Title row — compact */}
-      <div className={`px-4 py-2 border-b ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-white'}`}>
+      <div className={`px-[var(--app-gutter)] py-2 border-b ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-white'}`}>
         <div className="flex items-center gap-2 min-w-0">
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium shrink-0 ${typeMeta.badgeColor}`}>
             {typeMeta.icon} {typeMeta.label}
@@ -1933,7 +1933,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       </div>
 
       {/* Footer: stats + last save hint */}
-      <div className={`flex items-center justify-between px-5 py-1.5 border-t shrink-0 safe-bottom safe-x ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50'}`}>
+      <div className={`flex items-center justify-between py-1.5 border-t shrink-0 safe-bottom safe-x ${isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50'}`}>
         <span className={`text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
           {calcStats(note.noteType, content)}
         </span>
