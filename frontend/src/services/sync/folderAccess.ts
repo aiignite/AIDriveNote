@@ -7,9 +7,12 @@
  * - 按「相对路径」读写文件、建目录、列目录、遍历文件树
  * - 删除语义：一律先复制到 `.aidrivenote/trash/` 再移除原位置，绝不静默丢用户数据
  *
+ * 两个同步源（notes / kb）各持有独立句柄与目录名镜像，互不覆盖。
+ *
  * 说明：`lib.dom.d.ts` 未声明 `showDirectoryPicker` / `queryPermission` / `requestPermission` /
  * `entries()` 等成员，故在本文件内自行补充类型，不污染全局声明。
  */
+import { LEGACY_HANDLE_TARGET_KEY, type SyncSourceKey } from './kbConfig';
 
 /** 权限状态（对应浏览器 FileSystemPermissionState） */
 export type FsPermissionState = 'granted' | 'denied' | 'prompt';
@@ -33,6 +36,8 @@ export interface SyncDirectoryHandle extends FileSystemDirectoryHandle {
   queryPermission(descriptor?: { mode?: FsPermissionMode }): Promise<FsPermissionState>;
   requestPermission(descriptor?: { mode?: FsPermissionMode }): Promise<FsPermissionState>;
   entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
+  /** 计算另一个句柄相对本目录的路径；无包含关系时返回 null */
+  resolve(possibleDescendant: FileSystemHandle): Promise<string[] | null>;
 }
 
 /** 目录选择器函数签名 */
@@ -48,12 +53,14 @@ const DB_NAME = 'aidrivenote-sync';
 const DB_VERSION = 1;
 /** 存放句柄的对象仓库名 */
 const STORE_HANDLES = 'handles';
-/** 目录句柄在该仓库里的固定主键 */
-const HANDLE_KEY = 'dir';
-/** 选择器记忆 ID：让浏览器下次从同一目录开始 */
-const PICKER_ID = 'aidrivenote-vault';
-/** 目录名镜像的 localStorage 键（IndexedDB 被回收时的兜底展示） */
-const NAME_MIRROR_KEY = 'aidrivenote.sync.dirName';
+/** 目录句柄在仓库里的主键前缀（按同步源区分） */
+const HANDLE_KEY_PREFIX = 'dir:';
+/** 旧版单根目录句柄主键，仅用于一次性迁移 */
+const LEGACY_HANDLE_KEY = 'dir';
+/** 目录名镜像的 localStorage 键前缀（按同步源区分） */
+const NAME_MIRROR_PREFIX = 'aidrivenote.sync.dirName.';
+/** 旧版目录名镜像键，仅用于一次性迁移 */
+const LEGACY_NAME_MIRROR_KEY = 'aidrivenote.sync.dirName';
 /** 应用内部数据目录名（manifest 与回收站都放这里） */
 export const APP_DIR = '.aidrivenote';
 /** 回收站目录（相对应用数据目录） */
@@ -111,13 +118,18 @@ export function isSupported(): boolean {
 
 /**
  * 弹出目录选择器，让用户授权一个本地文件夹（读写权限）。
+ * @param key 同步源标识；不同源使用不同的选择器记忆，避免下次从错误目录开始
+ * @param startIn 选择器初始位置（如 `documents`），仅作为建议
  * @returns 授权后的目录句柄；用户取消时返回 null
  */
-export async function pickDirectory(): Promise<SyncDirectoryHandle | null> {
+export async function pickDirectory(
+  key: SyncSourceKey = 'notes',
+  startIn?: string,
+): Promise<SyncDirectoryHandle | null> {
   const picker = getDirectoryPicker();
   if (!picker) throw new Error('当前浏览器不支持选择本地文件夹');
   try {
-    const handle = await picker({ id: PICKER_ID, mode: 'readwrite' });
+    const handle = await picker({ id: `aidrivenote-${key}`, mode: 'readwrite', startIn });
     return handle as SyncDirectoryHandle;
   } catch (err) {
     if (isAbortError(err)) return null;
@@ -143,6 +155,11 @@ function openHandleDb(): Promise<IDBDatabase> {
   });
 }
 
+/** 同步源的 IndexedDB 主键 */
+function handleKey(key: SyncSourceKey): string {
+  return `${HANDLE_KEY_PREFIX}${key}`;
+}
+
 /**
  * 把目录句柄持久化到 IndexedDB。
  * 目录句柄是可结构化克隆对象，因此可以直接入库，用户下次打开无需重新选目录。
@@ -150,22 +167,55 @@ function openHandleDb(): Promise<IDBDatabase> {
  * ⚠️ IndexedDB 在浏览器眼里属于「尽力而为」的缓存：站点存储紧张时整个库可能被直接回收，
  * 目录句柄随之丢失，用户就得重新选一次文件夹。因此这里同时申请持久化存储，
  * 并把目录名镜像到 localStorage 兜底（见 `requestPersistentStorage` 与 `saveDirNameMirror`）。
+ * @param key 同步源标识
  * @param handle 已授权的目录句柄
  */
-export async function saveHandleToIndexedDB(handle: SyncDirectoryHandle): Promise<void> {
+export async function saveHandleToIndexedDB(
+  key: SyncSourceKey,
+  handle: SyncDirectoryHandle,
+): Promise<void> {
   await requestPersistentStorage();
   const db = await openHandleDb();
   try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_HANDLES, 'readwrite');
-      tx.objectStore(STORE_HANDLES).put(handle, HANDLE_KEY);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error ?? new Error('保存目录句柄失败'));
-    });
+    await putHandle(db, handleKey(key), handle);
   } finally {
     db.close();
   }
-  saveDirNameMirror(handle.name);
+  saveDirNameMirror(key, handle.name);
+}
+
+/** 写入一个句柄记录 */
+function putHandle(
+  db: IDBDatabase,
+  storeKey: string,
+  handle: SyncDirectoryHandle,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_HANDLES, 'readwrite');
+    tx.objectStore(STORE_HANDLES).put(handle, storeKey);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('保存目录句柄失败'));
+  });
+}
+
+/** 读取一个句柄记录 */
+function getHandle(db: IDBDatabase, storeKey: string): Promise<SyncDirectoryHandle | null> {
+  return new Promise<SyncDirectoryHandle | null>((resolve, reject) => {
+    const tx = db.transaction(STORE_HANDLES, 'readonly');
+    const req = tx.objectStore(STORE_HANDLES).get(storeKey);
+    req.onsuccess = () => resolve((req.result as SyncDirectoryHandle | undefined) ?? null);
+    req.onerror = () => reject(req.error ?? new Error('读取目录句柄失败'));
+  });
+}
+
+/** 删除一个句柄记录 */
+function deleteHandle(db: IDBDatabase, storeKey: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_HANDLES, 'readwrite');
+    tx.objectStore(STORE_HANDLES).delete(storeKey);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('清除目录句柄失败'));
+  });
 }
 
 /**
@@ -207,13 +257,14 @@ export async function isPersistent(): Promise<boolean> {
  *
  * 用途：即使 IndexedDB 里的句柄被浏览器回收，界面上仍能告诉用户
  * 「你之前绑定的是哪个文件夹」，避免直接显示成从未设置过的样子。
+ * @param key 同步源标识
  * @param name 目录名；传空字符串表示清除镜像
  */
-function saveDirNameMirror(name: string): void {
+function saveDirNameMirror(key: SyncSourceKey, name: string): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    if (name) localStorage.setItem(NAME_MIRROR_KEY, name);
-    else localStorage.removeItem(NAME_MIRROR_KEY);
+    if (name) localStorage.setItem(`${NAME_MIRROR_PREFIX}${key}`, name);
+    else localStorage.removeItem(`${NAME_MIRROR_PREFIX}${key}`);
   } catch {
     /* 隐私模式下写入可能失败，不影响主流程 */
   }
@@ -221,42 +272,56 @@ function saveDirNameMirror(name: string): void {
 
 /**
  * 读取目录名镜像。
+ * @param key 同步源标识
  * @returns 之前绑定的目录名；从未绑定或已清除时返回空字符串
  */
-export function loadDirNameMirror(): string {
+export function loadDirNameMirror(key: SyncSourceKey): string {
   if (typeof localStorage === 'undefined') return '';
   try {
-    return localStorage.getItem(NAME_MIRROR_KEY) ?? '';
+    const current = localStorage.getItem(`${NAME_MIRROR_PREFIX}${key}`);
+    if (current) return current;
+    // 旧版只有一个目录名镜像：仅在迁移目标正是该源时兜底
+    if (localStorage.getItem(LEGACY_HANDLE_TARGET_KEY) === key) {
+      return localStorage.getItem(LEGACY_NAME_MIRROR_KEY) ?? '';
+    }
+    return '';
   } catch {
     return '';
   }
 }
 
 /**
- * 从 IndexedDB 读取上次授权的目录句柄。
+ * 从 IndexedDB 读取指定同步源的目录句柄。
+ *
+ * 首次读取时顺带完成旧版单根目录句柄的搬迁：旧配置迁移会写入
+ * `LEGACY_HANDLE_TARGET_KEY` 标记，指明 `dir` 句柄应归到 notes 还是 kb。
+ * @param key 同步源标识
  * @returns 目录句柄；从未授权或已失效时返回 null
  */
-export async function loadHandleFromIndexedDB(): Promise<SyncDirectoryHandle | null> {
+export async function loadHandleFromIndexedDB(
+  key: SyncSourceKey,
+): Promise<SyncDirectoryHandle | null> {
   if (typeof indexedDB === 'undefined') return null;
   try {
     const db = await openHandleDb();
     try {
-      const handle = await new Promise<FileSystemDirectoryHandle | undefined>(
-        (resolve, reject) => {
-          const tx = db.transaction(STORE_HANDLES, 'readonly');
-          const req = tx.objectStore(STORE_HANDLES).get(HANDLE_KEY);
-          req.onsuccess = () => resolve(req.result as FileSystemDirectoryHandle | undefined);
-          req.onerror = () => reject(req.error ?? new Error('读取目录句柄失败'));
-        },
-      );
-      const stored = (handle as SyncDirectoryHandle | undefined) ?? null;
-      if (stored) {
+      let handle = await getHandle(db, handleKey(key));
+      if (!handle && shouldMigrateLegacy(key)) {
+        const legacy = await getHandle(db, LEGACY_HANDLE_KEY);
+        if (legacy) {
+          await putHandle(db, handleKey(key), legacy);
+          await deleteHandle(db, LEGACY_HANDLE_KEY);
+          handle = legacy;
+        }
+        clearLegacyMigrationFlag();
+      }
+      if (handle) {
         // 数据还在：补写一次目录名镜像，并顺手申请持久化存储，
         // 防止浏览器因存储紧张把 aidrivenote-sync 整个回收掉
-        saveDirNameMirror(stored.name);
+        saveDirNameMirror(key, handle.name);
         void requestPersistentStorage();
       }
-      return stored;
+      return handle;
     } finally {
       db.close();
     }
@@ -265,22 +330,38 @@ export async function loadHandleFromIndexedDB(): Promise<SyncDirectoryHandle | n
   }
 }
 
+/** 旧句柄是否应搬迁到当前同步源 */
+function shouldMigrateLegacy(key: SyncSourceKey): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(LEGACY_HANDLE_TARGET_KEY) === key;
+  } catch {
+    return false;
+  }
+}
+
+/** 清除旧句柄搬迁标记（无论是否找到旧句柄都只尝试一次） */
+function clearLegacyMigrationFlag(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(LEGACY_HANDLE_TARGET_KEY);
+  } catch {
+    /* 忽略 */
+  }
+}
+
 /**
- * 清除 IndexedDB 中保存的目录句柄（用户「断开文件夹」时调用）。
+ * 清除指定同步源在 IndexedDB 中保存的目录句柄（用户「断开文件夹」时调用）。
  * 同时清除目录名镜像，避免界面上残留已失效的目录名。
+ * @param key 同步源标识
  */
-export async function clearHandleFromIndexedDB(): Promise<void> {
-  saveDirNameMirror('');
+export async function clearHandleFromIndexedDB(key: SyncSourceKey): Promise<void> {
+  saveDirNameMirror(key, '');
   if (typeof indexedDB === 'undefined') return;
   try {
     const db = await openHandleDb();
     try {
-      await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(STORE_HANDLES, 'readwrite');
-        tx.objectStore(STORE_HANDLES).delete(HANDLE_KEY);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error ?? new Error('清除目录句柄失败'));
-      });
+      await deleteHandle(db, handleKey(key));
     } finally {
       db.close();
     }

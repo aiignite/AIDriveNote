@@ -20,7 +20,7 @@ import {
 } from '../../hooks/usePersistentState';
 import { ensurePermission, isSupported as isSyncSupported, loadHandleFromIndexedDB } from '../../services/sync/folderAccess';
 import { runSync } from '../../services/sync/syncEngine';
-import { KB_CONFIG_EVENT, loadKbConfig } from '../../services/sync/kbConfig';
+import { SYNC_CONFIG_EVENT, loadSyncConfig } from '../../services/sync/kbConfig';
 import { getUnlockToken, NOTE_TYPES, EDITABLE_NOTE_TYPES, type Note, type NoteFolder, type NoteTag } from '../../services/note';
 
 /* ── helpers ────────────────────────────────────── */
@@ -342,7 +342,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   const [syncingLocal, setSyncingLocal] = useState(false);
   /** 本地同步进度（用于按钮上的加载态提示） */
   const [syncProgress, setSyncProgress] = useState<{ done: number; total: number; phase: string } | null>(null);
-  /** 知识库根文件夹 ID（启用知识库模式且已指定时非空，用于树上打标） */
+  /** 知识库根文件夹 ID（知识库同步源的作用域，用于树上打标） */
   const [kbRootId, setKbRootId] = useState<string | null>(null);
   // Context menu
   const [contextMenu, setContextMenu] = useState<{
@@ -357,12 +357,12 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   /** 读取知识库根标记，并跟随设置页的配置变更即时刷新 */
   useEffect(() => {
     const syncKbRoot = () => {
-      const cfg = loadKbConfig();
-      setKbRootId(cfg.enabled ? cfg.rootFolderId : null);
+      const cfg = loadSyncConfig();
+      setKbRootId(cfg.kb.rootFolderId);
     };
     syncKbRoot();
-    window.addEventListener(KB_CONFIG_EVENT, syncKbRoot);
-    return () => window.removeEventListener(KB_CONFIG_EVENT, syncKbRoot);
+    window.addEventListener(SYNC_CONFIG_EVENT, syncKbRoot);
+    return () => window.removeEventListener(SYNC_CONFIG_EVENT, syncKbRoot);
   }, []);
   // New folder inline input
   const [newFolderParent, setNewFolderParent] = useState<string | null | undefined>(undefined);
@@ -658,49 +658,100 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
       toast.error('当前浏览器不支持本地文件夹同步，请使用 Chrome / Edge 桌面版');
       return;
     }
-    setSyncingLocal(true);
-    try {
-      const handle = await loadHandleFromIndexedDB();
-      if (!handle) {
-        toast.error('尚未绑定本地文件夹，请到「设置 → 本地同步」中先选择文件夹');
-        return;
-      }
-      if (!(await ensurePermission(handle, { requestInGesture: true }))) {
-        toast.error('未获得文件夹访问权限，请在「设置 → 本地同步」中重新授权');
-        return;
-      }
-      if (!userId) {
-        toast.error('未获取到当前用户信息，请重新登录后再试');
-        return;
-      }
-      const kbCfg = loadKbConfig();
-      const kbDirection = kbCfg.enabled && kbCfg.rootFolderId ? 'kb' : 'two-way';
-      const report = await runSync(handle, {
-        mode: 'apply',
-        userId,
-        direction: kbDirection,
-        kb:
-          kbDirection === 'kb'
-            ? {
-                rootFolderId: kbCfg.rootFolderId,
-                rootFolderName: kbCfg.rootFolderName,
-                ignore: kbCfg.ignore,
-                protect: kbCfg.protect,
-              }
-            : undefined,
-        onProgress: p => setSyncProgress({ done: p.done, total: p.total, phase: p.phase }),
+    if (!userId) {
+      toast.error('未获取到当前用户信息，请重新登录后再试');
+      return;
+    }
+
+    // 按启用的同步源逐一执行；每个源使用自己的目录句柄与配置
+    const cfg = loadSyncConfig();
+    type Job = {
+      key: 'notes' | 'kb';
+      label: string;
+      direction: 'two-way' | 'kb';
+      excludeFolderIds?: string[];
+      kb?: {
+        rootFolderId: string;
+        rootFolderName: string;
+        ignore: string[];
+        protect: string[];
+      };
+    };
+    const jobs: Job[] = [];
+    if (cfg.notes.enabled) {
+      jobs.push({
+        key: 'notes',
+        label: '笔记同步',
+        direction: 'two-way',
+        excludeFolderIds: cfg.kb.rootFolderId ? [cfg.kb.rootFolderId] : [],
       });
-      const changed = report.downloaded + report.uploaded + report.imported
-        + report.localDeleted.length + report.remoteDeleted.length
-        + report.createdFolders.length + report.uploadedFolders.length
-        + report.removedFolders.length + report.conflicts.length;
-      if (changed === 0) toast.success('已是最新，无改动');
-      else toast.success(`同步完成：更新 ${changed} 项`);
-      if (report.errors.length > 0) {
-        toast.error(`其中 ${report.errors.length} 项失败，详见设置页同步结果`);
+    }
+    if (cfg.kb.enabled && cfg.kb.rootFolderId) {
+      jobs.push({
+        key: 'kb',
+        label: '知识库同步',
+        direction: 'kb',
+        kb: {
+          rootFolderId: cfg.kb.rootFolderId,
+          rootFolderName: cfg.kb.rootFolderName,
+          ignore: cfg.kb.ignore,
+          protect: cfg.kb.protect,
+        },
+      });
+    }
+    if (jobs.length === 0) {
+      toast.error('尚未启用本地同步，请到「设置 → 本地同步」中开启');
+      return;
+    }
+
+    setSyncingLocal(true);
+    let changed = 0;
+    let failures = 0;
+    let ran = false;
+    const skipped: string[] = [];
+    try {
+      for (const job of jobs) {
+        const handle = await loadHandleFromIndexedDB(job.key);
+        if (!handle) {
+          skipped.push(`${job.label}（未绑定目录）`);
+          continue;
+        }
+        if (!(await ensurePermission(handle, { requestInGesture: true }))) {
+          skipped.push(`${job.label}（未授权）`);
+          continue;
+        }
+        const report = await runSync(handle, {
+          mode: 'apply',
+          userId,
+          direction: job.direction,
+          kb: job.kb,
+          excludeFolderIds: job.excludeFolderIds,
+          onProgress: p => setSyncProgress({ done: p.done, total: p.total, phase: p.phase }),
+        });
+        ran = true;
+        changed +=
+          report.downloaded +
+          report.uploaded +
+          report.imported +
+          report.localDeleted.length +
+          report.remoteDeleted.length +
+          report.createdFolders.length +
+          report.uploadedFolders.length +
+          report.removedFolders.length +
+          report.conflicts.length;
+        failures += report.errors.length;
       }
-      // 同步会改动笔记与文件夹，通知外层刷新列表
-      onRefresh?.();
+
+      if (skipped.length > 0) toast.error(`${skipped.join('、')}，已跳过`);
+      if (ran) {
+        if (changed === 0 && failures === 0) toast.success('已是最新，无改动');
+        else if (changed > 0) toast.success(`同步完成：更新 ${changed} 项`);
+        if (failures > 0) {
+          toast.error(`其中 ${failures} 项失败，详见设置页同步结果`);
+        }
+        // 同步会改动笔记与文件夹，通知外层刷新列表
+        onRefresh?.();
+      }
     } catch (err) {
       console.error('Local sync failed:', err);
       toast.error(err instanceof Error ? err.message : '同步失败，请稍后重试');
@@ -929,11 +980,11 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               {folder.name}
             </span>
           )}
-          {/* 知识库管理文件夹标记 */}
-          {folder.id === kbRootId && renamingFolderId !== folder.id && (
+          {/* 知识库根文件夹标记 */}
+          {(folder.id === kbRootId || folder.isSystem) && renamingFolderId !== folder.id && (
             <span
               className="shrink-0 flex items-center"
-              title="知识库管理文件夹：本地知识库目录与它建立映射"
+              title="知识库根文件夹：系统保护，不可删除或移动"
             >
               <Database size={12} className="text-emerald-500" />
             </span>
@@ -1160,7 +1211,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                   ? 'text-gray-400 hover:text-white hover:bg-gray-700'
                   : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
               } ${syncingLocal ? 'opacity-50 cursor-not-allowed' : ''}`}
-              title="与本地文件夹双向同步"
+              title="同步已启用的本地同步源（知识库 / 笔记）"
             >
               <FolderSync size={15} className={syncingLocal ? 'animate-spin' : ''} />
             </button>
@@ -1788,7 +1839,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                 const protectedByAncestor = !!folder.parentId && encryptedFolderIds.has(folder.parentId);
                 return (
                   <>
-                    {!folder.isEncrypted && !protectedByAncestor && (
+                    {!folder.isEncrypted && !protectedByAncestor && !folder.isSystem && (
                       <button
                         onClick={() => { onFolderLockAction?.('encrypt', contextMenu.id); setContextMenu(null); }}
                         className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors ${isDark ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-50'}`}
@@ -1832,12 +1883,25 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                 <FolderPlus size={13} /> 新建子文件夹
               </button>
               <div className={`h-px my-0.5 ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`} />
-              <button
-                onClick={() => { onDeleteFolder(contextMenu.id); setContextMenu(null); }}
-                className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-red-500 ${isDark ? 'hover:bg-red-900/20' : 'hover:bg-red-50'}`}
-              >
-                <Trash2 size={13} /> 删除文件夹
-              </button>
+              {(() => {
+                const folder = folders.find(f => f.id === contextMenu.id);
+                // 系统文件夹（知识库根）由后端保护，界面上不放删除入口
+                if (folder?.isSystem || folder?.id === kbRootId) {
+                  return (
+                    <p className="px-3 py-2 text-[11px] text-gray-400">
+                      系统文件夹受保护，不可删除或移动
+                    </p>
+                  );
+                }
+                return (
+                  <button
+                    onClick={() => { onDeleteFolder(contextMenu.id); setContextMenu(null); }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-red-500 ${isDark ? 'hover:bg-red-900/20' : 'hover:bg-red-50'}`}
+                  >
+                    <Trash2 size={13} /> 删除文件夹
+                  </button>
+                );
+              })()}
             </>
           )}
         </div>

@@ -84,6 +84,8 @@ export interface NoteFolder {
   sortOrder: number;
   /** 是否启用了文件夹级加密 */
   isEncrypted?: boolean;
+  /** 是否为系统文件夹（如知识库根）：不可删除 / 移动 */
+  isSystem?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }

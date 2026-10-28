@@ -189,7 +189,7 @@ const KnowledgeInboxPage: React.FC = () => {
   const writeLocal = () => {
     if (!selected) return;
     void runAction('kb', async () => {
-      const handle = await loadHandleFromIndexedDB();
+      const handle = await loadHandleFromIndexedDB('kb');
       if (!handle) {
         throw new Error('请先在「设置 → 本地同步」中绑定知识库根目录');
       }

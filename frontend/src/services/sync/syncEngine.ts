@@ -34,7 +34,7 @@ import {
   isEmptyContent,
   sanitizeFileName,
 } from '../../utils/noteNativeExport';
-import { isIgnored, isProtected, type KbConfig } from './kbConfig';
+import { isIgnored, isProtected, type SyncSourceConfig } from './kbConfig';
 import {
   APP_DIR,
   ensureDir,
@@ -91,6 +91,10 @@ export interface Manifest {
   version: number;
   /** 绑定账号，防止不同账号复用同一文件夹 */
   userId: string;
+  /** 绑定同步方向，防止同一目录被两个同步源交叉使用 */
+  direction: SyncDirection;
+  /** 知识库源绑定的根文件夹 ID；笔记源恒为 null */
+  rootFolderId: string | null;
   /** 上次同步完成时间 */
   lastSyncAt: string;
   /** 笔记基线，key 为笔记 ID */
@@ -172,9 +176,14 @@ export interface SyncOptions {
   direction?: SyncDirection;
   /**
    * 知识库模式参数。`direction === 'kb'` 时必填。
-   * 复用 KbConfig 的字段口径，避免两处定义漂移。
+   * 复用 SyncSourceConfig 的字段口径，避免两处定义漂移。
    */
-  kb?: Pick<KbConfig, 'rootFolderId' | 'rootFolderName' | 'ignore' | 'protect'>;
+  kb?: Pick<SyncSourceConfig, 'rootFolderId' | 'rootFolderName' | 'ignore' | 'protect'>;
+  /**
+   * 需要从本次同步范围中整体排除的文件夹 ID（含其子树）。
+   * 笔记源用它把「知识库」文件夹让给 kb 源，避免同一批笔记被镜像两次。
+   */
+  excludeFolderIds?: string[];
   /** 进度回调 */
   onProgress?: (progress: SyncProgress) => void;
 }
@@ -253,6 +262,27 @@ function toScopedPath(fullPath: string, rootPath: string): string | null {
 }
 
 /**
+ * 判断目录路径是否落在任一排除根下（含根本身）。
+ * @param path 账号根视角的目录路径
+ * @param roots 排除根路径列表
+ * @returns 是否应排除
+ */
+function isUnderAnyPath(path: string, roots: string[]): boolean {
+  if (!path) return false;
+  return roots.some((root) => !!root && (path === root || path.startsWith(`${root}/`)));
+}
+
+/**
+ * 计算一条笔记所在目录的账号根视角路径。
+ * @param note 笔记
+ * @param folders 全部文件夹
+ * @returns 目录路径；根目录为空字符串
+ */
+function noteFolderPath(note: Note, folders: NoteFolder[]): string {
+  return buildFolderPath(note.folderId, folders);
+}
+
+/**
  * 生成用于冲突副本与回收站命名的本地时间戳。
  * @returns 形如 `20260930-221500` 的字符串
  */
@@ -302,12 +332,20 @@ async function fileSignature(file: File): Promise<string> {
 /**
  * 创建空的 manifest。
  * @param userId 当前用户 ID
+ * @param direction 本次运行方向
+ * @param rootFolderId 知识库根文件夹 ID（笔记源为 null）
  * @returns 初始 manifest
  */
-function createEmptyManifest(userId: string): Manifest {
+function createEmptyManifest(
+  userId: string,
+  direction: SyncDirection,
+  rootFolderId: string | null,
+): Manifest {
   return {
     version: MANIFEST_VERSION,
     userId,
+    direction,
+    rootFolderId,
     lastSyncAt: '',
     notes: {},
     folders: {},
@@ -329,6 +367,8 @@ export async function loadManifest(root: SyncDirectoryHandle): Promise<Manifest 
     return {
       version: parsed.version ?? MANIFEST_VERSION,
       userId: String(parsed.userId ?? ''),
+      direction: parsed.direction === 'kb' ? 'kb' : 'two-way',
+      rootFolderId: typeof parsed.rootFolderId === 'string' ? parsed.rootFolderId : null,
       lastSyncAt: String(parsed.lastSyncAt ?? ''),
       notes: parsed.notes ?? {},
       folders: parsed.folders ?? {},
@@ -389,12 +429,14 @@ function isProtectedNote(note: Note): boolean {
  * @param notes 远端笔记
  * @param folders 远端文件夹
  * @param rootPath 知识库根路径；非空时只保留该子树内的笔记，且路径相对知识库根计算
+ * @param excludedPaths 需要整体排除的目录路径（账号根视角）
  * @returns 笔记 ID → 相对路径
  */
 function computeRemotePaths(
   notes: Note[],
   folders: NoteFolder[],
   rootPath = '',
+  excludedPaths: string[] = [],
 ): Map<string, string> {
   const sorted = [...notes].sort((a, b) => (a.noteNo < b.noteNo ? -1 : 1));
   const used = new Set<string>();
@@ -404,7 +446,9 @@ function computeRemotePaths(
     // 加密/锁定笔记与文档笔记不参与本地同步：既不下发正文，也不写入本地文件
     if (isProtectedNote(note) || note.noteType === 'document') continue;
     if (isEmptyContent(note.noteType, note.content)) continue;
-    const folderPath = toScopedPath(buildFolderPath(note.folderId, folders), rootPath);
+    const fullPath = noteFolderPath(note, folders);
+    if (isUnderAnyPath(fullPath, excludedPaths)) continue;
+    const folderPath = toScopedPath(fullPath, rootPath);
     if (folderPath === null) continue;
     const ext = getNativeExtension(note.noteType);
     const baseName = sanitizeFileName(note.title || '无标题');
@@ -423,11 +467,13 @@ function computeRemotePaths(
  * 构建文件夹 ID ↔ 相对路径的双向映射。
  * @param folders 远端文件夹
  * @param rootPath 知识库根路径；非空时只保留该子树内的文件夹
+ * @param excludedPaths 需要整体排除的目录路径（账号根视角）
  * @returns 双向映射
  */
 function computeFolderMaps(
   folders: NoteFolder[],
   rootPath = '',
+  excludedPaths: string[] = [],
 ): {
   pathById: Map<string, string>;
   idByPath: Map<string, string>;
@@ -435,7 +481,9 @@ function computeFolderMaps(
   const pathById = new Map<string, string>();
   const idByPath = new Map<string, string>();
   for (const folder of folders) {
-    const path = toScopedPath(buildFolderPath(folder.id, folders), rootPath);
+    const fullPath = buildFolderPath(folder.id, folders);
+    if (isUnderAnyPath(fullPath, excludedPaths)) continue;
+    const path = toScopedPath(fullPath, rootPath);
     if (path === null) continue;
     pathById.set(folder.id, path);
     if (path) idByPath.set(path, folder.id);
@@ -867,17 +915,28 @@ export async function runSync(
 
   // 1. 读取 manifest
   progress('读取同步状态');
+  // 知识库源绑定固定的根文件夹；笔记源恒为 null（整棵树）
+  const rootScopeId = isKb ? (opts.kb?.rootFolderId ?? null) : null;
   const loaded = await loadManifest(root);
-  const hadManifest = !!loaded && loaded.userId === opts.userId;
+  const hadManifest =
+    !!loaded &&
+    loaded.userId === opts.userId &&
+    loaded.direction === direction &&
+    loaded.rootFolderId === rootScopeId;
   if (loaded && !hadManifest) {
     report.errors.push({
       path: MANIFEST_REL,
-      message: '该文件夹此前绑定其它账号，本次重建同步状态（不删除任何文件）',
+      message:
+        loaded.userId !== opts.userId
+          ? '该文件夹此前绑定其它账号，本次重建同步状态（不删除任何文件）'
+          : '该文件夹此前用于另一种同步源，本次重建同步状态（不删除任何文件）',
     });
   }
-  const manifest = hadManifest && loaded ? loaded : createEmptyManifest(opts.userId);
+  const manifest = hadManifest && loaded
+    ? loaded
+    : createEmptyManifest(opts.userId, direction, rootScopeId);
   const nextManifest: Manifest = {
-    ...createEmptyManifest(opts.userId),
+    ...createEmptyManifest(opts.userId, direction, rootScopeId),
     lastSyncAt: manifest.lastSyncAt,
   };
 
@@ -915,19 +974,36 @@ export async function runSync(
   }
   const protect = isKb ? (opts.kb?.protect ?? []) : [];
 
+  // 笔记源排除知识库子树：这些笔记归 kb 源管理，绝不能重复镜像到笔记目录。
+  // 除了配置里的根 ID，还自动排除服务端标记为系统文件夹的子树，
+  // 这样即使本机配置丢失，也不会把知识库内容镜像进笔记目录。
+  const systemFolderIds = folders.filter((folder) => folder.isSystem).map((folder) => folder.id);
+  const excludedFolderIds = isKb
+    ? []
+    : [...new Set([...(opts.excludeFolderIds ?? []), ...systemFolderIds])];
+  const excludedPaths = excludedFolderIds
+    .map((id) => buildFolderPath(id, folders))
+    .filter((path): path is string => !!path);
+  const excludedNoteIds = new Set(
+    excludedPaths.length === 0
+      ? []
+      : notes
+          .filter((n) => isUnderAnyPath(noteFolderPath(n, folders), excludedPaths))
+          .map((n) => n.id),
+  );
+
+  /** 笔记是否落在本次同步范围内（作用域内且未被排除） */
+  const inScope = (note: Note) =>
+    !excludedNoteIds.has(note.id) &&
+    toScopedPath(noteFolderPath(note, folders), rootPath) !== null;
+
   // 加密/锁定笔记一律跳过本地同步，并在报告中计数（只统计落在本次范围内的）
-  report.skippedEncrypted = notes.filter(
-    (n) =>
-      isProtectedNote(n) &&
-      toScopedPath(buildFolderPath(n.folderId, folders), rootPath) !== null,
-  ).length;
+  report.skippedEncrypted = notes.filter((n) => isProtectedNote(n) && inScope(n)).length;
   report.skippedDocuments = notes.filter(
-    (n) =>
-      n.noteType === 'document' &&
-      toScopedPath(buildFolderPath(n.folderId, folders), rootPath) !== null,
+    (n) => n.noteType === 'document' && inScope(n),
   ).length;
-  const remotePaths = computeRemotePaths(notes, folders, rootPath);
-  const folderMaps = computeFolderMaps(folders, rootPath);
+  const remotePaths = computeRemotePaths(notes, folders, rootPath, excludedPaths);
+  const folderMaps = computeFolderMaps(folders, rootPath, excludedPaths);
 
   // 3. 扫描本地文件（知识库模式下应用忽略清单）
   progress('扫描本地文件');
@@ -1036,6 +1112,8 @@ export async function runSync(
 
     // 远端笔记已删除，或内容变空（不再产生文件）→ 本地文件进回收站
     if (base && (!remote || !remoteRel)) {
+      // 仍存在但被本源排除（如知识库子树）：只丢弃基线，交给另一个同步源管理
+      if (remote && excludedNoteIds.has(remote.id)) continue;
       actions.push({ kind: 'remoteDelete', noteId, relPath: base.relPath });
       continue;
     }
@@ -1183,6 +1261,8 @@ export async function runSync(
     localFiles,
     manifest,
     allowLocalDelete: !isKb,
+    excludedFolderIds: new Set(excludedFolderIds),
+    excludedPaths,
   });
   report.createdFolders = folderPlan.localDirsToCreate;
   report.removedFolders = folderPlan.localDirsToTrash;
@@ -1523,8 +1603,21 @@ function planFolders(params: {
   manifest: Manifest;
   /** 是否允许把本地目录移入回收站；知识库模式传 false（本地目录永不删除） */
   allowLocalDelete: boolean;
+  /** 需要整体排除的文件夹 ID（含其子树），其本地目录永不删除 */
+  excludedFolderIds: Set<string>;
+  /** 需要整体排除的目录路径（账号根视角） */
+  excludedPaths: string[];
 }): FolderPlan {
-  const { hadManifest, folders, folderMaps, localFiles, manifest, allowLocalDelete } = params;
+  const {
+    hadManifest,
+    folders,
+    folderMaps,
+    localFiles,
+    manifest,
+    allowLocalDelete,
+    excludedFolderIds,
+    excludedPaths,
+  } = params;
 
   const localDirsToCreate: string[] = [];
   for (const folder of folders) {
@@ -1535,6 +1628,7 @@ function planFolders(params: {
   const localDirsToTrash: string[] = [];
   if (allowLocalDelete) {
     for (const [folderId, entry] of Object.entries(manifest.folders)) {
+      if (excludedFolderIds.has(folderId)) continue;
       if (!folderMaps.pathById.has(folderId)) localDirsToTrash.push(entry.relPath);
     }
   }
@@ -1552,6 +1646,8 @@ function planFolders(params: {
     for (const dir of [...localDirs].sort(
       (a, b) => a.split('/').length - b.split('/').length,
     )) {
+      // 排除子树内的本地目录不回传服务端，避免在库里再建一个同名知识库文件夹
+      if (isUnderAnyPath(dir, excludedPaths)) continue;
       if (!folderMaps.idByPath.has(dir)) remoteDirsToCreate.push(dir);
     }
   }

@@ -28,10 +28,18 @@ export interface KbManifestResult {
   total: number;
 }
 
+export interface KnowledgeRootInfo {
+  rootId: string;
+  folderId: string;
+  folderName: string;
+}
+
 export const kbApi = {
   listRoots: () => api.get<KbRootInfo[]>('/kb/roots'),
   ensureRoot: (name: string, folderId?: string) =>
     api.post<KbRootInfo>('/kb/roots', { name, folderId }),
+  /** 确保笔记树根级的「知识库」系统文件夹存在（不可删除 / 移动） */
+  ensureKnowledgeRoot: () => api.post<KnowledgeRootInfo>('/kb/roots/knowledge', {}),
   listFiles: (query?: string, limit = 50) =>
     api.get<KbFileInfo[]>(`/kb/files${buildQuery({ query, limit })}`),
   manifest: (
