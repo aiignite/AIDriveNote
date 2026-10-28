@@ -491,6 +491,51 @@ interface SerializeOptions {
 }
 
 /**
+ * 解析编译产物写在描述里的知识库元数据。
+ * 格式：`[kb] confidence: low | sources: [raw/...] | related: [wiki/...]`
+ * @param description 笔记描述
+ * @returns 键值映射；非知识库描述返回空对象
+ */
+export function parseKbDescription(
+  description: string | null | undefined,
+): Record<string, string> {
+  const text = (description || '').trim();
+  if (!text.startsWith('[kb]')) return {};
+  const out: Record<string, string> = {};
+  for (const part of text.slice(4).split('|')) {
+    const colon = part.indexOf(':');
+    if (colon < 0) continue;
+    const key = part.slice(0, colon).trim();
+    const value = part.slice(colon + 1).trim();
+    if (key && value) out[key] = value;
+  }
+  return out;
+}
+
+/** 从 `kb:` / `topic:` 前缀标签中提取值 */
+function kbTagValue(tags: string[], prefix: string): string | undefined {
+  const found = tags.find((tag) => tag.startsWith(prefix));
+  const value = found ? found.slice(prefix.length).trim() : '';
+  return value || undefined;
+}
+
+/** 生成知识库模式写回时的 frontmatter 字段 */
+function kbSerializeFields(note: Note): Map<string, string> {
+  const fields = new Map<string, string>();
+  const tagNames = (note.tags ?? []).map((tag) => tag.name);
+  const type = kbTagValue(tagNames, 'kb:');
+  const topic = kbTagValue(tagNames, 'topic:');
+  if (type) fields.set('type', type);
+  if (topic) fields.set('topic', topic);
+
+  const meta = parseKbDescription(note.description);
+  if (meta.confidence) fields.set('confidence', meta.confidence);
+  if (meta.sources) fields.set('sources', meta.sources);
+  if (meta.related) fields.set('related', meta.related);
+  return fields;
+}
+
+/**
  * 生成笔记文件的文本内容（`.md` 会在正文前拼接 YAML frontmatter）。
  * @param note 远端笔记
  * @param relPath 目标相对路径
@@ -498,7 +543,7 @@ interface SerializeOptions {
  * @param opts 写回选项
  * @returns 文件文本
  */
-function serializeNoteText(
+export function serializeNoteText(
   note: Note,
   relPath: string,
   tagNames: string[],
@@ -520,6 +565,12 @@ function serializeNoteText(
     if (writeAppKeys) {
       if (folderPath) managed.set('folder', folderPath);
       if (note.updatedAt) managed.set('updated_at', note.updatedAt);
+    } else {
+      // 知识库模式：把笔记侧派生的知识元数据写回 frontmatter，保证
+      // 「编译产物 → 本地知识页」字段完整，同时与读取映射保持可往返。
+      for (const [key, value] of kbSerializeFields(note)) {
+        managed.set(key, value);
+      }
     }
 
     const header: string[] = [];
@@ -548,7 +599,7 @@ function serializeNoteText(
 }
 
 /** frontmatter 中的一行（保序） */
-interface FrontmatterLine {
+export interface FrontmatterLine {
   /** 键名 */
   key: string;
   /** 原始整行文本（保留缩进与行内注释） */
@@ -558,7 +609,7 @@ interface FrontmatterLine {
 }
 
 /** frontmatter 解析结果 */
-interface FrontmatterResult {
+export interface FrontmatterResult {
   /** 保序的原始行列表 */
   entries: FrontmatterLine[];
   /** 键值对（值均为字符串，`tags` 不在此列） */
@@ -588,7 +639,7 @@ const EMPTY_FRONTMATTER: FrontmatterResult = {
  * @param text 文件全文
  * @returns 解析结果；无 frontmatter 时 entries 为空且 body 为原文
  */
-function parseFrontmatter(text: string): FrontmatterResult {
+export function parseFrontmatter(text: string): FrontmatterResult {
   if (!text.startsWith('---')) {
     return { ...EMPTY_FRONTMATTER, body: text };
   }
@@ -684,7 +735,7 @@ function parseLocalFile(relPath: string, text: string): ParsedLocalFile | null {
  * @param baseTags 原有标签
  * @returns 去重后的标签名列表
  */
-function kbTagsFromFrontmatter(
+export function kbTagsFromFrontmatter(
   fm: FrontmatterResult | undefined,
   baseTags: string[],
 ): string[] {
@@ -704,7 +755,7 @@ function kbTagsFromFrontmatter(
  * @param note 远端笔记
  * @returns 应写回文件的标签名列表
  */
-function kbFileTags(note: Note): string[] {
+export function kbFileTags(note: Note): string[] {
   return (note.tags ?? [])
     .map((t) => t.name)
     .filter((name) => !name.startsWith('kb:') && !name.startsWith('topic:'));
@@ -719,13 +770,14 @@ function kbFileTags(note: Note): string[] {
  * @param fm frontmatter 解析结果
  * @returns 描述文本；无可映射字段时返回 undefined
  */
-function kbDescriptionFromFrontmatter(fm: FrontmatterResult | undefined): string | undefined {
+export function kbDescriptionFromFrontmatter(fm: FrontmatterResult | undefined): string | undefined {
   if (!fm) return undefined;
+  const flatten = (value: string) => (value ?? '').replace(/[\r\n]+/g, ' ').trim();
   const parts: string[] = [];
   const confidence = fm.data.confidence?.trim();
   if (confidence) parts.push(`confidence: ${confidence}`);
-  if (fm.data.sources) parts.push(`sources: ${oneLine(fm.data.sources)}`);
-  if (fm.data.related) parts.push(`related: ${oneLine(fm.data.related)}`);
+  if (fm.data.sources) parts.push(`sources: ${flatten(fm.data.sources)}`);
+  if (fm.data.related) parts.push(`related: ${flatten(fm.data.related)}`);
   return parts.length ? `[kb] ${parts.join(' | ')}`.slice(0, 500) : undefined;
 }
 
