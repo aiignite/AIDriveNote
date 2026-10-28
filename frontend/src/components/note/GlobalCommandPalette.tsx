@@ -43,6 +43,24 @@ const TYPE_COLOR: Record<string, string> = {
   flowchart: 'text-orange-600',
 };
 
+const SOURCE_LABEL: Record<string, string> = {
+  email: '邮件',
+  upload: '上传',
+  clip: '剪藏',
+  web_clip: '网页分享',
+  mcp: 'Agent',
+  note: '自写',
+  kb: '知识库',
+};
+
+const KNOWLEDGE_TYPE_LABEL: Record<string, string> = {
+  concept: '概念',
+  entity: '实体',
+  topic: '主题',
+  decision: '决策',
+  note: '笔记',
+};
+
 function fuzzyScore(haystack: string, needle: string): number {
   if (!needle) return 0;
   if (haystack.startsWith(needle)) return 1000 - haystack.length;
@@ -194,6 +212,28 @@ const GlobalCommandPalette: React.FC<GlobalCommandPaletteProps> = ({
     );
   };
 
+  const renderKnowledge = (note: Note) => {
+    const meta = searchResult?.knowledge?.[note.id];
+    if (!meta) return null;
+    return (
+      <span className={`mt-1 flex flex-wrap items-center gap-1 text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+        {meta.sourceType && (
+          <span className={`rounded px-1 py-0.5 ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+            {SOURCE_LABEL[meta.sourceType] || meta.sourceType}
+          </span>
+        )}
+        {meta.knowledgeType && (
+          <span className={`rounded px-1 py-0.5 ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+            {KNOWLEDGE_TYPE_LABEL[meta.knowledgeType] || meta.knowledgeType}
+          </span>
+        )}
+        {meta.keywords.slice(0, 3).map((keyword) => (
+          <span key={keyword}>#{keyword}</span>
+        ))}
+      </span>
+    );
+  };
+
   return (
     <div
       className="fixed inset-0 z-[62] flex items-start justify-center pt-[12vh] bg-black/30"
@@ -262,6 +302,12 @@ const GlobalCommandPalette: React.FC<GlobalCommandPaletteProps> = ({
                       )}
                     </span>
                     {renderHighlight(note)}
+                    {!searchResult?.highlights?.[note.id] && searchResult?.knowledge?.[note.id]?.summary && (
+                      <p className={`mt-0.5 text-[11px] truncate ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        {searchResult.knowledge[note.id].summary}
+                      </p>
+                    )}
+                    {renderKnowledge(note)}
                   </span>
                   {note.noteNo && (
                     <span className={`shrink-0 text-[10px] tabular-nums ${isDark ? 'text-gray-600' : 'text-gray-300'}`}>

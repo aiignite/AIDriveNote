@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { noteApi } from '../services/note';
+import { knowledgeApi } from '../services/knowledge';
 
 /**
  * PWA 分享目标：系统分享面板把标题/正文/链接带进来，
- * 这里直接落成一条 Markdown 笔记并跳转到笔记页。
+ * 这里送入知识入库管线，异步解析、蒸馏后进入「知识收件箱」审核。
  */
 const ShareTargetPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -23,12 +23,15 @@ const ShareTargetPage: React.FC = () => {
 
     void (async () => {
       try {
-        const note = await noteApi.create({
+        await knowledgeApi.ingestDocument({
+          sourceType: 'web_clip',
+          externalId: url || undefined,
           title: fallbackTitle,
-          noteType: 'markdown',
-          content: { text: body },
+          text: body || fallbackTitle,
+          url: url || undefined,
+          rawMeta: { sharedFrom: 'pwa' },
         });
-        navigate(`/note/${note.id}`, { replace: true });
+        navigate('/inbox', { replace: true });
       } catch (err) {
         setError(err instanceof Error ? err.message : '保存分享内容失败');
       }
@@ -38,7 +41,7 @@ const ShareTargetPage: React.FC = () => {
   return (
     <div className="flex h-full items-center justify-center bg-slate-50 dark:bg-gray-950">
       <p className="text-sm text-gray-500 dark:text-gray-400">
-        {error || '正在保存分享内容…'}
+        {error || '正在送入知识收件箱…'}
       </p>
     </div>
   );

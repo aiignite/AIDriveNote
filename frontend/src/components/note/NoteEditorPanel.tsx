@@ -34,6 +34,7 @@ import {
 } from '../../services/note';
 import { getExportOptions, type ExportFormat } from '../../utils/noteExportOptions';
 import type { RelatedNote, TagSuggestion } from '../../services/note/note';
+import { knowledgeApi } from '../../services/knowledge';
 import { useAuth } from '../../contexts/AuthContext';
 import { isNetworkError } from '../../services/client';
 import { cacheFullNote, readNote } from '../../services/offline/noteCache';
@@ -1148,6 +1149,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       { id: 'view.history', label: '版本历史', keywords: 'history revision 版本 历史', run: () => { void loadRevisions(); setShowSidePanel(v => (v === 'history' ? 'none' : 'history')); }, isChecked: () => showSidePanel === 'history' },
       { id: 'view.share', label: '分享笔记', keywords: 'share 分享', run: () => { void loadShares(); setShowSidePanel(v => (v === 'share' ? 'none' : 'share')); }, isChecked: () => showSidePanel === 'share' },
       { id: 'view.tags', label: '管理标签', keywords: 'tag 标签', run: () => setShowTagPopover(v => !v) },
+      { id: 'knowledge.distill', label: '抽取知识', keywords: 'knowledge distill 知识 蒸馏 抽取', run: () => { void knowledgeApi.distillNote(note.id).then(() => toast.success('已送入知识收件箱，审核后生成知识笔记')).catch((err: unknown) => toast.error(err instanceof Error ? err.message : '抽取知识失败')); } },
       { id: 'help.shortcuts', label: '快捷键说明', keywords: 'shortcut help 快捷键 帮助', run: () => setShowShortcuts(true) },
       { id: 'help.about', label: '关于笔记编辑器', keywords: 'about 关于', run: () => toast(`AIDriveNote · ${TYPE_META[note.noteType]?.label ?? note.noteType} 编辑器\n按 ⌘⇧K 可搜索全部命令`, { icon: 'ℹ️' }) },
     ];

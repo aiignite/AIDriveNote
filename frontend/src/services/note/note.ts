@@ -130,10 +130,19 @@ export interface NoteShare {
   createdAt?: string;
 }
 
+export interface KnowledgeSearchMeta {
+  summary?: string | null;
+  keywords: string[];
+  sourceType?: string | null;
+  knowledgeType?: string | null;
+  confidence?: string | null;
+}
+
 export interface NoteSearchResponse {
   items: Note[];
   total: number;
   highlights: Record<string, string>;
+  knowledge?: Record<string, KnowledgeSearchMeta>;
 }
 
 export interface RelatedNote {

@@ -17,6 +17,7 @@ const CommonTermsPage = lazy(() => import('./pages/settings/CommonTermsPage'));
 const UsersPage = lazy(() => import('./pages/settings/UsersPage'));
 const GuestEventsPage = lazy(() => import('./pages/settings/GuestEventsPage'));
 const SyncSettingsPage = lazy(() => import('./pages/settings/SyncSettingsPage'));
+const KnowledgeSettingsPage = lazy(() => import('./pages/settings/KnowledgeSettingsPage'));
 const OfflineSettingsPage = lazy(() => import('./pages/settings/OfflineSettingsPage'));
 const ApiTokensPage = lazy(() => import('./pages/settings/ApiTokensPage'));
 const McpSettingsPage = lazy(() => import('./pages/settings/McpSettingsPage'));
@@ -58,6 +59,10 @@ const NotesRoute = lazyComposed(
 const SettingsRoute = lazyComposed(
   () => import('./components/AppLayout'),
   () => import('./pages/settings/SettingsLayout'),
+);
+const KnowledgeInboxRoute = lazyComposed(
+  () => import('./components/AppLayout'),
+  () => import('./pages/KnowledgeInboxPage'),
 );
 
 const withSuspense = (node: React.ReactNode) => (
@@ -106,6 +111,10 @@ const App: React.FC = () => (
             element={<ProtectedRoute>{withSuspense(<ShareTargetPage />)}</ProtectedRoute>}
           />
           <Route
+            path="/inbox"
+            element={<ProtectedRoute>{withSuspense(<KnowledgeInboxRoute />)}</ProtectedRoute>}
+          />
+          <Route
             path="/settings"
             element={<ProtectedRoute>{withSuspense(<SettingsRoute />)}</ProtectedRoute>}
           >
@@ -118,6 +127,7 @@ const App: React.FC = () => (
             <Route path="asr" element={<GuestDisabledRoute>{withSuspense(<ASRSettingsPage />)}</GuestDisabledRoute>} />
             <Route path="common-terms" element={<GuestDisabledRoute>{withSuspense(<CommonTermsPage />)}</GuestDisabledRoute>} />
             <Route path="sync" element={<GuestDisabledRoute>{withSuspense(<SyncSettingsPage />)}</GuestDisabledRoute>} />
+            <Route path="knowledge" element={<GuestDisabledRoute>{withSuspense(<KnowledgeSettingsPage />)}</GuestDisabledRoute>} />
             <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
             <Route path="tokens" element={<GuestDisabledRoute>{withSuspense(<ApiTokensPage />)}</GuestDisabledRoute>} />
             <Route path="mcp" element={<GuestDisabledRoute>{withSuspense(<McpSettingsPage />)}</GuestDisabledRoute>} />

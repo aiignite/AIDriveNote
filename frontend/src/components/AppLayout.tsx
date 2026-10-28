@@ -1,10 +1,11 @@
-import React, { Suspense, lazy, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { Bot, LogOut, Moon, Settings, Sun } from 'lucide-react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { Bot, Inbox, LogOut, Moon, Settings, Sun } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useApp } from '../contexts/AppContext';
 import { useIsMobile } from '../hooks/useMobile';
 import { aiApi } from '../services/ai/ai';
+import { knowledgeApi } from '../services/knowledge';
 import Logo from './Logo';
 import OfflineBanner from './OfflineBanner';
 import InstallPrompt from './InstallPrompt';
@@ -14,8 +15,25 @@ const AISidebar = lazy(() => import('../components/ai/AISidebar'));
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, logout, isGuest } = useAuth();
   const { theme, toggleTheme, openAI, aiOpen, sidebarWidth, setSidebarWidth } = useApp();
+  const location = useLocation();
+  const [pendingKnowledge, setPendingKnowledge] = useState(0);
   const isDark = theme === 'dark';
   const isMobile = useIsMobile();
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      void knowledgeApi.stats()
+        .then((stats) => { if (alive) setPendingKnowledge(stats.pendingReview); })
+        .catch(() => { /* 收件箱徽标失败不影响主界面 */ });
+    };
+    refresh();
+    window.addEventListener('knowledge:updated', refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener('knowledge:updated', refresh);
+    };
+  }, [location.pathname]);
 
   // AI 偏好对匿名同样可用（UserAISettings 按 user_id 隔离）
   useEffect(() => {
@@ -79,6 +97,14 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           <button type="button" onClick={() => openAI()} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="AI 助手 (⌘J)">
             <Bot size={18} className="text-orange-500" />
           </button>
+          <Link to="/inbox" className={`relative p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="知识收件箱">
+            <Inbox size={18} className={isDark ? 'text-gray-300' : 'text-gray-600'} />
+            {pendingKnowledge > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 min-w-[16px] rounded-full bg-orange-500 px-1 text-center text-[10px] leading-4 text-white">
+                {pendingKnowledge > 99 ? '99+' : pendingKnowledge}
+              </span>
+            )}
+          </Link>
           <Link to="/settings" className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="设置">
             <Settings size={18} className={isDark ? 'text-gray-300' : 'text-gray-600'} />
           </Link>
