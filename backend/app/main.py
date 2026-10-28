@@ -40,6 +40,7 @@ import app.ai_tools  # noqa: F401 — register AI tools
 import app.models.ai  # noqa: F401 — register AI tables
 import app.models.guest_event  # noqa: F401 — register guest_events table
 import app.models.mcp  # noqa: F401 — register MCP client tables
+import app.models.note.document  # noqa: F401 — register note document table
 import app.models.kb  # noqa: F401 — register KB asset tables
 import app.models.knowledge  # noqa: F401 — register knowledge ingest tables
 

@@ -441,6 +441,18 @@ class NoteShareService:
 
 class NoteSearchService:
     @staticmethod
+    async def _document_text(db: AsyncSession, note: Note) -> str | None:
+        """文档笔记的正文在附表中；只取该列，避免加载整行元数据。"""
+        if note.note_type != "document":
+            return None
+        from app.models.note.document import NoteDocument
+
+        result = await db.execute(
+            select(NoteDocument.extracted_text).where(NoteDocument.note_id == note.id),
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def update_search_fields(db: AsyncSession, note: Note) -> None:
         """重建检索字段：search_text + search_vector。
 
@@ -450,6 +462,7 @@ class NoteSearchService:
         """
         search_text = build_search_text(
             note.title, note.description, note.content, note.note_type,
+            document_text=await NoteSearchService._document_text(db, note),
         )
         note.search_text = search_text or None
         if not search_text:
@@ -462,6 +475,11 @@ class NoteSearchService:
 
         strategy = await SearchConfigService.resolve(db)
         ts_config = SearchConfigService.tsquery_config(strategy)
+        # 测试用 SQLite 没有 to_tsvector；跳过向量字段，search_text 仍可做模糊匹配
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name != "postgresql":
+            await db.commit()
+            return
         try:
             # 用 SAVEPOINT 隔离：SQLite / 未装 zhparser 的库会因缺函数报错，
             # 必须在子事务里吞掉，否则整个请求的事务会被标记为失败。
@@ -662,6 +680,9 @@ class NoteSearchService:
 def note_preview_text(note: Note, max_len: int = 120) -> str:
     if note.description:
         return note.description[:max_len]
+    if note.note_type == "document":
+        # 正文在附表中，列表接口不加载；search_text 已含正文，取开头即可。
+        return (note.search_text or "")[:max_len]
     if note.content:
         text_val = content_to_preview_text(note.note_type, note.content, max_chars=max_len)
         return text_val[:max_len] if text_val else ""

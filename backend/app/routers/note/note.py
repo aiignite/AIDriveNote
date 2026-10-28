@@ -6,7 +6,7 @@ from typing import Literal, Optional, get_args
 from uuid import UUID
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, File, Header, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,10 +14,12 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from app.config import get_settings
 from app.database import get_db
-from app.auth import get_current_user, require_write_scope
+from app.auth import get_current_user, require_not_guest, require_write_scope
 from app.models.user import User
+from app.models.note.document import NoteDocument
 from app.models.note.note import Note, NoteFolder
 from app.services.auth_service import AuthService
+from app.services.note import document_service, document_storage
 from app.services.note.note_service import NoteService, NoteFolderService, NoteTemplateService
 from app.services.note import note_crypto
 from app.services.note.note_lock_service import NoteLockService
@@ -38,7 +40,7 @@ from app.exceptions import BadRequestException, ConflictException, ForbiddenExce
 router = APIRouter(prefix="/notes", tags=["Notes"])
 
 # 笔记类型的唯一合法取值；与数据库 CHECK 约束 ck_note_notes_note_type 保持一致。
-NoteType = Literal["rich_text", "markdown", "mindmap", "flowchart"]
+NoteType = Literal["rich_text", "markdown", "mindmap", "flowchart", "document"]
 NOTE_TYPES: tuple[str, ...] = get_args(NoteType)
 
 
@@ -123,6 +125,17 @@ class FolderLockOut(BaseModel):
     affected: int = 0
 
 
+class DocumentOut(BaseModel):
+    file_name: str
+    mime: str
+    ext: str
+    size_bytes: int
+    page_count: Optional[int] = None
+    etag: str
+    viewable: bool = True
+    extract_status: str = "pending"
+
+
 class NoteOut(BaseModel):
     model_config = {"from_attributes": True}
     id: UUID
@@ -130,6 +143,7 @@ class NoteOut(BaseModel):
     title: str
     note_type: str
     content: Optional[dict] = None
+    document: Optional[DocumentOut] = None
     folder_id: Optional[UUID] = None
     description: Optional[str] = None
     status: str
@@ -254,6 +268,7 @@ class RagChunkOut(BaseModel):
 
 # 哨兵：区分「未传入 lock」与「显式传入 None（已解锁）」
 _UNSET = object()
+_DOC_UNSET = object()
 
 
 async def _load_folder_maps(db: AsyncSession, user_id: UUID) -> tuple[dict, set]:
@@ -296,22 +311,44 @@ async def _enrich_note_out(
     lock: object = _UNSET,
     is_locked: bool | None = None,
     index_status: str | None = None,
+    document: NoteDocument | None | object = _DOC_UNSET,
 ) -> NoteOut:
+    # 多次 commit / 原生 SQL 更新后，server_default 列可能已过期；异步会话不能在
+    # 同步属性访问时隐式补查，这里显式刷新一次。
+    from sqlalchemy import inspect as sa_inspect
+
+    if sa_inspect(note).expired_attributes:
+        await db.refresh(note)
     if tags is None:
         tags = await NoteTagService.get_note_tags(db, note.id)
     if is_favorite is None:
         is_favorite = await NoteFavoriteService.is_favorited(db, user.id, note.id)
     if lock is _UNSET:
         lock = await NoteLockService.resolve_lock(db, note)
+    if document is _DOC_UNSET:
+        document = (
+            await document_service.get_document(db, note.id)
+            if note.note_type == "document" else None
+        )
     locked = is_locked if is_locked is not None else lock is not None
-    # 锁定态一律不返回正文与预览，避免密文/明文外泄
+    # 锁定态一律不返回正文、文档元数据与预览，避免密文/明文外泄
     content = None if locked else (note.content if include_content else None)
+    doc_meta = None
+    if not locked and document is not None:
+        doc_meta = DocumentOut(**document_service.build_document_meta(document))
+    if locked:
+        preview_text = None
+    elif document is not None:
+        preview_text = note.description or document_service.preview_text(document)
+    else:
+        preview_text = note_preview_text(note)
     return NoteOut(
         id=note.id,
         note_no=note.note_no,
         title=note.title,
         note_type=note.note_type,
         content=content,
+        document=doc_meta,
         folder_id=note.folder_id,
         description=note.description,
         status=note.status,
@@ -326,7 +363,7 @@ async def _enrich_note_out(
         updated_by=note.updated_by,
         created_at=note.created_at,
         updated_at=note.updated_at,
-        preview_text=None if locked else note_preview_text(note),
+        preview_text=preview_text,
         is_favorite=is_favorite,
         index_status=index_status,
         tags=[TagOut.model_validate(t) for t in tags],
@@ -368,6 +405,7 @@ async def _enrich_notes_batch(
     fav_ids = await NoteFavoriteService.get_favorited_note_ids(db, user.id, note_ids)
     parent_map, enc_ids = await _load_folder_maps(db, user.id)
     index_map = await _load_index_status_map(db, note_ids)
+    doc_map = await document_service.get_document_meta_map(db, note_ids)
     return [
         await _enrich_note_out(
             db, note, user,
@@ -376,6 +414,7 @@ async def _enrich_notes_batch(
             include_content=include_content,
             lock=_resolve_lock_fast(note, parent_map, enc_ids),
             index_status=index_map.get(str(note.id)),
+            document=doc_map.get(str(note.id)),
         )
         for note in notes
     ]
@@ -560,7 +599,7 @@ async def search_notes_fulltext(
     enriched = await _enrich_notes_batch(db, items, user, include_content=include_content)
     highlights = {
         str(n.id): highlight_snippet(
-            build_search_text(n.title, n.description, n.content, n.note_type),
+            n.search_text or build_search_text(n.title, n.description, n.content, n.note_type),
             q,
             max_len=200,
         )
@@ -866,6 +905,74 @@ async def get_note_asset(asset_name: str):
     return FileResponse(path, media_type=mime)
 
 
+# ── 文档笔记（原文件落盘 + 前端渲染）──
+
+@router.post("/documents", response_model=NoteOut, status_code=status.HTTP_201_CREATED)
+async def upload_document_note(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    folder_id: Optional[UUID] = Form(None),
+    description: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    _write_scope: User = Depends(require_write_scope),
+    user: User = Depends(require_not_guest),
+):
+    """上传 PDF / Office / HTML，创建文档笔记并抽取正文。"""
+    payload = await file.read()
+    limit = document_storage.max_document_bytes()
+    if len(payload) > limit:
+        raise BadRequestException(
+            f"文件过大（{len(payload) / 1024 / 1024:.1f}MB > {limit / 1024 / 1024:.0f}MB）",
+        )
+    note, document = await document_service.create_document_note(
+        db,
+        user.id,
+        data=payload,
+        filename=file.filename or "document",
+        folder_id=folder_id,
+        title=title,
+        description=description,
+    )
+    return await _enrich_note_out(db, note, user, document=document)
+
+
+@router.get("/{note_id}/document")
+async def download_note_document(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    x_note_unlock: Optional[str] = Header(default=None, alias="X-Note-Unlock"),
+):
+    """下载/读取文档笔记的原文件；锁定态必须带有效解锁票据。"""
+    note = await NoteService.get_note(db, note_id)
+    if not note:
+        raise NotFoundException("Note")
+    await _assert_note_access(db, note, user)
+    lock = await NoteLockService.resolve_lock(db, note)
+    if lock and not NoteLockService.resolve_key_from_token(lock, x_note_unlock, user.id):
+        raise ForbiddenException("文档已加密，请先解锁")
+
+    document = await document_service.get_document(db, note_id)
+    if document is None:
+        raise NotFoundException("Document")
+    path = document_storage.resolve_path(document.storage_path)
+    if path is None:
+        raise NotFoundException("Document file")
+    return FileResponse(
+        path,
+        media_type=document.mime,
+        filename=document.file_name,
+        content_disposition_type="attachment",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Cache-Control": "private, no-cache",
+            "ETag": f'"{document.etag}"',
+        },
+    )
+
+
 @router.get("/{note_id}", response_model=NoteOut)
 async def get_note(
     note_id: UUID,
@@ -896,6 +1003,8 @@ async def create_note(
     user: User = Depends(require_write_scope),
 ):
     data = body.model_dump()
+    if data.get("note_type") == "document":
+        raise BadRequestException("请使用 /notes/documents 上传文档创建笔记")
     data["created_by"] = user.id
     data["updated_by"] = user.id
     note = await NoteService.create_note(db, data)
@@ -916,6 +1025,14 @@ async def update_note(
     if not existing:
         raise NotFoundException("Note")
     await _assert_note_edit(db, existing, user)
+
+    if existing.note_type == "document":
+        if data.get("content") is not None:
+            raise BadRequestException("文档笔记不支持编辑正文")
+        if "note_type" in data and data["note_type"] != "document":
+            raise BadRequestException("文档笔记不能变更类型")
+    elif data.get("note_type") == "document":
+        raise BadRequestException("普通笔记不能变更为文档笔记")
 
     lock = await NoteLockService.resolve_lock(db, existing)
     if lock:
@@ -943,7 +1060,9 @@ async def update_note(
             set_committed_value(item, "content", note_crypto.decrypt_content(item.content, key))
         return await _enrich_note_out(db, item, user, lock=lock, is_locked=False)
 
-    item = await NoteService.update_note(db, note_id, data)
+    item = await NoteService.update_note(
+        db, note_id, data, save_revision=existing.note_type != "document",
+    )
     if not item:
         raise NotFoundException("Note")
     return await _enrich_note_out(db, item, user)
@@ -963,6 +1082,8 @@ async def encrypt_note(
     if not note:
         raise NotFoundException("Note")
     _assert_note_owner(note, user)
+    if note.note_type == "document":
+        raise BadRequestException("文档笔记不支持单独加密（原文件不加密存储）")
     if note.is_encrypted:
         raise BadRequestException("文档已加密")
     if await NoteLockService.folder_is_locked(db, note.folder_id):
@@ -1110,6 +1231,8 @@ async def duplicate_note(
     copied = await NoteService.duplicate_note(db, note_id, user.id)
     if not copied:
         raise NotFoundException("Note")
+    if original.note_type == "document":
+        await document_service.duplicate_document(db, note_id, copied.id)
     return await _enrich_note_out(db, copied, user)
 
 
@@ -1164,6 +1287,9 @@ async def permanently_delete_note(
     if not existing:
         raise NotFoundException("Note")
     _assert_note_owner(existing, user)
+    if not existing.is_deleted:
+        raise BadRequestException("请先将笔记移入回收站，再永久删除")
+    await document_service.delete_document_for_note(db, note_id)
     ok = await NoteService.permanently_delete_note(db, note_id)
     if not ok:
         raise NotFoundException("Note")
@@ -1308,6 +1434,8 @@ async def create_public_link(
         raise NotFoundException("Note")
     await _assert_note_access(db, note, user)
     if note.is_encrypted:
+        raise BadRequestException("加密笔记不能创建公开链接")
+    if await NoteLockService.resolve_lock(db, note):
         raise BadRequestException("加密笔记不能创建公开链接")
     from app.services.note.public_link_service import NotePublicLinkService
 

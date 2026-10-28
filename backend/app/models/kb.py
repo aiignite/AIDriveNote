@@ -37,6 +37,8 @@ class KbFile(Base):
     mime: Mapped[str | None] = mapped_column(String(120))
     size: Mapped[int] = mapped_column(Integer, default=0)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 原文件相对路径（uploads/documents/...）；历史行可能为空
+    storage_path: Mapped[str | None] = mapped_column(String(512))
     extracted_text: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     is_protected: Mapped[bool] = mapped_column(Boolean, default=False)

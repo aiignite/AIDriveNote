@@ -67,7 +67,21 @@ class EmbeddingService:
         """
         if note.is_encrypted:
             return False
-        text = build_search_text(note.title, note.description, note.content, note.note_type)
+        document_text = None
+        if note.note_type == "document":
+            from app.models.note.document import NoteDocument
+
+            document_text = (
+                await db.execute(
+                    select(NoteDocument.extracted_text).where(
+                        NoteDocument.note_id == note.id,
+                    ),
+                )
+            ).scalar_one_or_none()
+        text = build_search_text(
+            note.title, note.description, note.content, note.note_type,
+            document_text=document_text,
+        )
         embedding = await EmbeddingService.embed_text(text[:8000])
         if not embedding:
             logger.warning("笔记语义索引更新失败（嵌入服务不可用）：note=%s", note.id)

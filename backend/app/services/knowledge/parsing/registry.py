@@ -32,12 +32,13 @@ def parse_bytes(
     *,
     filename: str | None = None,
     mime: str | None = None,
+    allow_ocr: bool = True,
 ) -> ParsedDocument:
     suffix = PurePosixPath(filename or "").suffix.lower()
     mime_lower = (mime or "").lower()
 
     if suffix == ".pdf" or mime_lower == "application/pdf":
-        return parse_pdf(data)
+        return parse_pdf(data, allow_ocr=allow_ocr)
     if suffix == ".docx" or mime_lower in {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }:

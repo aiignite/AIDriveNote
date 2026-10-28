@@ -301,5 +301,10 @@ def content_to_preview_text(note_type: str, content: dict[str, Any], *, max_char
         return mindmap_to_preview_text(content, max_chars=max_chars)
     if note_type == "flowchart":
         return flowchart_to_preview_text(content, max_chars=max_chars)
+    if note_type == "document":
+        text = str(content.get("text", "")) if isinstance(content, dict) else ""
+        if text:
+            return text[:max_chars] + ("…" if len(text) > max_chars else "")
+        return "（文档笔记，正文见原文件）"
     raw = json.dumps(content, ensure_ascii=False)
     return raw[:max_chars] + ("…" if len(raw) > max_chars else "")

@@ -44,6 +44,12 @@ class IngestDocument(Base):
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_text: Mapped[str | None] = mapped_column(Text)
     raw_meta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    # 原文件相对路径（uploads/documents/...）；可预览文档会长期保留
+    storage_path: Mapped[str | None] = mapped_column(String(512))
+    # 由该来源文档生成的文档笔记（1:1 幂等锚点）
+    document_note_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("note_notes.id", ondelete="SET NULL"),
+    )
     status: Mapped[str] = mapped_column(String(20), default="received", nullable=False)
     parser: Mapped[str | None] = mapped_column(String(40))
     parse_meta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)

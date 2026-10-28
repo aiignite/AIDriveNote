@@ -112,10 +112,17 @@ async def _parse_document(db: AsyncSession, doc: IngestDocument) -> None:
     if (doc.raw_text or "").strip():
         parsed = parse_text(doc.raw_text or "", mime=doc.mime, title=doc.title)
     else:
-        path = (doc.raw_meta or {}).get("file_path")
-        if not path or not Path(str(path)).exists():
+        path = None
+        if doc.storage_path:
+            from app.services.note import document_storage
+
+            path = document_storage.resolve_path(doc.storage_path)
+        if path is None:
+            temp_path = (doc.raw_meta or {}).get("file_path")
+            path = Path(str(temp_path)) if temp_path else None
+        if path is None or not path.exists():
             raise RuntimeError("源文件不存在，无法解析")
-        data = Path(str(path)).read_bytes()
+        data = path.read_bytes()
         parsed = parse_bytes(
             data,
             filename=(doc.raw_meta or {}).get("filename") or doc.title,
@@ -128,9 +135,41 @@ async def _parse_document(db: AsyncSession, doc: IngestDocument) -> None:
     doc.status = "parsed"
     doc.parsed_at = datetime.now(timezone.utc)
     doc.error = None
+    await _ensure_document_note(db, doc)
     await enqueue_ingest_job(db, doc.id, "distill")
     await db.commit()
     _cleanup_temp_file(doc)
+
+
+async def _ensure_document_note(db: AsyncSession, doc: IngestDocument) -> None:
+    """可预览文档生成一篇可查看的文档笔记；幂等，失败不影响入库。"""
+    if doc.document_note_id or not doc.storage_path:
+        return
+
+    from app.services.note import document_storage
+    from app.services.note.document_service import create_document_note_from_stored
+
+    filename = str((doc.raw_meta or {}).get("filename") or doc.title or "document")
+    size_bytes = int((doc.raw_meta or {}).get("size") or 0)
+    try:
+        stored = document_storage.describe_stored(doc.storage_path, filename, size_bytes)
+        if not stored.viewable:
+            return
+        note, _document = await create_document_note_from_stored(
+            db,
+            doc.user_id,
+            stored=stored,
+            filename=filename,
+            folder_id=None,
+            title=doc.title,
+            description=f"来源：{doc.source_type}",
+            parsed_text=doc.raw_text or "",
+            parsed_meta=doc.parse_meta or {},
+            parser=doc.parser,
+        )
+        doc.document_note_id = note.id
+    except Exception:  # noqa: BLE001 — 配额/解析失败不应阻断知识入库
+        logger.warning("为入库文档创建文档笔记失败: doc=%s", doc.id, exc_info=True)
 
 
 async def _distill_document(db: AsyncSession, doc: IngestDocument) -> None:

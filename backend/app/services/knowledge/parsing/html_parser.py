@@ -32,7 +32,7 @@ def _extract_title(html: str) -> str | None:
 
 
 def parse_html(data: bytes | str) -> ParsedDocument:
-    html = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else data
+    html = decode_bytes(data)[0] if isinstance(data, bytes) else data
     title = _extract_title(html)
     text = ""
     extractor = ""

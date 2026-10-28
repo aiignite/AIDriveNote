@@ -32,6 +32,7 @@ from app.database import AsyncSessionLocal
 from app.models.ai import AIAssistant, AIModel
 from app.models.guest_event import GuestEventType
 from app.models.note.note import Note, NoteFolder, NoteRevision, NoteShare, NoteTag, NoteTemplate
+from app.models.note.document import NoteDocument
 from app.models.note.recording import NoteRecording
 from app.models.user import User
 from app.services.guest_event_service import GuestEventService
@@ -135,6 +136,9 @@ class GuestPurgeService:
             # 第四段：删除数据库数据
             await GuestPurgeService._delete_db_rows(session, user_id, profile)
 
+        # 第四段补充：文档原文件必须在 DB 行删除后按引用计数清理
+        await GuestPurgeService._purge_document_blobs(profile, db=db)
+
         # 第五段：完成事件（账号行已删，事件因无外键而保留）
         await GuestEventService.record_in_new_session(
             guest_id=user_id,
@@ -180,6 +184,14 @@ class GuestPurgeService:
         for content in note_rows.scalars().all():
             asset_hashes |= NoteAssetService.find_asset_hashes(content)
 
+        # 文档原文件（内容寻址，可能与他人共用，删除前需引用计数）
+        doc_rows = await db.execute(
+            select(NoteDocument.sha256, NoteDocument.ext)
+            .join(Note, Note.id == NoteDocument.note_id)
+            .where(Note.created_by == user_id)
+        )
+        document_blobs = [(sha, ext) for sha, ext in doc_rows.all()]
+
         session_seconds: int | None = None
         if user.created_at:
             base = user.created_at
@@ -196,6 +208,7 @@ class GuestPurgeService:
             "email": user.email,
             "recording_paths": recording_paths,
             "asset_hashes": asset_hashes,
+            "document_blobs": document_blobs,
             "note_count": note_count,
             "session_seconds": session_seconds,
         }
@@ -221,6 +234,21 @@ class GuestPurgeService:
         await GuestPurgeService._purge_unreferenced_assets(
             profile["user_id"], profile["asset_hashes"], db=db,
         )
+
+    @staticmethod
+    async def _purge_document_blobs(profile: dict, *, db: AsyncSession | None = None) -> None:
+        """文档行已删除后，引用计数归零才删磁盘原文件。"""
+        from app.services.note import document_storage
+
+        blobs = profile.get("document_blobs") or []
+        if not blobs:
+            return
+        async with _session_scope(db) as session:
+            for sha, ext in blobs:
+                try:
+                    await document_storage.delete_if_unreferenced(session, sha, ext)
+                except Exception:  # noqa: BLE001
+                    logger.warning("删除匿名文档原文件失败 sha=%s", str(sha)[:8], exc_info=True)
 
     @staticmethod
     def _ai_attachment_dir(user_id: str) -> Path:
@@ -265,7 +293,13 @@ class GuestPurgeService:
         notes = await db.execute(
             select(Note).where(Note.created_by == user_id)
         )
-        for note in notes.scalars().all():
+        note_rows = list(notes.scalars().all())
+        if note_rows:
+            note_ids = [note.id for note in note_rows]
+            await db.execute(
+                delete(NoteDocument).where(NoteDocument.note_id.in_(note_ids)),
+            )
+        for note in note_rows:
             await db.delete(note)
         await db.flush()
 

@@ -672,7 +672,10 @@ async def distill_note(
         raise BadRequestException("无权操作该笔记")
     if note.is_encrypted:
         raise BadRequestException("加密笔记不支持知识抽取")
-    text = build_search_text(note.title, note.description, note.content, note.note_type)
+    if note.note_type == "document":
+        text = (note.search_text or "").strip()
+    else:
+        text = build_search_text(note.title, note.description, note.content, note.note_type)
     if not (text or "").strip():
         raise BadRequestException("笔记内容为空")
     document, duplicate = await ingest(

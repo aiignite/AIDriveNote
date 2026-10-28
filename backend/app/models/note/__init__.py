@@ -1,5 +1,6 @@
 """Note models."""
 from app.models.note.asr import NoteAsrSettings, NoteCommonTerm
+from app.models.note.document import NoteDocument
 from app.models.note.note import (
     Note,
     NoteFavorite,
@@ -18,6 +19,7 @@ __all__ = [
     "Note",
     "NoteAsrSettings",
     "NoteCommonTerm",
+    "NoteDocument",
     "NoteFavorite",
     "NoteFolder",
     "NoteLink",

@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.note.kb_service import KbService, _extract_pdf_text
+from app.services.note.kb_service import KbService
 
 
-def test_invalid_pdf_extraction_returns_empty_text():
-    assert _extract_pdf_text(b"not a pdf file") == ""
+@pytest.mark.asyncio
+async def test_invalid_pdf_extraction_returns_empty_text():
+    from app.services.note.kb_service import _extract_document_text
+
+    assert await _extract_document_text(b"not a pdf file", "bad.pdf", "application/pdf") == ""
 
 
 def test_invalid_image_ocr_returns_empty_text():

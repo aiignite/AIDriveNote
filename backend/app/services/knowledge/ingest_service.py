@@ -1,6 +1,7 @@
 """知识入库：源文档幂等落库与两阶段任务入队。"""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -10,7 +11,15 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import BadRequestException
 from app.models.knowledge import IngestDocument, IngestJob
+from app.services.note import document_storage
+from app.services.note.document_storage import StoredDocument
+
+
+async def asyncio_to_thread_store(data: bytes, filename: str) -> StoredDocument:
+    """文件小（≤25MB），但校验/落盘是阻塞 IO，放到线程池执行。"""
+    return await asyncio.to_thread(document_storage.store, data, filename)
 
 SOURCE_TYPES = {"email", "upload", "clip", "web_clip", "mcp", "note", "kb"}
 
@@ -90,14 +99,25 @@ async def ingest(
     document_id = uuid.uuid4()
     meta = dict(raw_meta or {})
     file_path: str | None = None
+    storage_path: str | None = None
     if data is not None:
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        saved = UPLOAD_DIR / f"{document_id}{_safe_suffix(meta.get('filename'))}"
-        saved.write_bytes(data)
-        file_path = str(saved)
-        meta.setdefault("filename", meta.get("filename") or "")
-        meta["file_path"] = file_path
-        meta["size"] = len(data)
+        filename = str(meta.get("filename") or cleaned_title or "document")
+        try:
+            # 白名单文档永久保留原文，供笔记查看器直接读取
+            stored = await asyncio_to_thread_store(data, filename)
+            storage_path = stored.storage_path
+            meta["filename"] = filename
+            meta["size"] = stored.size_bytes
+            meta["viewable"] = stored.viewable
+        except BadRequestException:
+            # 超限 / 非白名单：沿用临时文件，解析后删除
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            saved = UPLOAD_DIR / f"{document_id}{_safe_suffix(filename)}"
+            saved.write_bytes(data)
+            file_path = str(saved)
+            meta.setdefault("filename", filename)
+            meta["file_path"] = file_path
+            meta["size"] = len(data)
 
     document = IngestDocument(
         id=document_id,
@@ -111,6 +131,7 @@ async def ingest(
         occurred_at=occurred_at or datetime.now(timezone.utc),
         raw_text=None if data is not None else text,
         raw_meta=meta,
+        storage_path=storage_path,
         status="received",
         kb_file_id=kb_file_id,
     )
@@ -147,5 +168,11 @@ def document_payload(document: IngestDocument) -> dict[str, Any]:
         "parseMeta": document.parse_meta or {},
         "error": document.error,
         "noteId": str(document.note_id) if document.note_id else None,
+        "documentNoteId": (
+            str(document.document_note_id) if document.document_note_id else None
+        ),
+        "fileName": (document.raw_meta or {}).get("filename"),
+        "sizeBytes": (document.raw_meta or {}).get("size"),
+        "viewable": bool((document.raw_meta or {}).get("viewable")),
         "hasText": bool(document.raw_text),
     }

@@ -136,9 +136,18 @@ def chunk_note(
     *,
     target_chars: int = DEFAULT_TARGET_CHARS,
     overlap_chars: int = DEFAULT_OVERLAP_CHARS,
+    text_override: str | None = None,
 ) -> list[NoteChunk]:
-    """把笔记内容切成块；空笔记返回空列表。"""
-    text = content_to_preview_text(note_type, content or {}, max_chars=200_000)
+    """把笔记内容切成块；空笔记返回空列表。
+
+    ``text_override`` 用于正文不在 ``content`` 里的类型（文档笔记），
+    由调用方从附表取出文本后传入。
+    """
+    text = (
+        (text_override or "")[:200_000]
+        if text_override is not None
+        else content_to_preview_text(note_type, content or {}, max_chars=200_000)
+    )
     if not text or not text.strip():
         return []
 

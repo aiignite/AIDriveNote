@@ -8,8 +8,8 @@
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import io
 import logging
 import uuid
 from pathlib import PurePosixPath
@@ -17,15 +17,17 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import BadRequestException
 from app.models.kb import KbFile, KbRoot
+from app.services.note import document_storage
 
 logger = logging.getLogger(__name__)
 
-MAX_PDF_PAGES = 200
 MAX_EXTRACTED_CHARS = 200_000
 
 _TEXT_SUFFIXES = {".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml"}
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+_PARSE_SUFFIXES = {".pdf", ".docx", ".xlsx", ".pptx", ".html", ".htm"}
 
 
 def _is_text_asset(mime: str | None, path: str) -> bool:
@@ -60,28 +62,15 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _extract_pdf_text(data: bytes) -> str:
-    """抽取 PDF 文本层；扫描件（无文本层）返回空字符串。"""
+async def _extract_document_text(data: bytes, path: str, mime: str | None) -> str:
+    """复用知识入库解析器抽取文档正文；失败返回空串。"""
+    from app.services.note.document_service import parse_document_bytes
+
     try:
-        from pypdf import PdfReader
-    except Exception:  # noqa: BLE001 — 依赖缺失时降级
-        logger.warning("pypdf 未安装，跳过 PDF 文本抽取")
-        return ""
-    try:
-        reader = PdfReader(io.BytesIO(data))
-        parts: list[str] = []
-        total = 0
-        for page in reader.pages[:MAX_PDF_PAGES]:
-            text = page.extract_text() or ""
-            if not text.strip():
-                continue
-            parts.append(text.strip())
-            total += len(text)
-            if total >= MAX_EXTRACTED_CHARS:
-                break
-        return "\n\n".join(parts)[:MAX_EXTRACTED_CHARS]
-    except Exception:  # noqa: BLE001 — 加密/损坏 PDF 不应让上传失败
-        logger.warning("PDF 文本抽取失败", exc_info=True)
+        parsed = await parse_document_bytes(data, PurePosixPath(path).name, mime or "")
+        return (parsed.text or "")[:MAX_EXTRACTED_CHARS]
+    except Exception:  # noqa: BLE001 — 抽取失败不阻断资产登记
+        logger.warning("KB 文档文本抽取失败: %s", path, exc_info=True)
         return ""
 
 
@@ -133,6 +122,15 @@ class KbService:
         is_protected: bool = False,
     ) -> KbFile:
         digest = sha256_bytes(data)
+        storage_path: str | None = None
+        try:
+            stored = await asyncio.to_thread(document_storage.store, data, PurePosixPath(path).name)
+            storage_path = stored.storage_path
+            mime = stored.mime
+        except BadRequestException:
+            # 非白名单 / 超过文档上限：沿用旧的"只登记 + 抽取文本"路径
+            pass
+
         result = await db.execute(
             select(KbFile).where(KbFile.root_id == root.id, KbFile.path == path),
         )
@@ -140,14 +138,19 @@ class KbService:
         if record is not None and record.content_hash == digest:
             record.size = len(data)
             record.is_protected = is_protected
+            # 历史行没有原文件：本次上传补齐，之后才能在线预览
+            if storage_path and not record.storage_path:
+                record.storage_path = storage_path
+                record.mime = mime
             await db.commit()
             await db.refresh(record)
             return record
 
-        is_pdf = (mime or "").lower() == "application/pdf" or path.lower().endswith(".pdf")
-        if is_pdf:
-            extracted = _extract_pdf_text(data)
-            status = "extract_failed" if not extracted else "indexed"
+        suffix = PurePosixPath(path).suffix.lower()
+        extracted: str | None = None
+        if suffix in _PARSE_SUFFIXES:
+            extracted = await _extract_document_text(data, path, mime)
+            status = "indexed" if extracted else "extract_failed"
         elif _is_text_asset(mime, path):
             extracted = data.decode("utf-8", errors="ignore")[:MAX_EXTRACTED_CHARS]
             status = "indexed"
@@ -166,6 +169,7 @@ class KbService:
                 mime=mime,
                 size=len(data),
                 content_hash=digest,
+                storage_path=storage_path,
                 extracted_text=extracted,
                 status=status,
                 is_protected=is_protected,
@@ -175,6 +179,7 @@ class KbService:
             record.mime = mime
             record.size = len(data)
             record.content_hash = digest
+            record.storage_path = storage_path or record.storage_path
             record.extracted_text = extracted
             record.status = status
             record.is_protected = is_protected
@@ -260,10 +265,41 @@ class KbService:
 
     @staticmethod
     async def to_note(db: AsyncSession, user_id: uuid.UUID, record: KbFile):
-        """把资产内容转成 Markdown 笔记（PDF 文本/路径），之后自动进入 RAG 索引。"""
+        """把资产转成笔记：可预览文档生成文档笔记，其余沿用 Markdown。"""
+        from app.services.note.document_service import create_document_note_from_stored
         from app.services.note.note_service import NoteService
 
+        if record.note_id:
+            existing = await NoteService.get_note(db, record.note_id)
+            if existing is not None:
+                return existing
+
         title = PurePosixPath(record.path).stem[:100] or "知识库文件"
+        root = await db.get(KbRoot, record.root_id)
+        if record.storage_path:
+            try:
+                stored = document_storage.describe_stored(
+                    record.storage_path, PurePosixPath(record.path).name, record.size,
+                )
+                note, _document = await create_document_note_from_stored(
+                    db,
+                    user_id,
+                    stored=stored,
+                    filename=PurePosixPath(record.path).name,
+                    folder_id=root.folder_id if root else None,
+                    title=title,
+                    description=f"知识库：{record.path}",
+                    parsed_text=record.extracted_text or "",
+                    parsed_meta={},
+                    parser=None,
+                )
+                record.note_id = note.id
+                record.status = "converted"
+                await db.commit()
+                return note
+            except BadRequestException:
+                logger.warning("KB 文档转笔记失败，回退 Markdown: %s", record.path)
+
         body_parts = [
             f"> 来源：`{record.path}`",
             "",

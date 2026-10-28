@@ -76,7 +76,7 @@ def _clean_pages(pages: list[list[str]]) -> list[str]:
     return cleaned
 
 
-def parse_pdf(data: bytes) -> ParsedDocument:
+def parse_pdf(data: bytes, *, allow_ocr: bool = True) -> ParsedDocument:
     try:
         from pypdf import PdfReader
     except Exception as exc:  # noqa: BLE001 — 依赖缺失时交给 worker 记录失败
@@ -111,7 +111,7 @@ def parse_pdf(data: bytes) -> ParsedDocument:
 
     ocr_used = False
     ocr_meta: dict = {}
-    if not body or (text_layer_ratio < 0.5 and len(body) < 200):
+    if allow_ocr and (not body or (text_layer_ratio < 0.5 and len(body) < 200)):
         ocr_text, ocr_meta = _ocr_pdf(data)
         if len(ocr_text) > len(body):
             body = normalize_text(ocr_text)

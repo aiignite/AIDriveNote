@@ -63,6 +63,7 @@ def parse_xlsx(data: bytes) -> ParsedDocument:
         parser="xlsx",
         meta={
             "sheets": len(sheet_names),
+            "sheet_names": sheet_names[:50],
             "truncated": truncated or total_chars >= MAX_EXTRACTED_CHARS,
         },
     )

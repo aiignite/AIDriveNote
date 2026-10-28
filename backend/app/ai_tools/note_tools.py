@@ -131,7 +131,10 @@ async def _get_note(
         return err
 
     content = note.content if isinstance(note.content, dict) else {}
-    content_summary = _note_content_summary(note.note_type, content)
+    if note.note_type == "document":
+        content_summary = (note.search_text or "")[:_SUMMARY_MAX] or None
+    else:
+        content_summary = _note_content_summary(note.note_type, content)
     return_content = content if include_full_content else None
 
     note_payload: dict[str, Any] = {

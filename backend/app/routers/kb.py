@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +19,7 @@ from app.exceptions import BadRequestException, NotFoundException
 from app.models.kb import KbFile, KbRoot
 from app.models.user import User
 from app.services.knowledge.ingest_service import ingest
+from app.services.note import document_storage
 from app.services.note.kb_service import KbService
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,7 @@ class KbFileOut(BaseModel):
     isProtected: bool
     noteId: Optional[str] = None
     hasText: bool
+    viewable: bool = False
     updatedAt: Optional[str] = None
 
 
@@ -80,6 +83,8 @@ def _root_out(root: KbRoot) -> KbRootOut:
 
 
 def _file_out(record: KbFile) -> KbFileOut:
+    ext = PurePosixPath(record.path).suffix.lower()
+    allowed = document_storage.ALLOWED_DOCUMENTS.get(ext)
     return KbFileOut(
         id=str(record.id),
         rootId=str(record.root_id),
@@ -90,6 +95,7 @@ def _file_out(record: KbFile) -> KbFileOut:
         isProtected=record.is_protected,
         noteId=str(record.note_id) if record.note_id else None,
         hasText=bool(record.extracted_text),
+        viewable=bool(record.storage_path and allowed and allowed[1]),
         updatedAt=record.updated_at.isoformat() if record.updated_at else None,
     )
 
@@ -196,6 +202,32 @@ async def list_files(
     return [_file_out(record) for record in records]
 
 
+@router.get("/files/{file_id}/content")
+async def download_kb_file(
+    file_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    record = await KbService.get_file(db, user.id, file_id)
+    if record is None:
+        raise NotFoundException("KB file")
+    if not record.storage_path:
+        raise NotFoundException("KB file content")
+    path = document_storage.resolve_path(record.storage_path)
+    if path is None:
+        raise NotFoundException("KB file content")
+    return FileResponse(
+        path,
+        media_type=record.mime or "application/octet-stream",
+        filename=PurePosixPath(record.path).name,
+        content_disposition_type="attachment",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+        },
+    )
+
+
 @router.post("/files/{file_id}/to-note")
 async def convert_to_note(
     file_id: uuid.UUID,
@@ -206,4 +238,4 @@ async def convert_to_note(
     if record is None:
         raise NotFoundException("KB file")
     note = await KbService.to_note(db, user.id, record)
-    return {"noteId": str(note.id), "title": note.title}
+    return {"noteId": str(note.id), "title": note.title, "noteType": note.note_type}

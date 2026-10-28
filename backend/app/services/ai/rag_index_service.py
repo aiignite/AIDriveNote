@@ -265,12 +265,24 @@ async def index_note(db: AsyncSession, note: Note) -> int:
         return 0
 
     meta, card = await _note_meta(db, note)
+    document_text = None
+    if note.note_type == "document":
+        from app.models.note.document import NoteDocument
+
+        document_text = (
+            await db.execute(
+                select(NoteDocument.extracted_text).where(
+                    NoteDocument.note_id == note.id,
+                ),
+            )
+        ).scalar_one_or_none()
     chunks = chunk_note(
         note.title,
         note.content if isinstance(note.content, dict) else {},
         note.note_type,
         target_chars=settings.RAG_V2_CHUNK_SIZE,
         overlap_chars=settings.RAG_V2_CHUNK_OVERLAP,
+        text_override=document_text,
     )
     summary = _summary_chunk(card)
     if summary is not None:

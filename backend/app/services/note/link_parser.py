@@ -36,11 +36,17 @@ def build_search_text(
     description: str | None,
     content: dict | None,
     note_type: str,
+    *,
+    document_text: str | None = None,
 ) -> str:
     """Flatten note fields into plain text for full-text search."""
     parts = [title or ""]
     if description:
         parts.append(description)
+    if note_type == "document":
+        if document_text:
+            parts.append(document_text)
+        return " ".join(p for p in parts if p).strip()
     if content:
         if note_type == "markdown":
             parts.append(content.get("text", "") if isinstance(content, dict) else str(content))

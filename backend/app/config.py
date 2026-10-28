@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     USER_MAX_NOTES: int = 100
     # 单个上传文件大小上限（笔记图片资产 / AI 对话附件）
     USER_MAX_UPLOAD_BYTES: int = 2 * 1024 * 1024
+    # 文档笔记原文件上限；与 nginx client_max_body_size 26m 对齐（留 multipart 余量）
+    USER_MAX_DOCUMENT_BYTES: int = 25 * 1024 * 1024
 
     # ── 匿名登录（Guest）──
     # 是否开放匿名登录入口；关闭后 /auth/guest 返回 403，前端隐藏按钮
