@@ -66,6 +66,12 @@ def _assert_folder_owner(folder: NoteFolder, user: User) -> None:
         raise ForbiddenException("Folder")
 
 
+def _assert_folder_mutable(folder: NoteFolder) -> None:
+    """系统文件夹（知识库根）承担固定映射职责，禁止删除、移动与加密。"""
+    if folder.is_system:
+        raise BadRequestException("系统文件夹受保护，不能删除、移动或加密")
+
+
 # ── Note Schemas ──
 
 class NoteCreate(BaseModel):
@@ -445,6 +451,8 @@ class FolderOut(BaseModel):
     parent_id: Optional[UUID] = None
     user_id: UUID
     sort_order: int
+    # 系统文件夹（如知识库根）不可删除 / 移动
+    is_system: bool = False
     # 文件夹是否启用加密
     is_encrypted: bool = False
     created_at: Optional[datetime] = None
@@ -682,9 +690,10 @@ async def update_folder(
     if not folder:
         raise NotFoundException("Folder")
     _assert_folder_owner(folder, user)
-    item = await NoteFolderService.update_folder(
-        db, folder_id, body.model_dump(exclude_unset=True),
-    )
+    payload = body.model_dump(exclude_unset=True)
+    if folder.is_system and "parent_id" in payload and payload["parent_id"] != folder.parent_id:
+        _assert_folder_mutable(folder)
+    item = await NoteFolderService.update_folder(db, folder_id, payload)
     if not item:
         raise NotFoundException("Folder")
     return item
@@ -700,6 +709,18 @@ async def delete_folder(
     if not folder:
         raise NotFoundException("Folder")
     _assert_folder_owner(folder, user)
+    _assert_folder_mutable(folder)
+    # 删除父目录会级联软删除子孙：若子树里含系统文件夹，同样必须拒绝
+    descendant_ids = await NoteFolderService._collect_descendant_folder_ids(db, folder_id)
+    if descendant_ids:
+        protected = await db.execute(
+            select(NoteFolder.id).where(
+                NoteFolder.id.in_(descendant_ids),
+                NoteFolder.is_system == True,  # noqa: E712
+            ),
+        )
+        if protected.first() is not None:
+            raise BadRequestException("文件夹内包含受保护的系统文件夹，不能删除")
     ok = await NoteFolderService.delete_folder(db, folder_id)
     if not ok:
         raise NotFoundException("Folder")
@@ -719,6 +740,7 @@ async def encrypt_folder(
     if not folder:
         raise NotFoundException("Folder")
     _assert_folder_owner(folder, user)
+    _assert_folder_mutable(folder)
     if folder.is_encrypted:
         raise BadRequestException("文件夹已加密")
     if await NoteLockService.folder_is_locked(db, folder.parent_id):

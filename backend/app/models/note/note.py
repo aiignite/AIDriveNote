@@ -29,6 +29,8 @@ class NoteFolder(Base):
     )
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 系统文件夹：由应用创建并承担固定职责（如知识库根），禁止删除与移动
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 是否启用文件夹级加密（加密后子树内笔记正文用文件夹密钥重新加密）
     is_encrypted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 密钥派生盐（base64），仅加密时存在

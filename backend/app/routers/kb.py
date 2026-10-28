@@ -59,6 +59,12 @@ class KbRootOut(BaseModel):
     createdAt: Optional[str] = None
 
 
+class KnowledgeRootOut(BaseModel):
+    rootId: str
+    folderId: str
+    folderName: str
+
+
 class KbFileOut(BaseModel):
     id: str
     rootId: str
@@ -118,6 +124,20 @@ async def create_root(
         db, user.id, name=body.name.strip() or "知识库", folder_id=body.folderId,
     )
     return _root_out(root)
+
+
+@router.post("/roots/knowledge", response_model=KnowledgeRootOut)
+async def ensure_knowledge_root(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_not_guest),
+):
+    """确保知识库根文件夹存在：根级「知识库」文件夹，系统保护、不可删除。"""
+    root, folder = await KbService.ensure_knowledge_root(db, user.id)
+    return KnowledgeRootOut(
+        rootId=str(root.id),
+        folderId=str(folder.id),
+        folderName=folder.name,
+    )
 
 
 @router.post("/roots/{root_id}/manifest", response_model=KbManifestResult)

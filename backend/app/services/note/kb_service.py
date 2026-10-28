@@ -19,9 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import BadRequestException
 from app.models.kb import KbFile, KbRoot
+from app.models.note.note import NoteFolder
 from app.services.note import document_storage
 
 logger = logging.getLogger(__name__)
+
+# 知识库在笔记树中的固定根文件夹名（根级、系统保护）
+KNOWLEDGE_FOLDER_NAME = "知识库"
 
 MAX_EXTRACTED_CHARS = 200_000
 
@@ -109,6 +113,75 @@ class KbService:
             await db.commit()
             await db.refresh(root)
         return root
+
+    @staticmethod
+    async def ensure_knowledge_root(
+        db: AsyncSession, user_id: uuid.UUID,
+    ) -> tuple[KbRoot, NoteFolder]:
+        """确保用户存在唯一的「知识库」根文件夹，并把 KbRoot 绑定到它。
+
+        - 文件夹固定建在笔记树根级，并标记 is_system（删除 / 移动会被路由层拒绝）；
+        - 已有关联文件夹时只补标记，不搬动用户现有结构；
+        - 关联文件夹失效（被删或不属于本人）时重新找一个根级同名文件夹或新建。
+        """
+        result = await db.execute(
+            select(KbRoot)
+            .where(KbRoot.user_id == user_id)
+            .order_by(KbRoot.created_at.asc()),
+        )
+        roots = list(result.scalars().all())
+
+        folder: NoteFolder | None = None
+        root: KbRoot | None = None
+        # 优先沿用已绑定且仍然有效的根
+        for candidate_root in roots:
+            if candidate_root.folder_id is None:
+                continue
+            candidate = await db.get(NoteFolder, candidate_root.folder_id)
+            if (
+                candidate is not None
+                and not candidate.is_deleted
+                and candidate.user_id == user_id
+            ):
+                root = candidate_root
+                folder = candidate
+                if not folder.is_system:
+                    folder.is_system = True
+                break
+        if root is None:
+            root = roots[0] if roots else None
+
+        if folder is None:
+            result = await db.execute(
+                select(NoteFolder).where(
+                    NoteFolder.user_id == user_id,
+                    NoteFolder.parent_id.is_(None),
+                    NoteFolder.is_deleted == False,  # noqa: E712
+                    NoteFolder.name == KNOWLEDGE_FOLDER_NAME,
+                ),
+            )
+            folder = result.scalars().first()
+            if folder is None:
+                folder = NoteFolder(
+                    name=KNOWLEDGE_FOLDER_NAME,
+                    parent_id=None,
+                    user_id=user_id,
+                    is_system=True,
+                )
+                db.add(folder)
+                await db.flush()
+            else:
+                folder.is_system = True
+
+        if root is None:
+            root = KbRoot(user_id=user_id, name=KNOWLEDGE_FOLDER_NAME)
+            db.add(root)
+        root.folder_id = folder.id
+
+        await db.commit()
+        await db.refresh(root)
+        await db.refresh(folder)
+        return root, folder
 
     @staticmethod
     async def upload_file(

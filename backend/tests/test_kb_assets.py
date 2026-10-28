@@ -1,9 +1,60 @@
 """知识库资产：登记、搜索、PDF 抽取容错、转笔记。"""
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
+from app.exceptions import BadRequestException
+from app.models.note.note import NoteFolder
+from app.routers.note.note import _assert_folder_mutable
 from app.services.note.kb_service import KbService
+
+
+def test_system_folder_cannot_be_mutated():
+    folder = NoteFolder(name="知识库", user_id=uuid.uuid4(), is_system=True)
+    with pytest.raises(BadRequestException):
+        _assert_folder_mutable(folder)
+
+    folder.is_system = False
+    _assert_folder_mutable(folder)
+
+
+@pytest.mark.asyncio
+async def test_ensure_knowledge_root_is_root_level_and_idempotent(db_session, test_user):
+    root, folder = await KbService.ensure_knowledge_root(db_session, test_user.id)
+    assert folder.parent_id is None
+    assert folder.is_system is True
+    assert root.folder_id == folder.id
+
+    again_root, again_folder = await KbService.ensure_knowledge_root(db_session, test_user.id)
+    assert again_root.id == root.id
+    assert again_folder.id == folder.id
+
+
+@pytest.mark.asyncio
+async def test_knowledge_root_folder_is_protected_over_api(client, test_user):
+    from app.auth import get_current_user
+    from app.main import app
+
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    try:
+        created = await client.post("/api/v1/kb/roots/knowledge")
+        assert created.status_code == 200
+        body = created.json()
+        assert body["folderName"] == "知识库"
+        folder_id = body["folderId"]
+
+        deleted = await client.delete(f"/api/v1/notes/folders/{folder_id}")
+        assert deleted.status_code == 400
+
+        moved = await client.patch(
+            f"/api/v1/notes/folders/{folder_id}",
+            json={"parent_id": str(uuid.uuid4())},
+        )
+        assert moved.status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.mark.asyncio
