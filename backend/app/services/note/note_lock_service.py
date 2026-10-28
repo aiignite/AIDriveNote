@@ -13,13 +13,16 @@
 """
 from __future__ import annotations
 
+import logging
 import time
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.note.note import Note, NoteFolder, NoteRevision
+
+logger = logging.getLogger(__name__)
 from app.services.auth_service import AuthService
 from app.services.note import note_crypto
 from app.services.note.note_service import NoteFolderService, NoteService
@@ -117,11 +120,21 @@ class NoteLockService:
 
     @staticmethod
     async def _clear_artifacts(db: AsyncSession, note: Note) -> None:
-        """清除加密笔记的检索字段与历史修订（修订快照含明文，必须删除）。"""
+        """清除加密笔记的检索字段、历史修订与 RAG 分块（都含明文）。"""
         note.search_text = None
         note.search_vector = None
         note.content_embedding = None
         await db.execute(delete(NoteRevision).where(NoteRevision.note_id == note.id))
+        # RAG v2 分块是新的明文落点：上锁必须同步清除，否则解锁前也能被检索命中
+        if db.get_bind().dialect.name == "postgresql":
+            try:
+                for table in ("rag_chunks", "rag_documents", "rag_index_jobs"):
+                    await db.execute(
+                        text(f"DELETE FROM {table} WHERE note_id = :note_id"),
+                        {"note_id": str(note.id)},
+                    )
+            except Exception:  # noqa: BLE001 — 未装 pgvector 时这些表不存在
+                logger.debug("清理 RAG 分块失败（表可能不存在）", exc_info=True)
 
     # ── 笔记级加解密 ──────────────────────────────────
 
@@ -165,6 +178,9 @@ class NoteLockService:
         note.enc_verifier = None
         await db.commit()
         await db.refresh(note)
+        # 解密后重新进索引，否则这篇笔记在解锁期间依然搜不到
+        from app.services.ai.embedding_service import schedule_note_embedding
+        schedule_note_embedding(note.id)
         return True
 
     # ── 文件夹级加解密 ────────────────────────────────
@@ -218,6 +234,7 @@ class NoteLockService:
         key = note_crypto.derive_fernet_key(password, folder.enc_salt or "")
         notes = await NoteLockService._subtree_notes(db, folder.id)
         count = 0
+        decrypted_ids: list[UUID] = []
         for note in notes:
             if note.is_encrypted:
                 continue  # 笔记自身加密，不属于文件夹密钥管辖
@@ -228,11 +245,15 @@ class NoteLockService:
                 continue
             note.content = content
             count += 1
+            decrypted_ids.append(note.id)
         folder.is_encrypted = False
         folder.enc_salt = None
         folder.enc_verifier = None
         await db.commit()
         await db.refresh(folder)
+        from app.services.ai.embedding_service import schedule_note_embedding
+        for note_id in decrypted_ids:
+            schedule_note_embedding(note_id)
         return count
 
     # ── 解锁 ──────────────────────────────────────────

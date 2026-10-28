@@ -48,6 +48,10 @@ class UserApiToken(Base):
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # 权限范围（逗号分隔）：read / write / ask；默认读写
+    scopes: Mapped[str] = mapped_column(
+        String(100), default="read,write", server_default="read,write",
+    )
     # 是否已撤销（软删除）
     is_revoked: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false",

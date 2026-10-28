@@ -341,6 +341,9 @@ class NoteService:
                 user_id = refreshed.created_by
                 if user_id:
                     await NoteLinkService.sync_links(db, refreshed, user_id)
+                # 新建笔记也要进语义索引，否则导入/模板创建的笔记永远搜不到
+                from app.services.ai.embedding_service import schedule_note_embedding
+                schedule_note_embedding(note_id)
         return await NoteService.get_note(db, note_id)
 
     @staticmethod
@@ -401,12 +404,10 @@ class NoteService:
                 user_id = refreshed.created_by or data.get("updated_by")
                 if user_id and content_changed:
                     await NoteLinkService.sync_links(db, refreshed, user_id)
-                try:
-                    from app.services.ai.embedding_service import EmbeddingService
-                    await EmbeddingService.update_note_embedding(db, refreshed)
-                    await db.commit()
-                except Exception:
-                    pass
+                # 向量重建放到后台：保存不再被 Ollama 的 30s 超时拖住，
+                # 失败也会在日志里可见，而不是被静默吞掉。
+                from app.services.ai.embedding_service import schedule_note_embedding
+                schedule_note_embedding(note_id)
         return await NoteService.get_note(db, note_id)
 
     @staticmethod

@@ -24,6 +24,31 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "qwen2.5"
     AI_PROVIDER: str = "ollama"
 
+    # ── RAG v2：pgvector 分块检索 ──
+    # 关闭时回退 v1（整篇向量 + JSONB 扫描）；PostgreSQL 未装 pgvector 时自动降级
+    RAG_V2_ENABLED: bool = True
+    # 单块目标字符数（中文约等于 token 量级）
+    RAG_V2_CHUNK_SIZE: int = 600
+    # 相邻块重叠字符数，避免答案被切在块边界
+    RAG_V2_CHUNK_OVERLAP: int = 80
+    # 向量 / 全文各自的候选数量，融合后再取 top_k
+    RAG_V2_CANDIDATES: int = 40
+
+    # ── RAG 重排（可选）──
+    # 对接 cross-encoder rerank 服务；未启用或调用失败时自动跳过
+    RERANK_ENABLED: bool = False
+    RERANK_URL: str = ""
+    RERANK_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    RERANK_TIMEOUT: int = 8
+    # 参与重排的候选数量（也是检索 SQL 的取回上限）
+    RERANK_CANDIDATES: int = 20
+
+    # ── MCP 客户端 ──
+    # 是否允许连接内网 / 本机 MCP 服务器；默认关闭以防 SSRF
+    MCP_ALLOW_PRIVATE_HOSTS: bool = False
+    # stdio 传输允许启动的可执行文件（按 basename 前缀匹配，逗号分隔）
+    MCP_STDIO_ALLOWED_COMMANDS: str = "python,python3,uvx,npx,node"
+
     ANTHROPIC_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
     MINIMAX_API_KEY: str | None = None
@@ -67,9 +92,11 @@ class Settings(BaseSettings):
     # 是否记录匿名登录事件（登录信息与会话生命周期，仅元数据）
     GUEST_EVENTS_ENABLED: bool = True
 
-    # ── 笔记版本历史 ──
+    # 笔记版本历史
     # 每篇笔记保留的修订条数上限；超出后按时间淘汰最旧的（恢复前快照不参与淘汰）
     NOTE_REVISION_KEEP: int = 50
+    # 标签建议是否调用 LLM 对候选做二次筛选（默认关闭，开启后按次计费）
+    NOTE_TAG_SUGGEST_LLM: bool = False
 
     # ── 笔记录音语音转写（faster-whisper / 远程 asr_gateway）──
     # Whisper 模型规格；机器较弱可改为 small

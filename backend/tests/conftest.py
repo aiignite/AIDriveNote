@@ -29,6 +29,8 @@ import app.models.email_verification  # noqa: F401
 import app.models.guest_event  # noqa: F401 — 匿名登录事件表
 import app.models.note.note  # noqa: F401
 import app.models.note.recording  # noqa: F401 — 录音/转写表（匿名清除测试会涉及）
+import app.models.mcp  # noqa: F401 — MCP 客户端表
+import app.models.kb  # noqa: F401 — 知识库资产表
 import app.models.user  # noqa: F401
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"

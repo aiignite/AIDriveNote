@@ -18,4 +18,9 @@ class ToolExecutor:
         return ToolRegistry.get_tools_for_names(assistant_tools)
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        # MCP 工具名带 mcp__ 前缀，交给 MCP 客户端执行（含授权策略与审计）
+        if tool_name.startswith("mcp__"):
+            from app.services.ai.mcp_service import McpService
+
+            return await McpService.execute_tool(self.db, self.user_id, tool_name, arguments)
         return await ToolRegistry.execute(tool_name, self.db, self.user_id, **arguments)

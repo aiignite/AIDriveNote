@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import _resolve_bearer_token, get_current_user, require_not_guest
+from app.auth import _resolve_tokens, get_current_user, require_not_guest
 from app.config import get_settings
 from app.database import get_db
 from app.exceptions import (
@@ -149,7 +149,7 @@ def _assert_recording_access(recording: NoteRecording, user: User) -> None:
 
 
 async def _optional_user(
-    token_info: tuple[str | None, bool] = Depends(_resolve_bearer_token),
+    token_info: tuple[str | None, str | None] = Depends(_resolve_tokens),
     db: AsyncSession = Depends(get_db),
 ) -> User | None:
     """尽力解析当前登录用户：未登录或凭证无效时返回 None（不抛 401）。
@@ -157,8 +157,8 @@ async def _optional_user(
     音频流接口需要它——``<audio>`` 请求没有 Authorization 头时不能直接
     401 掉，否则浏览器无法播放带签名的直链。
     """
-    token, _is_sso = token_info
-    if not token:
+    sso_token, bearer_token = token_info
+    if not sso_token and not bearer_token:
         return None
     try:
         return await get_current_user(token_info=token_info, db=db)
@@ -452,6 +452,29 @@ async def refine_recording(
     if not refreshed:
         raise NotFoundException("Recording")
     return _to_recording_out(refreshed)
+
+
+@router.post("/{recording_id}/minutes")
+async def generate_recording_minutes(
+    recording_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_not_guest),
+):
+    """转写 → 结构化纪要（摘要 / 决议 / 行动项 / 章节），返回 markdown 便于插入笔记。"""
+    recording = await _recording_service.get_recording_detail(db, recording_id)
+    if not recording:
+        raise NotFoundException("Recording")
+    _assert_recording_access(recording, user)
+
+    from app.services.note.recording.recording_insight_service import generate_minutes
+
+    try:
+        return await generate_minutes(db, user.id, recording_id)
+    except ValueError as exc:
+        raise BadRequestException(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("生成录音纪要失败: %s", exc)
+        raise BadRequestException(f"生成纪要失败：{exc}") from exc
 
 
 @router.delete("/{recording_id}")

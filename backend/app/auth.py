@@ -29,20 +29,33 @@ _last_seen_writes: dict[str, float] = {}
 _LAST_SEEN_MAX_ENTRIES = 10_000
 
 
-async def _resolve_bearer_token(
+async def _resolve_tokens(
     request: Request,
     bearer: str | None = Depends(oauth2_scheme),
     aidrive_token: str | None = Cookie(default=None),
-) -> tuple[str | None, bool]:
-    """Return (token, is_sso). SSO cookie takes precedence when enabled."""
-    if settings.SSO_ENABLED and aidrive_token:
-        return aidrive_token, True
+) -> tuple[str | None, str | None]:
+    """解析请求携带的两类凭证，返回 ``(门户 SSO cookie 令牌, 应用 Bearer 令牌)``。
+
+    两者**同时返回**，由 :func:`get_current_user` 决定回退顺序。
+
+    旧实现把 SSO cookie 当成唯一凭证并优先采用，只要 ``SSO_ENABLED`` 为真且
+    浏览器带着 ``aidrive_token``，就完全不看 Bearer 头；一旦门户 cookie 过期、
+    或 ``SSO_SECRET_KEY`` 配置缺失（空值），解码必然失败，**即使同时携带了完全
+    有效的 Bearer 也会整站 401**，用户只能靠清空浏览器缓存绕过。
+
+    ``SSO_SECRET_KEY`` 为空时直接不走 cookie 通道：空密钥只会在解码阶段制造噪声。
+    """
+    sso_token = (
+        aidrive_token
+        if settings.SSO_ENABLED and settings.SSO_SECRET_KEY and aidrive_token
+        else None
+    )
     if bearer:
-        return bearer, False
+        return sso_token, bearer
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        return auth_header[7:], False
-    return None, False
+        return sso_token, auth_header[7:]
+    return sso_token, None
 
 
 def extract_client_ip(request: Request) -> str | None:
@@ -100,7 +113,7 @@ async def _touch_guest_last_seen(db: AsyncSession, user: User) -> None:
 
 
 async def get_current_user(
-    token_info: tuple[str | None, bool] = Depends(_resolve_bearer_token),
+    token_info: tuple[str | None, str | None] = Depends(_resolve_tokens),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     credentials_exception = HTTPException(
@@ -108,7 +121,26 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    token, is_sso = token_info
+    sso_token, bearer_token = token_info
+    if not sso_token and not bearer_token:
+        raise credentials_exception
+
+    # 1) 门户 SSO cookie：解不出来不致命，继续尝试 Bearer ——
+    #    过期 cookie 不该把持有有效应用令牌的用户挡在门外。
+    if sso_token:
+        try:
+            claims = SSOService.decode_portal_token(sso_token)
+            user, changed = await SSOService.sync_user_from_claims(db, claims)
+            if changed:
+                await db.commit()
+            await _touch_guest_last_seen(db, user)
+            return user
+        except JWTError as exc:
+            logger.warning("SSO JWT decode failed, fallback to bearer: %s", exc)
+            if not bearer_token:
+                raise credentials_exception from exc
+
+    token = bearer_token
     if not token:
         raise credentials_exception
 
@@ -120,18 +152,6 @@ async def get_current_user(
             raise credentials_exception
         await _touch_guest_last_seen(db, user)
         return user
-
-    if is_sso and settings.SSO_ENABLED:
-        try:
-            claims = SSOService.decode_portal_token(token)
-            user, changed = await SSOService.sync_user_from_claims(db, claims)
-            if changed:
-                await db.commit()
-            await _touch_guest_last_seen(db, user)
-            return user
-        except JWTError as exc:
-            logger.warning("SSO JWT decode failed: %s", exc)
-            raise credentials_exception from exc
 
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
@@ -153,8 +173,26 @@ async def get_current_user(
     return user
 
 
-async def get_current_user_interactive(
-    request: Request,
+def token_scopes(user: User) -> set[str] | None:
+    """读取 PAT 的权限范围；None 表示交互式会话（拥有完整权限）。"""
+    raw = getattr(user, "token_scopes", None)
+    if raw is None:
+        return None
+    return {scope.strip() for scope in str(raw).split(",") if scope.strip()}
+
+
+async def require_write_scope(user: User = Depends(get_current_user)) -> User:
+    """写操作依赖：只读 PAT 不得创建 / 修改 / 删除笔记。"""
+    scopes = token_scopes(user)
+    if scopes is not None and "write" not in scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前访问令牌只有只读权限",
+        )
+    return user
+
+
+async def get_current_user_interactive(    request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> User:

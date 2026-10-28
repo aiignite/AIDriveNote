@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
@@ -25,6 +25,8 @@ class ApiTokenCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     # 有效期天数；不传表示长期有效
     expires_in_days: Optional[int] = Field(default=None, gt=0, le=3650)
+    # 权限范围：read 只读检索；write 允许创建/修改；ask 允许走 AI 问答（预留）
+    scopes: Optional[list[Literal["read", "write", "ask"]]] = None
 
 
 class ApiTokenOut(BaseModel):
@@ -34,6 +36,7 @@ class ApiTokenOut(BaseModel):
     id: UUID
     name: str
     token_prefix: str
+    scopes: str = "read,write"
     last_used_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     is_revoked: bool
@@ -65,8 +68,11 @@ async def create_api_token(
     expires_at = None
     if body.expires_in_days:
         expires_at = datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)
+    requested = sorted(set(body.scopes or ["read", "write"]))
+    if "write" in requested and "read" not in requested:
+        requested.insert(0, "read")
     token, raw = await ApiTokenService.create_token(
-        db, user.id, body.name, expires_at=expires_at,
+        db, user.id, body.name, expires_at=expires_at, scopes=",".join(requested),
     )
     payload = ApiTokenOut.model_validate(token).model_dump()
     return ApiTokenCreated(**payload, token=raw)

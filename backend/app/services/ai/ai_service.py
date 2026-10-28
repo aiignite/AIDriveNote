@@ -206,7 +206,9 @@ class AIService:
         page_hint = _build_page_context_prompt(page_context)
         if page_hint:
             system_parts.append(f"## 页面上下文\n{page_hint}")
-        rag = await RagService.build_context(db, user_id, message, top_k=5, page_context=page_context)
+        rag, rag_citations = await RagService.build_context_with_citations(
+            db, user_id, message, top_k=5, page_context=page_context,
+        )
         if rag:
             system_parts.append(rag)
 
@@ -256,6 +258,14 @@ class AIService:
 
         tool_names = SkillRouter.merge_tool_names(assistant.tools, [m.skill for m in skill_matches])
         tool_defs = ToolRegistry.get_tools_for_names(tool_names)
+        # 用户启用的 MCP 工具（仅 approval_policy='auto'）并入同一套 function calling
+        if not is_guest:
+            try:
+                from app.services.ai.mcp_service import McpService
+
+                tool_defs.extend(await McpService.enabled_tool_definitions(db, user_id))
+            except Exception:  # noqa: BLE001 — MCP 配置异常不能阻断聊天
+                logger.warning("加载 MCP 工具定义失败", exc_info=True)
         # 视觉图片与 function calling 同时存在时，MiniMax 等模型容易忽略图片；优先保证识图。
         use_tools = bool(tool_defs) and not vision_images_loaded
         openai_tools = [
@@ -287,6 +297,7 @@ class AIService:
             normalized_attachment_ids=normalized_attachment_ids,
             image_ids=[str(aid) for aid in image_ids],
             vision_images_loaded=vision_images_loaded,
+            citations=rag_citations,
         )
 
     @staticmethod
@@ -405,6 +416,11 @@ class AIService:
             ))
             await save_db.commit()
 
+        # 结构化引用独立下发：前端据此渲染可点击溯源芯片，而不是依赖模型
+        # 在正文里写出的 markdown 链接（模型可能漏写或写错）。
+        if prepared.citations:
+            yield f"data: {json.dumps({'type': 'citations', 'citations': prepared.citations}, ensure_ascii=False)}\n\n"
+
         yield f"data: {json.dumps({'type': 'done', 'conversationId': str(prepared.conversation_id)}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -468,6 +484,7 @@ class PreparedChat:
     normalized_attachment_ids: list[str]
     image_ids: list[str]
     vision_images_loaded: bool
+    citations: list[dict[str, Any]]
 
 
 def _assemble_messages(

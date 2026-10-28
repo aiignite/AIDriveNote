@@ -51,6 +51,7 @@ class ApiTokenService:
         user_id: UUID,
         name: str,
         expires_at: datetime | None = None,
+        scopes: str = "read,write",
     ) -> tuple[UserApiToken, str]:
         """签发令牌并落库。
 
@@ -67,6 +68,7 @@ class ApiTokenService:
             token_hash=digest,
             token_prefix=prefix,
             expires_at=expires_at,
+            scopes=scopes,
         )
         db.add(token)
         await db.commit()
@@ -153,4 +155,6 @@ class ApiTokenService:
 
         token.last_used_at = now
         await db.commit()
+        # 把 scope 挂到 user 上（非 ORM 字段），供 require_write_scope 等依赖读取
+        user.token_scopes = token.scopes or "read,write"  # type: ignore[attr-defined]
         return user

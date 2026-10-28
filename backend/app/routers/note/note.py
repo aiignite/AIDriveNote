@@ -8,12 +8,13 @@ from uuid import UUID
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, File, Header, Query, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
+from app.config import get_settings
 from app.database import get_db
-from app.auth import get_current_user
+from app.auth import get_current_user, require_write_scope
 from app.models.user import User
 from app.models.note.note import Note, NoteFolder
 from app.services.auth_service import AuthService
@@ -28,8 +29,10 @@ from app.services.note.note_enhance_service import (
     NoteShareService,
     NoteSearchService,
     NoteTagService,
+    highlight_snippet,
     note_preview_text,
 )
+from app.services.note.link_parser import build_search_text
 from app.exceptions import BadRequestException, ConflictException, ForbiddenException, NotFoundException
 
 router = APIRouter(prefix="/notes", tags=["Notes"])
@@ -147,6 +150,8 @@ class NoteOut(BaseModel):
     updated_at: Optional[datetime] = None
     preview_text: Optional[str] = None
     is_favorite: bool = False
+    # RAG 索引状态：pending / ok / failed / skipped；None 表示尚未建文档记录
+    index_status: Optional[str] = None
     tags: list["TagOut"] = []
 
 
@@ -208,6 +213,36 @@ class SearchResultOut(BaseModel):
     highlights: dict[str, str] = {}
 
 
+class RelatedNoteOut(BaseModel):
+    id: str
+    noteNo: Optional[str] = None
+    title: str
+    noteType: str
+    snippet: str = ""
+    score: float = 0.0
+    linked: bool = False
+
+
+class TagSuggestionOut(BaseModel):
+    name: str
+    color: Optional[str] = None
+    existing: bool = False
+    score: float = 0.0
+
+
+class PublicLinkOut(BaseModel):
+    token: str
+    expiresAt: Optional[str] = None
+
+
+class RagChunkOut(BaseModel):
+    chunkId: str
+    noteId: str
+    headingPath: Optional[str] = None
+    content: str
+    title: str
+
+
 # 哨兵：区分「未传入 lock」与「显式传入 None（已解锁）」
 _UNSET = object()
 
@@ -251,6 +286,7 @@ async def _enrich_note_out(
     include_content: bool = True,
     lock: object = _UNSET,
     is_locked: bool | None = None,
+    index_status: str | None = None,
 ) -> NoteOut:
     if tags is None:
         tags = await NoteTagService.get_note_tags(db, note.id)
@@ -283,8 +319,34 @@ async def _enrich_note_out(
         updated_at=note.updated_at,
         preview_text=None if locked else note_preview_text(note),
         is_favorite=is_favorite,
+        index_status=index_status,
         tags=[TagOut.model_validate(t) for t in tags],
     )
+
+
+async def _load_index_status_map(
+    db: AsyncSession, note_ids: list[UUID],
+) -> dict[str, str]:
+    """批量读取 RAG 文档状态；非 PG / 未启用 / 未装 pgvector 时返回空。"""
+    if not note_ids or not get_settings().RAG_V2_ENABLED:
+        return {}
+    try:
+        if db.get_bind().dialect.name != "postgresql":
+            return {}
+        from app.services.ai.rag_v2_schema import rag_v2_available
+
+        if not await rag_v2_available(db):
+            return {}
+        params = {f"id{index}": str(note_id) for index, note_id in enumerate(note_ids)}
+        placeholders = ", ".join(f":{key}" for key in params)
+        result = await db.execute(
+            text(f"SELECT note_id, status FROM rag_documents WHERE note_id IN ({placeholders})"),
+            params,
+        )
+        return {str(row[0]): str(row[1]) for row in result.fetchall()}
+    except Exception:  # noqa: BLE001 — 状态展示不能影响列表接口
+        logger.warning("读取 RAG 索引状态失败", exc_info=True)
+        return {}
 
 
 async def _enrich_notes_batch(
@@ -296,6 +358,7 @@ async def _enrich_notes_batch(
     tags_map = await NoteTagService.get_tags_for_notes(db, note_ids)
     fav_ids = await NoteFavoriteService.get_favorited_note_ids(db, user.id, note_ids)
     parent_map, enc_ids = await _load_folder_maps(db, user.id)
+    index_map = await _load_index_status_map(db, note_ids)
     return [
         await _enrich_note_out(
             db, note, user,
@@ -303,6 +366,7 @@ async def _enrich_notes_batch(
             is_favorite=note.id in fav_ids,
             include_content=include_content,
             lock=_resolve_lock_fast(note, parent_map, enc_ids),
+            index_status=index_map.get(str(note.id)),
         )
         for note in notes
     ]
@@ -443,14 +507,23 @@ async def search_notes_fulltext(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     include_content: bool = False,
+    include_shared: bool = False,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     items, total = await NoteSearchService.full_text_search(
         db, user_id=user.id, query=q, skip=skip, limit=limit,
+        include_shared=include_shared,
     )
     enriched = await _enrich_notes_batch(db, items, user, include_content=include_content)
-    highlights = {str(n.id): note_preview_text(n, 200) for n in items}
+    highlights = {
+        str(n.id): highlight_snippet(
+            build_search_text(n.title, n.description, n.content, n.note_type),
+            q,
+            max_len=200,
+        )
+        for n in items
+    }
     return SearchResultOut(items=enriched, total=total, highlights=highlights)
 
 
@@ -775,7 +848,7 @@ async def get_note(
 async def create_note(
     body: NoteCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_write_scope),
 ):
     data = body.model_dump()
     data["created_by"] = user.id
@@ -789,7 +862,7 @@ async def update_note(
     note_id: UUID,
     body: NoteUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_write_scope),
     x_note_unlock: Optional[str] = Header(default=None, alias="X-Note-Unlock"),
 ):
     data = body.model_dump(exclude_unset=True)
@@ -966,7 +1039,7 @@ async def change_note_password(
 async def delete_note(
     note_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_write_scope),
 ):
     existing = await NoteService.get_note(db, note_id)
     if not existing:
@@ -1118,6 +1191,148 @@ async def get_backlinks(
         raise NotFoundException("Note")
     await _assert_note_access(db, note, user)
     return await NoteLinkService.get_backlinks(db, note_id)
+
+
+# ── Related notes / suggestions ──
+
+@router.get("/{note_id}/related", response_model=list[RelatedNoteOut])
+async def get_related_notes(
+    note_id: UUID,
+    limit: int = Query(6, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    note = await NoteService.get_note(db, note_id)
+    if not note:
+        raise NotFoundException("Note")
+    await _assert_note_access(db, note, user)
+    from app.services.ai.related_service import RelatedNoteService
+
+    return await RelatedNoteService.related(db, user.id, note, limit=limit)
+
+
+@router.post("/{note_id}/related/{target_id}/link")
+async def link_related_note(
+    note_id: UUID,
+    target_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """在来源笔记末尾追加一条 `[[目标标题]]`，建立可解析的双向链接。"""
+    source = await NoteService.get_note(db, note_id)
+    target = await NoteService.get_note(db, target_id)
+    if not source or not target:
+        raise NotFoundException("Note")
+    await _assert_note_access(db, source, user)
+    await _assert_note_access(db, target, user)
+
+    updated, error = await NoteService.append_text(
+        db, note_id, user.id, f"\n\n[[{target.title}]]",
+    )
+    if updated is None:
+        raise BadRequestException(error or "该笔记类型不支持自动插入链接")
+    return {"success": True, "noteId": str(note_id), "targetId": str(target_id)}
+
+
+@router.get("/{note_id}/tag-suggestions", response_model=list[TagSuggestionOut])
+async def suggest_tags(
+    note_id: UUID,
+    limit: int = Query(5, ge=1, le=10),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    note = await NoteService.get_note(db, note_id)
+    if not note:
+        raise NotFoundException("Note")
+    await _assert_note_access(db, note, user)
+    from app.services.note.tag_suggestion_service import TagSuggestionService
+
+    return await TagSuggestionService.suggest(db, user.id, note, limit=limit)
+
+
+# ── Public read-only link ──
+
+@router.post("/{note_id}/public-link", response_model=PublicLinkOut)
+async def create_public_link(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    note = await NoteService.get_note(db, note_id)
+    if not note:
+        raise NotFoundException("Note")
+    await _assert_note_access(db, note, user)
+    if note.is_encrypted:
+        raise BadRequestException("加密笔记不能创建公开链接")
+    from app.services.note.public_link_service import NotePublicLinkService
+
+    link = await NotePublicLinkService.create_or_get(db, note, user.id)
+    return PublicLinkOut(
+        token=link.token,
+        expiresAt=link.expires_at.isoformat() if link.expires_at else None,
+    )
+
+
+@router.delete("/{note_id}/public-link")
+async def revoke_public_link(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    note = await NoteService.get_note(db, note_id)
+    if not note:
+        raise NotFoundException("Note")
+    await _assert_note_access(db, note, user)
+    from app.services.note.public_link_service import NotePublicLinkService
+
+    removed = await NotePublicLinkService.revoke(db, note_id)
+    return {"success": True, "revoked": removed}
+
+
+@router.get("/{note_id}/chunks/{chunk_id}", response_model=RagChunkOut)
+async def get_rag_chunk(
+    note_id: UUID,
+    chunk_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """AI 引用跳转：取回被引用的块原文，供编辑器定位与校验。"""
+    note = await NoteService.get_note(db, note_id)
+    if not note:
+        raise NotFoundException("Note")
+    await _assert_note_access(db, note, user)
+    from app.services.ai.rag_v2_service import RagV2Service
+
+    chunk = await RagV2Service.get_chunk(db, user.id, note_id, chunk_id)
+    if chunk is None:
+        raise NotFoundException("RAG chunk")
+    return chunk
+
+
+# ── Daily note / review ──
+
+@router.get("/daily/today", response_model=NoteOut)
+async def get_daily_note(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD，默认今天"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.note.daily_service import DailyNoteService
+
+    note = await DailyNoteService.ensure_daily_note(db, user.id, date)
+    enriched = await _enrich_notes_batch(db, [note], user, include_content=True)
+    return enriched[0]
+
+
+@router.post("/daily/review")
+async def daily_review(
+    date: Optional[str] = Query(None, description="YYYY-MM-DD，默认今天"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services.note.daily_service import DailyNoteService
+
+    return await DailyNoteService.build_review(db, user.id, date)
 
 
 # ── Revisions ──

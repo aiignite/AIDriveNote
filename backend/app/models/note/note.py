@@ -303,6 +303,28 @@ class NoteRevision(Base):
     note_rel: Mapped[Note] = relationship("Note", back_populates="revisions")
 
 
+class NotePublicLink(Base):
+    """公开只读分享链接（无需登录，可过期/可撤销）。"""
+
+    __tablename__ = "note_public_links"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+    )
+    note_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("note_notes.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+    )
+
+
 class NoteShare(Base):
     """笔记分享."""
 

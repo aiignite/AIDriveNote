@@ -1,0 +1,16 @@
+{
+  "queries": [
+    {
+      "question": "报销流程有哪些审批节点？",
+      "expected_note_titles": ["报销流程"]
+    },
+    {
+      "question": "上次和周会讨论的部署风险是什么？",
+      "expected_note_titles": ["周会纪要"]
+    },
+    {
+      "question": "知识库管理模式为什么不删除本地文件？",
+      "expected_note_titles": ["知识库管理模式设计"]
+    }
+  ]
+}

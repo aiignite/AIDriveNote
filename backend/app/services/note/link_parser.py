@@ -1,6 +1,7 @@
 """Wiki link parsing and search text extraction for notes."""
 from __future__ import annotations
 
+import html as html_lib
 import re
 from typing import Any
 
@@ -47,7 +48,28 @@ def build_search_text(
             parts.append(content_to_preview_text(note_type, content))
         elif note_type == "mindmap":
             parts.append(_mindmap_text(content))
+        elif note_type == "flowchart":
+            parts.append(_flowchart_text(content))
     return " ".join(p for p in parts if p).strip()
+
+
+def _flowchart_text(content: dict) -> str:
+    """从 draw.io mxGraphModel XML 中抽取可见文字（节点/连线标签）。
+
+    draw.io 把可见文字放在 mxCell 的 ``value`` 属性里（可能是转义过的
+    HTML 片段），而不是元素文本节点，因此先取属性再反转义、去标签。
+    """
+    xml = content.get("xml") if isinstance(content, dict) else None
+    if not xml or not isinstance(xml, str):
+        return ""
+    labels = re.findall(r'value="([^"]*)"', xml) + re.findall(r"value='([^']*)'", xml)
+    raw = " ".join(labels)
+    if not raw:
+        # 兜底：没有 value 属性时取元素文本节点（导出格式可能不同）
+        raw = re.sub(r"<[^>]+>", " ", xml)
+    text_only = html_lib.unescape(raw)
+    text_only = re.sub(r"<[^>]+>", " ", text_only)
+    return " ".join(text_only.split())
 
 
 def _mindmap_text(node: Any) -> str:

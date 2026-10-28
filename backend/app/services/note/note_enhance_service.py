@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
+from html import escape
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select, text
@@ -358,6 +360,8 @@ class NoteRevisionService:
             if refreshed:
                 await NoteSearchService.update_search_fields(db, refreshed)
                 await NoteLinkService.sync_links(db, refreshed, user_id)
+                from app.services.ai.embedding_service import schedule_note_embedding
+                schedule_note_embedding(note_id)
         return await NoteService.get_note(db, note_id)
 
 
@@ -484,15 +488,26 @@ class NoteSearchService:
         query: str,
         skip: int = 0,
         limit: int = 50,
+        include_shared: bool = False,
     ) -> tuple[list[Note], int]:
-        """全文检索：按可用方案走 zhparser / pg_trgm / ILIKE 三级降级。"""
+        """全文检索：按可用方案走 zhparser / pg_trgm / ILIKE 三级降级。
+
+        ``include_shared`` 为真时把共享给当前用户的笔记一并纳入，权限以
+        ``NoteShare`` 记录为准（只有显式分享过的笔记可见）。
+        """
         if not query or not query.strip():
             return [], 0
 
         pattern = f"%{query.strip()}%"
+        ownership = Note.created_by == user_id
+        if include_shared:
+            shared_note_ids = select(NoteShare.note_id).where(
+                NoteShare.shared_with_user_id == user_id,
+            )
+            ownership = or_(ownership, Note.id.in_(shared_note_ids))
         base_filter = (
             Note.is_deleted == False,  # noqa: E712
-            Note.created_by == user_id,
+            ownership,
         )
         strategy = await SearchConfigService.resolve(db)
 
@@ -520,7 +535,23 @@ class NoteSearchService:
             if result is not None:
                 return result
 
-        return await NoteSearchService._search_ilike(db, base_filter, query, pattern, skip, limit)
+        result = await NoteSearchService._search_ilike(db, base_filter, query, pattern, skip, limit)
+        if result[1]:
+            return result
+
+        # 自然语言长问句（"XX 包含哪些内容？"）在 trigram / ILIKE 下容易整句失配：
+        # 退化为"问句开头若干字"的标题/正文前缀匹配，显著提升问答召回。
+        compact = query.strip()
+        for length in (12, 8, 6, 4):
+            prefix = compact[:length]
+            if len(prefix) < 4 or prefix == compact:
+                continue
+            prefix_result = await NoteSearchService._search_ilike(
+                db, base_filter, prefix, f"%{prefix}%", skip, limit,
+            )
+            if prefix_result[1]:
+                return prefix_result
+        return result
 
     @staticmethod
     async def _search_tsvector(
@@ -635,3 +666,36 @@ def note_preview_text(note: Note, max_len: int = 120) -> str:
         text_val = content_to_preview_text(note.note_type, note.content, max_chars=max_len)
         return text_val[:max_len] if text_val else ""
     return ""
+
+
+def highlight_snippet(text: str, query: str, max_len: int = 200) -> str:
+    """返回命中词附近的片段，并用 ``<mark>`` 包裹命中文本。
+
+    输出会直接进前端搜索结果，因此**先做 HTML 转义再插标记**，笔记正文里的
+    尖括号/脚本不会被当成 HTML 执行。
+    """
+    flat = " ".join((text or "").split())
+    needle = (query or "").strip()
+    if not flat:
+        return ""
+    if not needle:
+        return escape(flat[:max_len])
+
+    lower = flat.lower()
+    idx = lower.find(needle.lower())
+    if idx < 0:
+        return escape(flat[:max_len])
+
+    start = max(0, idx - max_len // 3)
+    end = min(len(flat), start + max_len)
+    snippet = escape(flat[start:end])
+    escaped_needle = escape(needle)
+    marked = re.sub(
+        re.escape(escaped_needle),
+        lambda m: f"<mark>{m.group(0)}</mark>",
+        snippet,
+        flags=re.IGNORECASE,
+    )
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(flat) else ""
+    return f"{prefix}{marked}{suffix}"
