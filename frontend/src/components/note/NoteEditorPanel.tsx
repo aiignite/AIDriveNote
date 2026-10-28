@@ -23,6 +23,7 @@ import ConfirmDialog from '../ConfirmDialog';
 import PromptDialog from '../PromptDialog';
 import AISelectionToolbar from './AISelectionToolbar';
 import RevisionDiffDialog from './RevisionDiffDialog';
+import ImageCaptureButton from '../media/ImageCaptureButton';
 import { contentToPlainText, diffLines } from '../../utils/noteDiff';
 import { useApp } from '../../contexts/AppContext';
 import type { NoteMindMapEditorHandle } from './NoteMindMapEditor';
@@ -239,6 +240,8 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
 }) => {
   const { openAI } = useApp();
   const editorAreaRef = useRef<HTMLDivElement>(null);
+  /** Markdown 编辑器注册的「上传并插入图片」能力，供顶部拍照按钮调用 */
+  const imageInsertRef = useRef<((file: File) => Promise<void>) | null>(null);
   const handleSelectionAIAction = useCallback((selectionText: string, prompt: string) => {
     // 选区正文通过 pageContext.selectionText 传给模型，presetMessage 只放指令
     openAI({ presetMessage: prompt, selectionText });
@@ -1260,6 +1263,14 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     setOutlineSlot({ type: noteTypeRef.current, state: next });
   }, []);
 
+  /** Markdown 编辑器把图片插入能力注册到外层工具栏 */
+  const handleRegisterImageInsert = useCallback(
+    (handler: ((file: File) => Promise<void>) | null) => {
+      imageInsertRef.current = handler;
+    },
+    [],
+  );
+
   /** 命令面板关闭 */
   const handlePaletteClose = useCallback(() => setPaletteOpen(false), []);
 
@@ -1537,6 +1548,17 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>+{noteTags.length - 2}</span>
             )}
           </div>
+          {/* 拍照录入：Markdown 编辑器注册插入能力，图标放在顶部操作行 */}
+          {note.noteType === 'markdown' && (
+            <ImageCaptureButton
+              title="拍照录入"
+              size={13}
+              onCaptured={(file) => imageInsertRef.current?.(file) ?? Promise.resolve()}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
+                isDark ? 'text-gray-400 hover:bg-gray-700 hover:text-gray-200' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+              }`}
+            />
+          )}
           {/* Related notes trigger */}
           <button
             type="button"
@@ -1894,6 +1916,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               isDark={isDark}
               onRegistryChange={handleRegistryChange}
               onOutlineChange={handleOutlineChange}
+              onRegisterImageInsert={handleRegisterImageInsert}
             />
           )}
         </div>

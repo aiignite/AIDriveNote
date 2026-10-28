@@ -15,7 +15,6 @@ import { getCommands, getExtraCommands } from '@uiw/react-md-editor/commands';
 import toast from 'react-hot-toast';
 import { uploadNoteImage } from '../../utils/blocknoteImageUpload';
 import { pickImage } from '../../hooks/useImageCapture';
-import ImageCaptureButton from '../media/ImageCaptureButton';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -51,6 +50,8 @@ interface NoteMarkdownEditorProps {
   onRegistryChange?: (registry: NoteEditorRegistry) => void;
   /** 上报大纲数据（只读时上报 null） */
   onOutlineChange?: (state: NoteOutlineState | null) => void;
+  /** 把「上传并插入图片」能力交给外层工具栏的拍照按钮 */
+  onRegisterImageInsert?: (handler: ((file: File) => Promise<void>) | null) => void;
 }
 
 /** remark 插件（编辑与预览共用） */
@@ -134,6 +135,7 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
   isDark = false,
   onRegistryChange,
   onOutlineChange,
+  onRegisterImageInsert,
 }) => {
   /** 最外层容器，用于定位 textarea 与预览容器 */
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -399,6 +401,11 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
       toast.error(err instanceof Error ? err.message : '图片插入失败');
     }
   }, [insertTextAtCursor]);
+
+  useEffect(() => {
+    onRegisterImageInsert?.(insertImageFile);
+    return () => onRegisterImageInsert?.(null);
+  }, [insertImageFile, onRegisterImageInsert]);
 
   /**
    * 粘贴事件：剪贴板里是图片时逐张上传并插入，其余内容交给默认文本粘贴。
@@ -791,27 +798,6 @@ const NoteMarkdownEditorCore: React.FC<NoteMarkdownEditorProps> = ({
       className={`note-md-editor-root relative w-full h-full flex flex-col min-h-0 ${isDark ? 'note-md-dark' : ''}`}
       data-color-mode={isDark ? 'dark' : 'light'}
     >
-      {/* 拍照录入工具条：普通文档流常驻顶部（参照 AIIgnitePLM），预览模式下插入到文末 */}
-      {!readOnly && (
-        <div
-          className={`flex items-center gap-2 px-3 py-1 border-b shrink-0 ${
-            isDark ? 'border-gray-700 bg-gray-800/50' : 'border-gray-100 bg-gray-50/50'
-          }`}
-        >
-          <ImageCaptureButton
-            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-              isDark ? 'text-amber-300 hover:bg-gray-700' : 'text-amber-700 hover:bg-amber-50'
-            }`}
-            title="拍照录入"
-            label="拍照录入"
-            size={14}
-            onCaptured={insertImageFile}
-          />
-          <span className={`text-[11px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-            拍完自动上传并插入笔记
-          </span>
-        </div>
-      )}
       {readOnly ? (
         <MDEditor.Markdown
           source={value}

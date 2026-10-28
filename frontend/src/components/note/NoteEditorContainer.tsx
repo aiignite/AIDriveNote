@@ -27,6 +27,8 @@ interface NoteEditorContainerProps {
   onRegistryChange?: (registry: NoteEditorRegistry) => void;
   /** 大纲上报：编辑器上报大纲数据（无大纲能力时上报 null） */
   onOutlineChange?: (state: NoteOutlineState | null) => void;
+  /** Markdown 编辑器把「上传并插入图片」能力交给外层工具栏 */
+  onRegisterImageInsert?: (handler: ((file: File) => Promise<void>) | null) => void;
 }
 
 function unwrapContent(noteType: NoteType, raw: unknown): unknown {
@@ -59,6 +61,7 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
   isDark = false,
   onRegistryChange,
   onOutlineChange,
+  onRegisterImageInsert,
 }, ref) => {
   const editorContent = useMemo(() => unwrapContent(noteType, content), [noteType, content]);
 
@@ -95,6 +98,7 @@ const NoteEditorContainer = forwardRef<NoteMindMapEditorHandle, NoteEditorContai
             isDark={isDark}
             onRegistryChange={onRegistryChange}
             onOutlineChange={onOutlineChange}
+            onRegisterImageInsert={onRegisterImageInsert}
           />
         </Suspense>
       );

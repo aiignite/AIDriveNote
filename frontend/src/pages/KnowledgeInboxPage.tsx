@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
+  ArrowLeft,
   Check,
   Download,
   ExternalLink,
@@ -253,6 +255,13 @@ const KnowledgeInboxPage: React.FC = () => {
       <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-900">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
+            <Link
+              to="/"
+              title="返回笔记主页"
+              className="flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              <ArrowLeft size={15} /> <span className="hidden sm:inline">返回主页</span>
+            </Link>
             <Inbox size={20} className="text-orange-500" />
             <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100">知识收件箱</h1>
             {stats && (
