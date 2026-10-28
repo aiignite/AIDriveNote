@@ -713,6 +713,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 120);
+    const tags = note.tags ?? [];
 
     return (
       <div
@@ -805,9 +806,9 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         <div className={`shrink-0 p-1.5 rounded-md ${typeCfg.bgColor}`}>
           <span className={typeCfg.color}>{typeCfg.icon}</span>
         </div>
-        {/* 三行布局：标题 / 预览摘要 / 标签+时间。
-            预览摘要让用户不必逐条点开即可判断内容，弥补列表缺少正文线索的短板。 */}
-        <div className="flex-1 min-w-0">
+        {/* 两行布局：标题 / 元信息（标签，无标签时改用摘要）+ 时间。
+            摘要不独占一行：列表项越矮一屏能看的条数越多，正文线索改由悬停 title 提供。 */}
+        <div className="flex-1 min-w-0" title={preview || undefined}>
           <span className={`block text-sm truncate ${
             isSelected
               ? (isDark ? 'text-orange-300 font-medium' : 'text-orange-700 font-medium')
@@ -820,32 +821,31 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
             )}
             {note.title || '无标题'}
           </span>
-          {/* 正文摘要：仅在有内容且有足够宽度时显示，避免窄栏挤占标题空间 */}
-          {preview && (
-            <span
-              className={`block text-xs truncate mt-0.5 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}
-              title={preview}
-            >
-              {preview}
-            </span>
-          )}
-          {/* 不换行：标签保持原宽，时间占据剩余空间并在溢出时省略 */}
+          {/* 不换行：标签保持原宽，摘要占据剩余空间并在溢出时省略 */}
           <div className="flex items-center gap-1 mt-0.5 min-w-0">
-            {note.tags?.slice(0, 2).map(tag => (
-              <span
-                key={tag.id}
-                className="shrink-0 text-[10px] px-1.5 py-0 rounded-full"
-                style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
-              >
-                {tag.name}
+            {tags.length > 0 ? (
+              <>
+                {tags.slice(0, 2).map(tag => (
+                  <span
+                    key={tag.id}
+                    className="shrink-0 text-[10px] px-1.5 py-0 rounded-full"
+                    style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
+                  >
+                    {tag.name}
+                  </span>
+                ))}
+                {tags.length > 2 && (
+                  <span className={`shrink-0 text-[10px] ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+                    +{tags.length - 2}
+                  </span>
+                )}
+              </>
+            ) : preview ? (
+              <span className={`min-w-0 flex-1 truncate text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+                {preview}
               </span>
-            ))}
-            {(note.tags?.length ?? 0) > 2 && (
-              <span className={`shrink-0 text-[10px] ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
-                +{(note.tags?.length ?? 0) - 2}
-              </span>
-            )}
-            <span className={`min-w-0 truncate text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+            ) : null}
+            <span className={`shrink-0 text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
               {formatRelativeTime(note.updatedAt)}
             </span>
           </div>
