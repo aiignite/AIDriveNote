@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5"
+    OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
     AI_PROVIDER: str = "ollama"
 
     # ── RAG v2：pgvector 分块检索 ──
@@ -97,6 +98,30 @@ class Settings(BaseSettings):
     NOTE_REVISION_KEEP: int = 50
     # 标签建议是否调用 LLM 对候选做二次筛选（默认关闭，开启后按次计费）
     NOTE_TAG_SUGGEST_LLM: bool = False
+
+    # ── 知识入库 / 蒸馏 ──
+    KNOWLEDGE_INGEST_ENABLED: bool = True
+    KNOWLEDGE_DISTILL_ENABLED: bool = True
+    # AI 平台中的模型 ref/name；留空则使用用户默认模型，最后回退 Ollama
+    KNOWLEDGE_DISTILL_MODEL: str = ""
+    # 是否允许把内容发送到商用模型；默认关闭，首次使用需显式开启
+    KNOWLEDGE_DISTILL_ALLOW_EXTERNAL: bool = False
+    # 出站前脱敏邮箱/手机号
+    KNOWLEDGE_DISTILL_REDACT: bool = True
+    # 每用户每日蒸馏次数上限；0 表示不限制
+    KNOWLEDGE_DISTILL_DAILY_LIMIT: int = 100
+    # 送入模型的原文上限（头 8k + 均分采样）
+    KNOWLEDGE_DISTILL_MAX_INPUT_CHARS: int = 12000
+    KNOWLEDGE_DISTILL_TIMEOUT: int = 45
+    # 合并建议阈值；默认动作仍是新建
+    KNOWLEDGE_MERGE_THRESHOLD: float = 0.82
+    # 单个源文档最多生成的卡片数（日报等可拆多张）
+    KNOWLEDGE_MAX_CARDS: int = 3
+    # KB 上传/邮件是否自动进入蒸馏管线
+    KNOWLEDGE_AUTO_INGEST_KB_UPLOAD: bool = True
+    KNOWLEDGE_AUTO_INGEST_EMAIL: bool = True
+    # 摘要合成块在 RRF 排序中的微提升
+    KNOWLEDGE_SUMMARY_CHUNK_BOOST: float = 0.03
 
     # ── 笔记录音语音转写（faster-whisper / 远程 asr_gateway）──
     # Whisper 模型规格；机器较弱可改为 small

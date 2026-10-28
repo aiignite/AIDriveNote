@@ -25,11 +25,15 @@ from app.routers.mcp import router as mcp_router
 from app.routers.kb import router as kb_router
 from app.routers.public import router as public_router
 from app.routers.clip import router as clip_router
+from app.routers.ingest import router as ingest_router
+from app.routers.knowledge import note_router as knowledge_note_router
+from app.routers.knowledge import router as knowledge_router
 from app.routers.admin.users import router as admin_users_router
 from app.routers.admin.guest_events import router as admin_guest_events_router
 from app.services.ai.seed_service import AISeedService
 from app.services.ai.rag_v2_schema import ensure_rag_schema
 from app.services.ai.rag_index_service import run_index_worker
+from app.services.knowledge.ingest_worker import run_ingest_worker
 from app.services.admin_bootstrap import AdminBootstrap
 from app.services.guest_purge_service import GuestPurgeService
 import app.ai_tools  # noqa: F401 — register AI tools
@@ -37,6 +41,7 @@ import app.models.ai  # noqa: F401 — register AI tables
 import app.models.guest_event  # noqa: F401 — register guest_events table
 import app.models.mcp  # noqa: F401 — register MCP client tables
 import app.models.kb  # noqa: F401 — register KB asset tables
+import app.models.knowledge  # noqa: F401 — register knowledge ingest tables
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -73,7 +78,9 @@ async def lifespan(app: FastAPI):
     """
     purge_task: asyncio.Task | None = None
     index_task: asyncio.Task | None = None
+    ingest_task: asyncio.Task | None = None
     index_stop = asyncio.Event()
+    ingest_stop = asyncio.Event()
     if os.getenv("AIDRIVE_TESTING") != "1":
         try:
             async with AsyncSessionLocal() as db:
@@ -93,6 +100,9 @@ async def lifespan(app: FastAPI):
         # RAG v2 索引 worker：pgvector 就绪时消费索引任务；否则不启动
         if rag_schema_ready:
             index_task = asyncio.create_task(run_index_worker(index_stop))
+        # 知识入库 worker：解析 → 蒸馏；不依赖 pgvector
+        if settings.KNOWLEDGE_INGEST_ENABLED:
+            ingest_task = asyncio.create_task(run_ingest_worker(ingest_stop))
     try:
         yield
     finally:
@@ -104,6 +114,10 @@ async def lifespan(app: FastAPI):
             index_stop.set()
             index_task.cancel()
             await asyncio.gather(index_task, return_exceptions=True)
+        if ingest_task is not None:
+            ingest_stop.set()
+            ingest_task.cancel()
+            await asyncio.gather(ingest_task, return_exceptions=True)
 
 
 app = FastAPI(
@@ -137,6 +151,9 @@ app.include_router(mcp_router, prefix=API_PREFIX)
 app.include_router(kb_router, prefix=API_PREFIX)
 app.include_router(public_router, prefix=API_PREFIX)
 app.include_router(clip_router, prefix=API_PREFIX)
+app.include_router(ingest_router, prefix=API_PREFIX)
+app.include_router(knowledge_router, prefix=API_PREFIX)
+app.include_router(knowledge_note_router, prefix=API_PREFIX)
 
 
 @app.exception_handler(AppException)

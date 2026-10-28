@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.note import Note
+from app.services.knowledge.keyword_rules import STOPWORDS as _STOPWORDS
+from app.services.knowledge.keyword_rules import TOKEN_RE as _TOKEN_RE
 from app.services.note.link_parser import build_search_text
 from app.services.note.note_enhance_service import NoteTagService, note_preview_text
 
@@ -58,14 +60,6 @@ def parse_llm_tags(raw: str, allowed: list[str], limit: int) -> list[str]:
     return result
 
 
-_STOPWORDS = {
-    "我们", "你们", "他们", "这个", "那个", "可以", "需要", "进行", "通过",
-    "以及", "但是", "如果", "因为", "所以", "已经", "没有", "一个", "什么",
-    "自己", "现在", "时候", "问题", "内容", "笔记", "相关", "主要", "同时",
-    "目前", "之后", "其中", "并且", "或者", "就是", "不是", "还是",
-}
-
-_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,6}|[A-Za-z][A-Za-z0-9_+-]{2,}")
 
 
 async def _maybe_llm_rerank(
