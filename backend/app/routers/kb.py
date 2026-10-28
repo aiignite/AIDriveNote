@@ -1,8 +1,10 @@
 """知识库资产：本地文件清单登记、PDF 文本抽取、搜索与转笔记。"""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
@@ -10,11 +12,15 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_not_guest
+from app.config import get_settings
 from app.database import get_db
 from app.exceptions import BadRequestException, NotFoundException
 from app.models.kb import KbFile, KbRoot
 from app.models.user import User
+from app.services.knowledge.ingest_service import ingest
 from app.services.note.kb_service import KbService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/kb", tags=["KnowledgeBase"])
 
@@ -152,6 +158,30 @@ async def upload_kb_file(
         mime=file.content_type,
         is_protected=is_protected,
     )
+    if (
+        get_settings().KNOWLEDGE_INGEST_ENABLED
+        and get_settings().KNOWLEDGE_AUTO_INGEST_KB_UPLOAD
+        and record.extracted_text
+        and not record.is_protected
+    ):
+        try:
+            await ingest(
+                db,
+                user.id,
+                source_type="kb",
+                external_id=f"kb:{record.root_id}:{record.path}",
+                title=PurePosixPath(record.path).stem or record.path,
+                text=record.extracted_text,
+                mime=record.mime,
+                kb_file_id=record.id,
+                raw_meta={
+                    "path": record.path,
+                    "filename": PurePosixPath(record.path).name,
+                    "rootId": str(record.root_id),
+                },
+            )
+        except Exception:  # noqa: BLE001 — 自动入库失败不应阻断资产登记
+            logger.warning("KB 资产自动入库失败: %s", record.path, exc_info=True)
     return _file_out(record)
 
 

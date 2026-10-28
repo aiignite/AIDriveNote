@@ -1,7 +1,8 @@
 """MCP 工具定义 — 把外部 Agent 检索到的文档写入 AIDriveNote 笔记。
 
-对外暴露 5 个工具：
+对外暴露 6 个工具：
 - create_note      把文档写入为新笔记（核心）
+- ingest_document  把文档送入知识收件箱（解析 + 蒸馏，人工审核后落库）
 - append_to_note   追加内容到已有笔记
 - search_notes     全文检索，用于定位目标笔记
 - list_folders     列出文件夹，用于指定归档位置
@@ -261,6 +262,7 @@ def create_server(settings: Settings) -> FastMCP:
         folder_name: str | None = None,
         tags: list[str] | None = None,
         description: str | None = None,
+        distill: bool = False,
     ) -> str:
         """把一段文档写入为新的 AIDriveNote 笔记。
 
@@ -270,6 +272,7 @@ def create_server(settings: Settings) -> FastMCP:
         @param folder_name 归档到的文件夹名称（需已存在，可先用 list_folders 确认）
         @param tags 标签名列表；不存在的标签会自动创建
         @param description 笔记描述（可选，用于列表展示）
+        @param distill 是否同时送入知识蒸馏（会调用模型，默认关闭）
         """
         if note_type not in ("markdown", "rich_text"):
             return "note_type 只能是 markdown 或 rich_text。"
@@ -304,6 +307,16 @@ def create_server(settings: Settings) -> FastMCP:
                     payload["folder_id"] = folder_id
 
                 note = await client.create_note(payload)
+                distill_status = ""
+                if distill:
+                    try:
+                        result = await client.distill_note(note["id"])
+                        distill_status = (
+                            f"\n- 已送入知识蒸馏：documentId `{result.get('documentId')}`"
+                            "（审核通过后才会生成知识笔记）"
+                        )
+                    except ApiError as exc:
+                        distill_status = f"\n- 知识蒸馏提交失败：{exc}"
 
                 applied_tags: list[str] = []
                 created_tags: list[str] = []
@@ -332,8 +345,49 @@ def create_server(settings: Settings) -> FastMCP:
         if applied_tags:
             suffix = f"（其中新建：{'、'.join(created_tags)}）" if created_tags else ""
             lines.append(f"- 标签：{'、'.join(applied_tags)}{suffix}")
+        if distill_status:
+            lines.append(distill_status.strip())
         lines.append("在笔记应用中搜索该标题即可打开。")
         return "\n".join(lines)
+
+    @mcp.tool()
+    async def ingest_document(
+        title: str,
+        content: str,
+        url: str | None = None,
+        source_type: str = "mcp",
+        external_id: str | None = None,
+    ) -> str:
+        """把外部 Agent 文档送入知识收件箱，自动解析并蒸馏。
+
+        与 create_note 的区别：不直接生成笔记，而是先产出一张待审核知识卡，
+        用户在「知识收件箱」确认后才落库，避免错误知识污染笔记库。
+
+        @param title 文档标题
+        @param content 文档正文（纯文本或 Markdown / HTML）
+        @param url 原文链接（可选）
+        @param source_type 来源类型，默认 mcp
+        @param external_id 外部唯一 ID；留空则按内容哈希去重
+        """
+        if not title.strip() or not content.strip():
+            return "标题与正文不能为空。"
+        payload = {
+            "sourceType": source_type,
+            "title": title.strip(),
+            "text": content,
+            "url": url,
+            "externalId": external_id,
+        }
+        try:
+            async with AIDriveNoteClient(settings) as client:
+                result = await client.ingest_document(payload)
+        except ApiError as exc:
+            return f"知识入库失败：{exc}"
+        duplicate = "（内容已存在，已跳过重复处理）" if result.get("duplicate") else ""
+        return (
+            f"已进入知识收件箱{duplicate}，documentId `{result.get('documentId')}`。\n"
+            "打开应用「知识收件箱」审核后才会生成知识笔记。"
+        )
 
     @mcp.tool()
     async def append_to_note(

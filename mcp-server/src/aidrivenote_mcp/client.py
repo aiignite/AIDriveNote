@@ -117,6 +117,22 @@ class AIDriveNoteClient:
         """
         return await self._request("POST", "notes", json=payload)
 
+    async def ingest_document(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """把外部文档送入知识入库管线。
+
+        @param payload sourceType / externalId / title / text / url / rawMeta
+        @returns {documentId, status, duplicate}
+        """
+        return await self._request("POST", "ingest/documents", json=payload)
+
+    async def distill_note(self, note_id: str) -> dict[str, Any]:
+        """把已有笔记送入知识蒸馏管线。
+
+        @param note_id 笔记 ID
+        @returns {documentId, status, duplicate}
+        """
+        return await self._request("POST", f"notes/{note_id}/distill")
+
     async def get_note(self, note_id: str) -> dict[str, Any]:
         """按 ID 获取笔记详情。
 

@@ -54,11 +54,17 @@ function syncGeminiDigest() {
       title: message.getSubject().slice(0, 120),
       text: text.slice(0, cfg.maxTextChars),
       url: 'https://mail.google.com/mail/u/0/#all/' + messageId,
-      tags: cfg.tags,
-      folderName: cfg.folder,
-      createFolder: true,
-      mode: 'append',
-      noteTitle: cfg.noteTitle,
+      sourceType: 'email',
+      externalId: messageId,
+      occurredAt: message.getDate().toISOString(),
+      rawMeta: {
+        messageId: messageId,
+        subject: message.getSubject(),
+        from: message.getFrom(),
+        labels: message.getThread().getLabels().map(label => label.getName()),
+      },
+      // 进入知识收件箱：异步解析 + 蒸馏，人工确认后才生成知识笔记
+      ingest: true,
     };
 
     const response = UrlFetchApp.fetch(cfg.apiUrl, {

@@ -1,6 +1,7 @@
 """网页剪藏接口：供浏览器扩展 / 快捷指令调用。"""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from app.auth import require_write_scope
 from app.database import get_db
 from app.exceptions import BadRequestException
 from app.models.user import User
+from app.services.knowledge.ingest_service import ingest
 from app.services.note.clip_service import ClipService
 
 router = APIRouter(prefix="/clip", tags=["Clip"])
@@ -30,12 +32,19 @@ class ClipRequest(BaseModel):
     mode: Literal["new", "append", "daily"] = "new"
     noteId: Optional[UUID] = None
     noteTitle: Optional[str] = None
+    # 知识入库：true 时不创建原始笔记，原文进入知识收件箱
+    ingest: bool = False
+    sourceType: str = "clip"
+    externalId: Optional[str] = None
+    occurredAt: Optional[datetime] = None
+    rawMeta: Optional[dict] = None
 
 
 class ClipResult(BaseModel):
-    noteId: str
+    noteId: Optional[str] = None
     title: str
     mode: str = "new"
+    documentId: Optional[str] = None
 
 
 @router.post("", response_model=ClipResult)
@@ -44,7 +53,31 @@ async def create_clip(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_write_scope),
 ):
-    """把网页选区保存为 Markdown 笔记；需要带 write 权限的访问令牌。"""
+    """把网页选区保存为 Markdown 笔记；需要带 write 权限的访问令牌。
+
+    ``ingest=true`` 时改走知识入库：原文保存为源文档，异步解析、蒸馏，
+    审核通过后才生成知识笔记。
+    """
+    if body.ingest:
+        try:
+            document, _duplicate = await ingest(
+                db,
+                user.id,
+                source_type=body.sourceType,
+                external_id=body.externalId or body.url,
+                title=body.title,
+                text=body.text,
+                url=body.url,
+                occurred_at=body.occurredAt,
+                raw_meta=body.rawMeta,
+            )
+        except ValueError as exc:
+            raise BadRequestException(str(exc)) from exc
+        return ClipResult(
+            title=document.title or body.title or "网页剪藏",
+            mode="ingest",
+            documentId=str(document.id),
+        )
     try:
         note, applied_mode = await ClipService.create_clip(
             db,
