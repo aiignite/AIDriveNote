@@ -31,6 +31,7 @@ import app.models.note.note  # noqa: F401
 import app.models.note.recording  # noqa: F401 — 录音/转写表（匿名清除测试会涉及）
 import app.models.mcp  # noqa: F401 — MCP 客户端表
 import app.models.kb  # noqa: F401 — 知识库资产表
+import app.models.knowledge  # noqa: F401 — 知识入库/知识卡表
 import app.models.user  # noqa: F401
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"

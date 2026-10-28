@@ -149,6 +149,9 @@ class UserAISettings(Base):
     default_model_name: Mapped[str | None] = mapped_column(String(255))
     default_provider: Mapped[str | None] = mapped_column(String(50))
     sidebar_width: Mapped[int] = mapped_column(Integer, default=400)
+    knowledge_distill_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    knowledge_allow_external: Mapped[bool] = mapped_column(Boolean, default=False)
+    knowledge_daily_limit: Mapped[int] = mapped_column(Integer, default=100)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
