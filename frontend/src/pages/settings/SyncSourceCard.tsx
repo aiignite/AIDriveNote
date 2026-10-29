@@ -270,6 +270,16 @@ const SyncSourceCard: React.FC<SyncSourceCardProps> = ({
                     <ShieldAlert size={13} /> 重新授权
                   </button>
                 )}
+                {granted && lockDirectory && (
+                  <button
+                    type="button"
+                    onClick={() => void runtime.pick(pickStartIn)}
+                    className={`text-[11px] underline-offset-2 hover:underline ${muted}`}
+                    title="仅在目录授权失效或选错时使用；目录名仍必须是 KnowledgeBase"
+                  >
+                    重新授权
+                  </button>
+                )}
               </div>
             </div>
 
