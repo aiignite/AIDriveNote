@@ -20,7 +20,7 @@ import {
 } from '../../hooks/usePersistentState';
 import { ensurePermission, isSupported as isSyncSupported, loadHandleFromIndexedDB } from '../../services/sync/folderAccess';
 import { runSync } from '../../services/sync/syncEngine';
-import { SYNC_CONFIG_EVENT, loadSyncConfig } from '../../services/sync/kbConfig';
+import { SYNC_CONFIG_EVENT, KB_LOCAL_DIR_NAME, loadSyncConfig } from '../../services/sync/kbConfig';
 import { getUnlockToken, NOTE_TYPES, EDITABLE_NOTE_TYPES, type Note, type NoteFolder, type NoteTag } from '../../services/note';
 
 /* ── helpers ────────────────────────────────────── */
@@ -714,6 +714,10 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
         const handle = await loadHandleFromIndexedDB(job.key);
         if (!handle) {
           skipped.push(`${job.label}（未绑定目录）`);
+          continue;
+        }
+        if (job.key === 'kb' && handle.name !== KB_LOCAL_DIR_NAME) {
+          skipped.push(`知识库同步（目录必须是 ${KB_LOCAL_DIR_NAME}，请重新授权）`);
           continue;
         }
         if (!(await ensurePermission(handle, { requestInGesture: true }))) {

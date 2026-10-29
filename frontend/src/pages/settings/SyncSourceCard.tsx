@@ -32,8 +32,10 @@ interface SyncSourceCardProps {
   supported: boolean;
   persistent: boolean | null;
   pickStartIn?: string;
-  /** 固定用途目录提示，如 ~/Documents/KnowledgeBase/ */
-  pathHint?: string;
+  /** 固定目录提示，如 ~/Documents/KnowledgeBase/；固定目录不提供更换入口 */
+  fixedPath?: string;
+  /** 固定目录模式：只允许授权，不允许更换绑定 */
+  lockDirectory?: boolean;
   /** 启动/停止「一键同步」 */
   onToggle: (enabled: boolean) => void;
   /** 保存忽略清单与保护目录 */
@@ -77,7 +79,8 @@ const SyncSourceCard: React.FC<SyncSourceCardProps> = ({
   supported,
   persistent,
   pickStartIn,
-  pathHint,
+  fixedPath,
+  lockDirectory = false,
   onToggle,
   onSaveRules,
   onResetPreset,
@@ -142,35 +145,79 @@ const SyncSourceCard: React.FC<SyncSourceCardProps> = ({
               />
               一键同步
             </label>
-            <button
-              type="button"
-              disabled={!supported}
-              onClick={() => void runtime.pick(pickStartIn)}
-              className={`flex items-center gap-1.5 rounded-lg ${tones.button} px-3 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50`}
-            >
-              <HardDriveDownload size={15} />
-              {handle ? '更换文件夹' : '选择本地文件夹'}
-            </button>
-            {handle && (
-              <button
-                type="button"
-                onClick={() => void runtime.disconnect()}
-                className={`p-2 rounded-lg transition-colors ${
-                  isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
-                }`}
-                title="断开绑定"
-              >
-                <Unplug size={16} />
-              </button>
+            {lockDirectory ? (
+              handle && granted ? (
+                <span
+                  className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium ${
+                    isDark ? 'border-emerald-800 text-emerald-300' : 'border-emerald-300 text-emerald-700'
+                  }`}
+                >
+                  <ShieldCheck size={14} /> 固定目录已授权
+                </span>
+              ) : handle ? (
+                <button
+                  type="button"
+                  disabled={!supported}
+                  onClick={() => void runtime.reauthorize()}
+                  className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium disabled:opacity-50 ${
+                    isDark
+                      ? 'border-amber-800 text-amber-300 hover:bg-amber-950/50'
+                      : 'border-amber-300 text-amber-700 hover:bg-amber-50'
+                  }`}
+                >
+                  <ShieldAlert size={15} /> 重新授权
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!supported}
+                  onClick={() => void runtime.pick(pickStartIn)}
+                  className={`flex items-center gap-1.5 rounded-lg ${tones.button} px-3 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50`}
+                >
+                  <HardDriveDownload size={15} /> 授权访问
+                </button>
+              )
+            ) : (
+              <>
+                <button
+                  type="button"
+                  disabled={!supported}
+                  onClick={() => void runtime.pick(pickStartIn)}
+                  className={`flex items-center gap-1.5 rounded-lg ${tones.button} px-3 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50`}
+                >
+                  <HardDriveDownload size={15} />
+                  {handle ? '更换文件夹' : '选择本地文件夹'}
+                </button>
+                {handle && (
+                  <button
+                    type="button"
+                    onClick={() => void runtime.disconnect()}
+                    className={`p-2 rounded-lg transition-colors ${
+                      isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
+                    }`}
+                    title="断开绑定"
+                  >
+                    <Unplug size={16} />
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
 
-        {pathHint && (
-          <p className={`text-xs ${muted}`}>
-            固定用途目录：<code className={tones.text}>{pathHint}</code>。浏览器不允许静默读取绝对路径，
-            首次需手动选择该文件夹授权。
-          </p>
+        {fixedPath && (
+          <div className={`flex items-start gap-2 rounded-xl border p-3 text-xs ${body}`}>
+            <Folder size={14} className="mt-0.5 shrink-0 text-amber-400" />
+            <div className="min-w-0">
+              <p className={muted}>固定目录（不可更换）</p>
+              <code className={`break-all font-medium ${tones.text}`}>{fixedPath}</code>
+              <p className={`mt-1 ${muted}`}>
+                浏览器首次需要手动授权一次：请选择「文稿 / Documents」下的
+                <code className="mx-1">KnowledgeBase</code>
+                文件夹。授权后长期有效，不需要也不允许在应用里更换。
+              </p>
+            </div>
+          </div>
         )}
 
         {!supported && (

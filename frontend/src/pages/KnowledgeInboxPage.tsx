@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { knowledgeApi, type KnowledgeCard, type KnowledgeLint, type KnowledgeStats } from '../services/knowledge';
 import { ensurePermission, loadHandleFromIndexedDB } from '../services/sync/folderAccess';
+import { KB_LOCAL_DIR_NAME } from '../services/sync/kbConfig';
 import { writeKnowledgeCard } from '../services/sync/kbMaintenance';
 
 const STATUS_TABS = [
@@ -191,7 +192,10 @@ const KnowledgeInboxPage: React.FC = () => {
     void runAction('kb', async () => {
       const handle = await loadHandleFromIndexedDB('kb');
       if (!handle) {
-        throw new Error('请先在「设置 → 本地同步」中绑定知识库根目录');
+        throw new Error('请先在「设置 → 本地同步」中授权知识库目录');
+      }
+      if (handle.name !== KB_LOCAL_DIR_NAME) {
+        throw new Error(`知识库目录必须是 Documents/${KB_LOCAL_DIR_NAME}，请到设置中重新授权`);
       }
       const granted = await ensurePermission(handle, { requestInGesture: true });
       if (!granted) {

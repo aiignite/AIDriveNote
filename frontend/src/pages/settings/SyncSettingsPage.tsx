@@ -17,6 +17,8 @@ import {
   readFile,
 } from '../../services/sync/folderAccess';
 import {
+  KB_LOCAL_DIR_NAME,
+  KB_LOCAL_PATH_HINT,
   KB_PRESET_IGNORE,
   KB_PRESET_PROTECT,
   loadSyncConfig,
@@ -27,9 +29,6 @@ import {
 import { kbApi, type KbFileInfo, type KnowledgeRootInfo } from '../../services/kb';
 import { useSyncSource } from './useSyncSource';
 import SyncSourceCard from './SyncSourceCard';
-
-/** 知识库本地目录的推荐位置（浏览器无法自动打开绝对路径，仅作提示） */
-const KB_LOCAL_PATH_HINT = '~/Documents/KnowledgeBase/';
 
 /**
  * 本地同步设置页 —— 两个互相独立的同步源。
@@ -56,7 +55,7 @@ const SyncSettingsPage: React.FC = () => {
   const [nestWarning, setNestWarning] = useState('');
 
   const notes = useSyncSource('notes');
-  const kb = useSyncSource('kb');
+  const kb = useSyncSource('kb', { expectedDirName: KB_LOCAL_DIR_NAME });
   const { load: loadNotes } = notes;
   const { load: loadKb } = kb;
 
@@ -187,7 +186,11 @@ const SyncSettingsPage: React.FC = () => {
       patchSource(key, { enabled });
       const runtime = key === 'notes' ? notes : kb;
       if (enabled && !runtime.handle) {
-        toast(`请先选择${key === 'kb' ? '本地知识库' : '笔记'}文件夹`);
+        toast(
+          key === 'kb'
+            ? `请先授权 ${KB_LOCAL_PATH_HINT}（只能选择该固定目录）`
+            : '请先选择笔记本地文件夹',
+        );
       }
     },
     [cfg.kb.rootFolderId, ensureKbRoot, patchSource, notes, kb],
@@ -441,7 +444,7 @@ const SyncSettingsPage: React.FC = () => {
                   <span className={`text-sm font-medium ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>知识库同步</span>
                 </div>
                 <p className={`mt-1 text-xs ${muted}`}>
-                  {KB_LOCAL_PATH_HINT} ↔ 根级「知识库」文件夹（系统保护，不可删除）
+                  {KB_LOCAL_PATH_HINT}（固定，不可更换） ↔ 根级「知识库」文件夹（系统保护，不可删除）
                 </p>
               </div>
               <div className={`rounded-xl border p-3 ${isDark ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-gray-50'}`}>
@@ -473,7 +476,7 @@ const SyncSettingsPage: React.FC = () => {
         <SyncSourceCard
           sourceKey="kb"
           title="知识库同步"
-          subtitle="本机知识库目录与笔记树中的知识库根文件夹双向同步"
+          subtitle="固定目录 Documents/KnowledgeBase，与笔记树中的知识库根文件夹同步"
           icon={<BookOpen className="w-5 h-5 text-white" />}
           accent="emerald"
           config={cfg.kb}
@@ -482,7 +485,8 @@ const SyncSettingsPage: React.FC = () => {
           supported={supported}
           persistent={persistent}
           pickStartIn="documents"
-          pathHint={KB_LOCAL_PATH_HINT}
+          fixedPath={KB_LOCAL_PATH_HINT}
+          lockDirectory
           onToggle={(enabled) => void handleToggle('kb', enabled)}
           onSaveRules={(ignore, protect) => {
             patchSource('kb', { ignore, protect });
@@ -651,9 +655,9 @@ const SyncSettingsPage: React.FC = () => {
         }`}>
           <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-emerald-500" />
           <span>
-            浏览器无法自动读取绝对路径：绑定 <code className="mx-0.5">{KB_LOCAL_PATH_HINT}</code>
+            浏览器无法自动读取绝对路径：首次授权 <code className="mx-0.5">{KB_LOCAL_PATH_HINT}</code>
             时会从「文稿」目录开始，请选中 <code className="mx-0.5">KnowledgeBase</code> 文件夹。
-            该目录与其他应用共享，知识库同步只会写入受管文件。
+            授权后长期保留，不支持在应用里更换。该目录与其他应用共享，知识库同步只会写入受管文件。
           </span>
         </div>
       </div>

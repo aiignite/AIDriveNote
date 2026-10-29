@@ -58,12 +58,25 @@ export interface SyncSourceRuntime {
   reset: () => void;
 }
 
+export interface UseSyncSourceOptions {
+  /**
+   * 授权的目录名必须严格匹配（用于固定目录的知识库源）。
+   * 不匹配时拒绝使用该句柄，避免用户把知识库同步到其它目录。
+   */
+  expectedDirName?: string;
+}
+
 /**
  * 创建同步源运行时状态。
  * @param key 同步源标识
+ * @param options 固定目录校验等选项
  * @returns 运行时状态与操作函数
  */
-export function useSyncSource(key: SyncSourceKey): SyncSourceRuntime {
+export function useSyncSource(
+  key: SyncSourceKey,
+  options: UseSyncSourceOptions = {},
+): SyncSourceRuntime {
+  const { expectedDirName } = options;
   const [handle, setHandle] = useState<SyncDirectoryHandle | null>(null);
   const [granted, setGranted] = useState(false);
   const [dirName, setDirName] = useState('');
@@ -98,18 +111,34 @@ export function useSyncSource(key: SyncSourceKey): SyncSourceRuntime {
       }
       return;
     }
+    if (expectedDirName && stored.name !== expectedDirName) {
+      setHandle(null);
+      setGranted(false);
+      setDirName(stored.name);
+      setEntries(null);
+      setError(
+        `本地目录固定为 Documents/${expectedDirName}/，当前绑定的是「${stored.name}」。请重新授权正确的文件夹。`,
+      );
+      return;
+    }
     setHandle(stored);
     setDirName(stored.name);
     const ok = await queryPermission(stored);
     setGranted(ok);
     await refreshEntriesWith(stored);
-  }, [key, refreshEntriesWith]);
+  }, [key, expectedDirName, refreshEntriesWith]);
 
   const pick = useCallback(
     async (startIn?: string): Promise<boolean> => {
       try {
         const picked = await pickDirectory(key, startIn);
         if (!picked) return false;
+        if (expectedDirName && picked.name !== expectedDirName) {
+          toast.error(
+            `目录名必须是「${expectedDirName}」，请选择 Documents 下的该文件夹`,
+          );
+          return false;
+        }
         await saveHandleToIndexedDB(key, picked);
         setHandle(picked);
         setGranted(true);
@@ -124,7 +153,7 @@ export function useSyncSource(key: SyncSourceKey): SyncSourceRuntime {
         return false;
       }
     },
-    [key, refreshEntriesWith],
+    [key, expectedDirName, refreshEntriesWith],
   );
 
   const disconnect = useCallback(async () => {

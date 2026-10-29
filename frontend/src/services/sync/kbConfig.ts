@@ -59,6 +59,12 @@ export const KB_PRESET_PROTECT: string[] = ['raw', 'templates'];
 /** 知识库根文件夹的固定名称（由后端创建并标记为系统文件夹） */
 export const KB_ROOT_FOLDER_NAME = '知识库';
 
+/** 本机知识库目录的固定名称（Documents 下一级） */
+export const KB_LOCAL_DIR_NAME = 'KnowledgeBase';
+
+/** 本机知识库目录的固定路径（展示用） */
+export const KB_LOCAL_PATH_HINT = '~/Documents/KnowledgeBase/';
+
 /** 新配置的 localStorage 键 */
 const STORAGE_KEY = 'aidrivenote.sync.sources';
 
