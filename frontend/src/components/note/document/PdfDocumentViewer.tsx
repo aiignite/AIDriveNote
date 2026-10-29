@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react';
 import { clamp, MAX_CANVAS_PIXELS, MAX_PDF_PAGES } from './documentLimits';
+import { useWheelPaging } from './useWheelPaging';
 
 interface Props {
   bytes: Uint8Array;
@@ -144,7 +145,16 @@ const PdfDocumentViewer: React.FC<Props> = ({ bytes, isDark }) => {
     setScale(clamp((width - 48) / baseWidth, 0.25, 3));
   }, [baseWidth]);
 
-  const go = (next: number) => setPage((value) => clamp(next, 1, numPages || 1));
+  const go = useCallback((next: number) => {
+    setPage((value) => clamp(next, 1, numPages || 1));
+    // 翻页后回到页首；页面比容器高时，用户先滚动到边缘才会触发翻页
+    containerRef.current?.scrollTo({ top: 0 });
+  }, [numPages]);
+
+  useWheelPaging(containerRef, {
+    canGo: (direction) => (direction > 0 ? page < numPages : page > 1),
+    go: (direction) => go(page + direction),
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -167,7 +177,9 @@ const PdfDocumentViewer: React.FC<Props> = ({ bytes, isDark }) => {
           }`}
           aria-label="页码"
         />
-        <span className={isDark ? 'text-gray-500' : 'text-gray-400'}>/ {numPages || '-'}</span>
+        <span className={isDark ? 'text-gray-500' : 'text-gray-400'} title="鼠标滚轮可翻页">
+          / {numPages || '-'}
+        </span>
         <button type="button" onClick={() => go(page + 1)} disabled={page >= numPages} className="rounded p-1 hover:bg-gray-500/10 disabled:opacity-40" title="下一页">
           <ChevronRight size={15} />
         </button>

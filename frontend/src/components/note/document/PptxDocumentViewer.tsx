@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { clamp, MAX_PPTX_SLIDES, preflightZip } from './documentLimits';
+import { useWheelPaging } from './useWheelPaging';
 
 interface Props {
   bytes: Uint8Array;
@@ -153,6 +154,12 @@ const PptxDocumentViewer: React.FC<Props> = ({ bytes, isDark }) => {
     setIndex(target);
   }, [slideCount]);
 
+  useWheelPaging(containerRef, {
+    canGo: (direction) =>
+      direction > 0 ? index < slideCount - 1 : index > 0,
+    go: (direction) => go(index + direction),
+  });
+
   return (
     <div
       ref={containerRef}
@@ -185,7 +192,7 @@ const PptxDocumentViewer: React.FC<Props> = ({ bytes, isDark }) => {
             >
               <ChevronLeft size={15} />
             </button>
-            <span>{slideCount ? `${index + 1} / ${slideCount}` : '-'}</span>
+            <span title="鼠标滚轮可翻页">{slideCount ? `${index + 1} / ${slideCount}` : '-'}</span>
             <button
               type="button"
               onClick={() => go(index + 1)}
