@@ -16,8 +16,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { useIsMobile } from '../hooks/useMobile';
 import {
   clampNumber,
-  isStringArray,
-  usePersistentState,
   usePersistentStateDebounced,
 } from '../hooks/usePersistentState';
 import { buildNoteQuickActions } from '../utils/noteAIActions';
@@ -84,16 +82,12 @@ const NotesPage: React.FC = () => {
   const [notes, setNotes] = useState<Note[]>([]);
   const [folders, setFolders] = useState<NoteFolder[]>([]);
   const [loading, setLoading] = useState(false);
-  // 搜索词高频变化，用防抖版本落盘
-  const [searchQuery, setSearchQuery] = usePersistentStateDebounced<string>('note_search_query', '');
+  // 搜索与筛选只在本次页面会话内有效：刷新后回到完整列表，
+  // 避免用户看到被上一次筛选隐藏的笔记后误以为文件丢失。
+  const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  // 筛选与视图偏好持久化：刷新后无需重建视图
-  const [filterType, setFilterType] = usePersistentState<string>('note_filter_type', 'all');
-  const [selectedTagIds, setSelectedTagIds] = usePersistentState<string[]>(
-    'note_filter_tags',
-    [],
-    isStringArray,
-  );
+  const [filterType, setFilterType] = useState<string>('all');
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [allTags, setAllTags] = useState<NoteTag[]>([]);
   const [notesTotal, setNotesTotal] = useState(0);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -187,14 +181,9 @@ const NotesPage: React.FC = () => {
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
   /** 加密/解锁/取消加密/改密 对话框上下文；null 表示关闭 */
   const [lockDialog, setLockDialog] = useState<LockDialogState | null>(null);
-  // 当前分类页签持久化（folder 视图依赖具体 folderId，不持久化）
-  const [storedCategoryType, setStoredCategoryType] = usePersistentState<NoteCategory['type']>(
-    'note_category_type',
-    'all',
-  );
-  const [selectedCategory, setSelectedCategory] = useState<NoteCategory>(
-    () => (storedCategoryType === 'folder' ? { type: 'all' } : { type: storedCategoryType }),
-  );
+  // 分类页签不持久化：刷新后回到「全部笔记」，
+  // 避免停留在置顶/收藏/回收站等视图导致用户误以为文件丢失。
+  const [selectedCategory, setSelectedCategory] = useState<NoteCategory>({ type: 'all' });
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // 侧栏宽度可调区间（拖拽与持久化共用，避免两处写死不同数字）
@@ -238,11 +227,6 @@ const NotesPage: React.FC = () => {
 
   const activeFolderId =
     selectedCategory.type === 'folder' ? selectedCategory.folderId : undefined;
-
-  // 分类页签变化时同步到 localStorage（folder 视图依赖具体文件夹，不持久化）
-  useEffect(() => {
-    if (selectedCategory.type !== 'folder') setStoredCategoryType(selectedCategory.type);
-  }, [selectedCategory.type, setStoredCategoryType]);
 
   /**
    * 从本地离线缓存构造列表数据。
@@ -658,6 +642,57 @@ const NotesPage: React.FC = () => {
     });
   }, [selectedCategory.type, deleteNoteNow]);
 
+  /** 批量删除：一次确认、一次刷新；单篇失败不影响其余笔记 */
+  const deleteNotesNow = useCallback(async (ids: string[]) => {
+    const isTrash = selectedCategory.type === 'trash';
+    const results = await Promise.allSettled(
+      ids.map(id => (isTrash ? noteApi.permanentDelete(id) : noteApi.delete(id))),
+    );
+    const deleted: string[] = [];
+    let offlineQueued = 0;
+    for (let i = 0; i < results.length; i += 1) {
+      const result = results[i];
+      if (result.status === 'fulfilled') {
+        deleted.push(ids[i]);
+        continue;
+      }
+      // 离线删除：本地立即移除，服务端删除排队等待回传
+      if (!isTrash && isNetworkError(result.reason)) {
+        const cached = await readNote(ids[i]);
+        if (cached) {
+          await deleteOfflineNote(cached);
+          deleted.push(ids[i]);
+          offlineQueued += 1;
+        }
+      }
+    }
+    if (deleted.length === 0) {
+      toast.error('删除失败');
+      return;
+    }
+    void dropCached(deleted);
+    if (selectedNote && deleted.includes(selectedNote.id)) handleCloseNote();
+    fetchNotes();
+    const failed = ids.length - deleted.length;
+    if (failed > 0) toast.error(`已删除 ${deleted.length} 篇，${failed} 篇删除失败`);
+    else if (offlineQueued > 0) toast.success(`已离线删除 ${deleted.length} 篇，联网后将自动同步`);
+    else toast.success(isTrash ? `已永久删除 ${deleted.length} 篇笔记` : `已删除 ${deleted.length} 篇笔记，可在回收站恢复`);
+  }, [selectedNote, fetchNotes, selectedCategory.type, handleCloseNote]);
+
+  const handleDeleteNotes = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const isTrash = selectedCategory.type === 'trash';
+    setConfirmState({
+      title: isTrash ? '永久删除笔记' : '删除笔记',
+      message: isTrash
+        ? `确定永久删除选中的 ${ids.length} 篇笔记吗？此操作无法恢复。`
+        : `确定删除选中的 ${ids.length} 篇笔记吗？删除后可在回收站恢复。`,
+      confirmLabel: isTrash ? '永久删除' : '移入回收站',
+      variant: isTrash ? 'danger' : 'warning',
+      action: () => deleteNotesNow(ids),
+    });
+  }, [selectedCategory.type, deleteNotesNow]);
+
   const handleRestoreNote = useCallback(async (id: string) => {
     try {
       const restored = await noteApi.restore(id);
@@ -1040,6 +1075,7 @@ const NotesPage: React.FC = () => {
       onCreateNote={handleCreateNote}
       onImportDocument={handleImportDocument}
       onDeleteNote={handleDeleteNote}
+      onDeleteNotes={handleDeleteNotes}
       onRestoreNote={handleRestoreNote}
       onPermanentDeleteNote={handlePermanentDeleteNote}
       onDuplicateNote={handleDuplicateNote}

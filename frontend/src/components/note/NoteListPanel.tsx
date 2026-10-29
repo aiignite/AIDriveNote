@@ -140,6 +140,8 @@ export interface NoteListPanelProps {
   /** 打开文档导入（选择文件后由页面创建文档笔记） */
   onImportDocument?: () => void;
   onDeleteNote: (id: string) => void;
+  /** 批量删除：由页面统一确认并一次执行，避免逐条走单条确认互相覆盖 */
+  onDeleteNotes: (ids: string[]) => void;
   onRestoreNote?: (id: string) => void;
   onPermanentDeleteNote?: (id: string) => void;
   onDuplicateNote?: (id: string) => void;
@@ -190,6 +192,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   onCreateNote,
   onImportDocument,
   onDeleteNote,
+  onDeleteNotes,
   onRestoreNote,
   onPermanentDeleteNote,
   onDuplicateNote,
@@ -483,6 +486,16 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     clearChecked();
   }, [selectedCategory.type, filterType, selectedTagIds.join(','), searchQuery, clearChecked]);
 
+  // 删除成功后笔记会从列表消失，把失效的勾选项移除；用户取消删除时勾选保持不变
+  useEffect(() => {
+    const alive = new Set(notes.map(n => n.id));
+    const next = checkedIds.filter(id => alive.has(id));
+    if (next.length !== checkedIds.length) {
+      setCheckedIds(next);
+      if (next.length === 0) selectionAnchorRef.current = null;
+    }
+  }, [notes, checkedIds]);
+
   /** 点击笔记行：多选态下改为切换勾选，否则正常打开 */
   const handleRowClick = useCallback((note: Note, index: number, shiftKey: boolean) => {
     if (checkedIds.length > 0 || showCheckboxes && (shiftKey)) {
@@ -494,16 +507,12 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
   /* ── 批量操作 ────────────────────────────────── */
 
-  /** 批量删除：逐条调用既有删除逻辑，保持与单条删除一致的软删语义 */
+  /** 批量删除：交给页面统一弹确认框并一次删除全部选中项 */
   const handleBatchDelete = useCallback(() => {
     const ids = [...checkedIds];
     if (!ids.length) return;
-    const msg = `确定删除选中的 ${ids.length} 篇笔记吗？\n删除后可在回收站恢复。`;
-    if (!window.confirm(msg)) return;
-    ids.forEach(id => onDeleteNote(id));
-    clearChecked();
-    toast.success(`已删除 ${ids.length} 篇笔记`);
-  }, [checkedIds, onDeleteNote, clearChecked]);
+    onDeleteNotes(ids);
+  }, [checkedIds, onDeleteNotes]);
 
   /** 批量移动到指定文件夹 */
   const handleBatchMove = useCallback((folderId: string | null) => {
@@ -1827,10 +1836,18 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               })()}
               <div className={`h-px my-0.5 ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`} />
               <button
-                onClick={() => { onDeleteNote(contextMenu.id); setContextMenu(null); }}
+                onClick={() => {
+                  const batch = checkedIds.includes(contextMenu.id) ? [...checkedIds] : [];
+                  setContextMenu(null);
+                  if (batch.length > 1) onDeleteNotes(batch);
+                  else onDeleteNote(contextMenu.id);
+                }}
                 className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-red-500 ${isDark ? 'hover:bg-red-900/20' : 'hover:bg-red-50'}`}
               >
-                <Trash2 size={13} /> 删除
+                <Trash2 size={13} />
+                {checkedIds.includes(contextMenu.id) && checkedIds.length > 1
+                  ? `删除选中的 ${checkedIds.length} 篇`
+                  : '删除'}
               </button>
             </>
           )}
