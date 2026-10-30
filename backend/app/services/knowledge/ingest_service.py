@@ -68,6 +68,7 @@ async def ingest(
     occurred_at: datetime | None = None,
     raw_meta: dict[str, Any] | None = None,
     kb_file_id: uuid.UUID | None = None,
+    document_note_id: uuid.UUID | None = None,
 ) -> tuple[IngestDocument, bool]:
     """落库并返回 (文档, 是否重复)。请求内不解析、不调模型。"""
     source_type = (source_type or "").strip().lower()
@@ -89,6 +90,14 @@ async def ingest(
     )
     duplicate = existing.scalar_one_or_none()
     if duplicate is not None:
+        # 失败文档没有卡片也不出现在收件箱，重复提交视为重试
+        if duplicate.status == "failed":
+            duplicate.status = "received"
+            duplicate.error = None
+            await enqueue_ingest_job(db, duplicate.id, "parse")
+            await db.commit()
+            await db.refresh(duplicate)
+            return duplicate, False
         return duplicate, True
 
     cleaned_title = (title or "").strip()[:200]
@@ -134,6 +143,7 @@ async def ingest(
         storage_path=storage_path,
         status="received",
         kb_file_id=kb_file_id,
+        document_note_id=document_note_id,
     )
     db.add(document)
     await enqueue_ingest_job(db, document_id, "parse")

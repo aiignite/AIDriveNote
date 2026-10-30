@@ -380,7 +380,11 @@ class AISeedService:
             select(AIAssistant).where(AIAssistant.name == "笔记助手", AIAssistant.is_deleted == False)  # noqa: E712
         )
         assistant = result.scalar_one_or_none()
-        note_tools = ToolRegistry.get_tools_by_category("note")
+        # 笔记工具 + 知识卡检索：让助手能用上蒸馏后的知识
+        note_tools = [
+            *ToolRegistry.get_tools_by_category("note"),
+            *ToolRegistry.get_tools_by_category("knowledge"),
+        ]
         if assistant:
             # 仅同步工具列表与系统标记，保留用户在 UI 中修改的模型/提示词/参数
             assistant.tools = note_tools

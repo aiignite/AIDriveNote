@@ -10,14 +10,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_not_guest, require_write_scope
+from app.auth import get_current_user, require_not_guest, require_write_scope
+from app.config import get_settings
 from app.database import get_db
-from app.exceptions import BadRequestException, NotFoundException
-from app.models.knowledge import IngestDocument, KnowledgeCard
+from app.exceptions import BadRequestException, ForbiddenException, NotFoundException
+from app.models.knowledge import IngestDocument, KnowledgeCard, NoteSource
+from app.models.note.document import NoteDocument
 from app.models.note.note import Note, NoteLink, NoteNoteTag, NoteTag
 from app.models.user import User
 from app.schemas.camel import CamelRequest
 from app.services.knowledge.ingest_service import enqueue_ingest_job, hash_text, ingest
+from app.services.knowledge.search_service import search_cards
 from app.services.knowledge.knowledge_compile_service import compile_card
 from app.services.knowledge.settings_service import KnowledgeSettingsService
 from app.services.note.link_parser import build_search_text, extract_wiki_links
@@ -133,6 +136,21 @@ async def _get_card(
     if doc is None:
         raise NotFoundException("ingest document", str(card.document_id))
     return card, doc
+
+
+async def _requeue_distill(db: AsyncSession, doc: IngestDocument) -> None:
+    """作废该文档已有的待审卡，重新入队蒸馏（会生成新版本卡片）。"""
+    await db.execute(
+        update(KnowledgeCard)
+        .where(
+            KnowledgeCard.document_id == doc.id,
+            KnowledgeCard.status == "pending_review",
+        )
+        .values(status="ignored")
+    )
+    doc.status = "parsed"
+    doc.error = None
+    await enqueue_ingest_job(db, doc.id, "distill")
 
 
 @router.get("/inbox")
@@ -275,6 +293,194 @@ async def ignore_card(
     return {"id": str(card.id), "status": card.status}
 
 
+async def _note_ingest_payload(
+    db: AsyncSession,
+    *,
+    note_id: UUID,
+    note_type: str,
+    title: str,
+    description: str | None,
+    content: dict | None,
+    search_text: str | None,
+) -> tuple[str, str, str]:
+    """返回 (正文, source_type, external_id)。
+
+    文档笔记与「上传自动入库」共用正文与幂等键，避免同一份原件出两套卡。
+    """
+    if note_type == "document":
+        doc_row = (
+            await db.execute(
+                select(NoteDocument.extracted_text, NoteDocument.sha256).where(
+                    NoteDocument.note_id == note_id
+                )
+            )
+        ).first()
+        extracted = (doc_row[0] or "").strip() if doc_row else ""
+        text = extracted or (search_text or "").strip()
+        external_id = f"note-doc:{doc_row[1]}" if doc_row else f"note:{note_id}"
+        return text, "upload", external_id
+    text = build_search_text(title, description, content, note_type).strip()
+    return text or (search_text or "").strip(), "note", f"note:{note_id}"
+
+
+@router.post("/distill/notes")
+async def distill_notes(
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_not_guest),
+    _scope: User = Depends(require_write_scope),
+):
+    """批量把知识库笔记与已上传文档送入蒸馏管线；已处理过的按幂等键跳过。"""
+    if not get_settings().KNOWLEDGE_INGEST_ENABLED:
+        raise ForbiddenException("知识入库功能未启用")
+    base_where = [
+        Note.created_by == user.id,
+        Note.is_deleted == False,  # noqa: E712
+        # 已由知识卡编译出来的页面不再回炉，否则会反复自我蒸馏
+        ~Note.id.in_(select(NoteSource.note_id)),
+    ]
+    kb_tag_ids = (
+        await db.execute(
+            select(NoteTag.id).where(
+                NoteTag.user_id == user.id,
+                NoteTag.name.like("kb:%"),
+            )
+        )
+    ).scalars().all()
+    kb_note_ids: list[UUID] = []
+    if kb_tag_ids:
+        kb_note_ids = list(
+            (
+                await db.execute(
+                    select(NoteNoteTag.note_id)
+                    .join(Note, Note.id == NoteNoteTag.note_id)
+                    .where(NoteNoteTag.tag_id.in_(kb_tag_ids), *base_where)
+                    .distinct()
+                )
+            ).scalars().all()
+        )
+    doc_note_ids = list(
+        (
+            await db.execute(
+                select(NoteDocument.note_id)
+                .join(Note, Note.id == NoteDocument.note_id)
+                .where(*base_where)
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    note_ids = list(dict.fromkeys([*kb_note_ids, *doc_note_ids]))[:limit]
+    if not note_ids:
+        return {"total": 0, "queued": 0, "duplicate": 0, "skipped": 0}
+
+    rows = (
+        await db.execute(
+            select(
+                Note.id,
+                Note.note_type,
+                Note.title,
+                Note.description,
+                Note.content,
+                Note.search_text,
+            ).where(Note.id.in_(note_ids))
+        )
+    ).all()
+
+    queued = duplicate = skipped = 0
+    for note_id, note_type, title, description, content, search_text in rows:
+        text, source_type, external_id = await _note_ingest_payload(
+            db,
+            note_id=note_id,
+            note_type=note_type,
+            title=title,
+            description=description,
+            content=content,
+            search_text=search_text,
+        )
+        if not text:
+            skipped += 1
+            continue
+        _document, is_duplicate = await ingest(
+            db,
+            user.id,
+            source_type=source_type,
+            external_id=external_id,
+            title=title,
+            text=text,
+            raw_meta={"noteId": str(note_id), "contentHash": hash_text(text)},
+            document_note_id=note_id if note_type == "document" else None,
+        )
+        if is_duplicate:
+            duplicate += 1
+        else:
+            queued += 1
+    return {
+        "total": len(rows),
+        "queued": queued,
+        "duplicate": duplicate,
+        "skipped": skipped,
+    }
+
+
+@router.get("/search")
+async def search_knowledge(
+    q: str = Query("", max_length=200),
+    knowledge_type: Optional[str] = Query(None, alias="knowledgeType"),
+    source_type: Optional[str] = Query(None, alias="sourceType"),
+    limit: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """检索已入库的知识卡（蒸馏产物），供 MCP / 外部 Agent 使用。"""
+    cards = await search_cards(
+        db,
+        user.id,
+        q,
+        knowledge_type=knowledge_type,
+        source_type=source_type,
+        limit=limit,
+    )
+    return {"items": cards, "total": len(cards)}
+
+
+@router.get("/notes/{note_id}/sources")
+async def note_knowledge_sources(
+    note_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """知识笔记的来源追溯：这条知识由哪些源文档/卡片编译而来。"""
+    note = await NoteService.get_note(db, note_id)
+    if note is None or (note.created_by and note.created_by != user.id):
+        raise NotFoundException("note", str(note_id))
+    rows = (
+        await db.execute(
+            select(NoteSource, IngestDocument, KnowledgeCard)
+            .join(IngestDocument, IngestDocument.id == NoteSource.document_id, isouter=True)
+            .join(KnowledgeCard, KnowledgeCard.id == NoteSource.card_id, isouter=True)
+            .where(NoteSource.note_id == note_id)
+        )
+    ).all()
+    return {
+        "noteId": str(note_id),
+        "items": [
+            {
+                "role": source.role,
+                "documentId": str(source.document_id) if source.document_id else None,
+                "cardId": str(source.card_id) if source.card_id else None,
+                "sourceType": doc.source_type if doc else None,
+                "title": doc.title if doc else None,
+                "url": doc.url if doc else None,
+                "occurredAt": doc.occurred_at.isoformat()
+                if doc and doc.occurred_at else None,
+                "summary": card.summary if card else None,
+                "knowledgeType": card.knowledge_type if card else None,
+            }
+            for source, doc, card in rows
+        ],
+    }
+
+
 @router.post("/cards/{card_id}/retry")
 async def retry_card(
     card_id: UUID,
@@ -283,19 +489,35 @@ async def retry_card(
     _scope: User = Depends(require_write_scope),
 ):
     card, doc = await _get_card(db, user.id, card_id)
-    await db.execute(
-        update(KnowledgeCard)
-        .where(
-            KnowledgeCard.document_id == doc.id,
-            KnowledgeCard.status == "pending_review",
-        )
-        .values(status="ignored")
-    )
-    doc.status = "parsed"
-    doc.error = None
-    await enqueue_ingest_job(db, doc.id, "distill")
+    await _requeue_distill(db, doc)
     await db.commit()
     return {"documentId": str(doc.id), "status": doc.status}
+
+
+@router.post("/cards/retry-all")
+async def retry_all_cards(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_not_guest),
+    _scope: User = Depends(require_write_scope),
+):
+    """把被规则兜底、尚未审完的文档重新蒸馏一次（换模型或修好抽取后重跑）。"""
+    documents = (
+        await db.execute(
+            select(IngestDocument)
+            .join(KnowledgeCard, KnowledgeCard.document_id == IngestDocument.id)
+            .where(
+                KnowledgeCard.user_id == user.id,
+                KnowledgeCard.status == "pending_review",
+                # 已经是模型抽取的卡不再重跑，避免白耗额度
+                KnowledgeCard.extractor == "rule",
+            )
+            .distinct()
+        )
+    ).scalars().all()
+    for doc in documents:
+        await _requeue_distill(db, doc)
+    await db.commit()
+    return {"documents": len(documents)}
 
 
 @router.post("/cards/batch")
@@ -672,19 +894,25 @@ async def distill_note(
         raise BadRequestException("无权操作该笔记")
     if note.is_encrypted:
         raise BadRequestException("加密笔记不支持知识抽取")
-    if note.note_type == "document":
-        text = (note.search_text or "").strip()
-    else:
-        text = build_search_text(note.title, note.description, note.content, note.note_type)
+    text, source_type, external_id = await _note_ingest_payload(
+        db,
+        note_id=note.id,
+        note_type=note.note_type,
+        title=note.title,
+        description=note.description,
+        content=note.content,
+        search_text=note.search_text,
+    )
     if not (text or "").strip():
         raise BadRequestException("笔记内容为空")
     document, duplicate = await ingest(
         db,
         user.id,
-        source_type="note",
-        external_id=f"note:{note.id}",
+        source_type=source_type,
+        external_id=external_id,
         title=note.title,
         text=text,
         raw_meta={"noteId": str(note.id), "contentHash": hash_text(text)},
+        document_note_id=note.id if note.note_type == "document" else None,
     )
     return {"documentId": str(document.id), "status": document.status, "duplicate": duplicate}

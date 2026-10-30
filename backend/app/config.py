@@ -127,7 +127,9 @@ class Settings(BaseSettings):
     KNOWLEDGE_DISTILL_DAILY_LIMIT: int = 100
     # 送入模型的原文上限（头 8k + 均分采样）
     KNOWLEDGE_DISTILL_MAX_INPUT_CHARS: int = 12000
-    KNOWLEDGE_DISTILL_TIMEOUT: int = 45
+    # 推理模型（GLM-5 等）会先花掉一大截 token 做思考，预算太小正文会为空
+    KNOWLEDGE_DISTILL_MAX_TOKENS: int = 8192
+    KNOWLEDGE_DISTILL_TIMEOUT: int = 180
     # 合并建议阈值；默认动作仍是新建
     KNOWLEDGE_MERGE_THRESHOLD: float = 0.82
     # 单个源文档最多生成的卡片数（日报等可拆多张）

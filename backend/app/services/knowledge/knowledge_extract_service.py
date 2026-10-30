@@ -225,14 +225,14 @@ async def _call_llm(
     options = ChatOptions(
         model=resolution.model_id,
         temperature=0.1,
-        max_tokens=1800,
+        max_tokens=get_settings().KNOWLEDGE_DISTILL_MAX_TOKENS,
         base_url=resolution.endpoint,
         api_key=resolution.api_key,
     )
     try:
         response = await asyncio.wait_for(
             provider.chat_with_tools(messages, options),
-            timeout=settings.KNOWLEDGE_DISTILL_TIMEOUT,
+            timeout=get_settings().KNOWLEDGE_DISTILL_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001 — 超时/限流/网络失败都回退规则
         logger.warning("知识蒸馏 LLM 调用失败: %s", exc)
@@ -240,6 +240,10 @@ async def _call_llm(
 
     content = (response.get("content") or "").strip()
     if not content:
+        logger.warning(
+            "知识蒸馏模型未返回正文：思考过程可能耗尽 token 预算（max_tokens=%s）",
+            get_settings().KNOWLEDGE_DISTILL_MAX_TOKENS,
+        )
         return None
     return content, resolution.model_name
 

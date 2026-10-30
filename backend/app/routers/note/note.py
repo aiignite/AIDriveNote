@@ -1,6 +1,7 @@
 """Note Management router – 笔记管理 API."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Literal, Optional, get_args
 from uuid import UUID
@@ -38,6 +39,8 @@ from app.services.note.link_parser import build_search_text
 from app.exceptions import BadRequestException, ConflictException, ForbiddenException, NotFoundException
 
 router = APIRouter(prefix="/notes", tags=["Notes"])
+
+logger = logging.getLogger(__name__)
 
 # 笔记类型的唯一合法取值；与数据库 CHECK 约束 ck_note_notes_note_type 保持一致。
 NoteType = Literal["rich_text", "markdown", "mindmap", "flowchart", "document"]
@@ -929,6 +932,53 @@ async def get_note_asset(asset_name: str):
 
 # ── 文档笔记（原文件落盘 + 前端渲染）──
 
+async def _auto_ingest_document_note(
+    db: AsyncSession,
+    user_id: UUID,
+    note_id: UUID,
+) -> None:
+    """上传文档笔记后直接送入知识管线：正文已解析，只需入队蒸馏。"""
+    if not get_settings().KNOWLEDGE_INGEST_ENABLED:
+        return
+    # 建笔记过程中多次 commit 会过期实例，extracted_text 又是 deferred 列，
+    # 直接读实例会触发异步隐式加载，这里显式查询一次。
+    row = (
+        await db.execute(
+            select(
+                Note.title,
+                NoteDocument.extracted_text,
+                NoteDocument.sha256,
+                NoteDocument.mime,
+                NoteDocument.file_name,
+            )
+            .join(NoteDocument, NoteDocument.note_id == Note.id)
+            .where(Note.id == note_id)
+        )
+    ).first()
+    if row is None:
+        return
+    note_title, extracted_text, sha256, mime, file_name = row
+    text = (extracted_text or "").strip()
+    if not text:
+        return
+    from app.services.knowledge.ingest_service import ingest
+
+    try:
+        await ingest(
+            db,
+            user_id,
+            source_type="upload",
+            external_id=f"note-doc:{sha256}",
+            title=note_title,
+            text=text,
+            mime=mime,
+            raw_meta={"filename": file_name, "noteId": str(note_id)},
+            document_note_id=note_id,
+        )
+    except Exception:  # noqa: BLE001 — 自动蒸馏失败不应阻断上传
+        logger.warning("文档笔记自动入库失败: %s", note_id, exc_info=True)
+
+
 @router.post("/documents", response_model=NoteOut, status_code=status.HTTP_201_CREATED)
 async def upload_document_note(
     file: UploadFile = File(...),
@@ -955,6 +1005,8 @@ async def upload_document_note(
         title=title,
         description=description,
     )
+    await _auto_ingest_document_note(db, user.id, note.id)
+    await db.refresh(document)
     return await _enrich_note_out(db, note, user, document=document)
 
 

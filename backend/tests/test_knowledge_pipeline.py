@@ -389,3 +389,294 @@ async def test_knowledge_distill_model_selection(client, test_user):
     )
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["model"] in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_failed_document_is_reenqueued_on_resubmit(db_session, test_user):
+    """失败文档不会产出卡片，重复提交应视为重试而不是静默去重。"""
+    from sqlalchemy import update
+
+    first, duplicate_first = await ingest(
+        db_session,
+        test_user.id,
+        source_type="upload",
+        external_id="retry-1",
+        title="失败文档",
+        text="重新提交后应再次入队。",
+    )
+    assert duplicate_first is False
+    await db_session.execute(
+        update(IngestDocument)
+        .where(IngestDocument.id == first.id)
+        .values(status="failed", error="解析失败")
+    )
+    await db_session.commit()
+
+    retried, duplicate_retried = await ingest(
+        db_session,
+        test_user.id,
+        source_type="upload",
+        external_id="retry-1",
+        title="失败文档",
+        text="重新提交后应再次入队。",
+    )
+
+    assert duplicate_retried is False
+    assert retried.id == first.id
+    assert retried.status == "received"
+    assert retried.error is None
+    job = (await db_session.execute(select(IngestJob))).scalar_one()
+    assert job.document_id == first.id
+    assert job.stage == "parse"
+    assert job.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_distill_notes_enqueues_tagged_and_document_notes(db_session, test_user, client):
+    """批量蒸馏覆盖 kb: 笔记与已上传文档，并与单篇抽取共用幂等键。"""
+    from app.models.note.document import NoteDocument
+    from app.services.note.note_enhance_service import NoteTagService
+    from app.services.note.note_service import NoteService
+
+    kb_note = await NoteService.create_note(db_session, {
+        "title": "执行器选型",
+        "note_type": "markdown",
+        "content": {"text": "# 执行器选型\n\n供应商产能需要提前锁定。"},
+        "created_by": test_user.id,
+        "updated_by": test_user.id,
+    })
+    await NoteService.create_note(db_session, {
+        "title": "普通笔记",
+        "note_type": "markdown",
+        "content": {"text": "不应被批量蒸馏"},
+        "created_by": test_user.id,
+        "updated_by": test_user.id,
+    })
+    doc_note = await NoteService.create_note(db_session, {
+        "title": "上传的标准",
+        "note_type": "document",
+        "content": None,
+        "created_by": test_user.id,
+        "updated_by": test_user.id,
+    })
+    db_session.add(NoteDocument(
+        note_id=doc_note.id,
+        file_name="standard.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ext=".docx",
+        size_bytes=10,
+        sha256="a" * 64,
+        storage_path="documents/standard.docx",
+        etag="a" * 64,
+        meta={},
+        extract_status="ok",
+        extracted_text="设备噪声不得超过 75 分贝。",
+    ))
+    await db_session.commit()
+    tag = await NoteTagService.create_tag(db_session, test_user.id, "kb:concept")
+    await NoteTagService.add_tag_to_note(db_session, kb_note.id, tag.id, test_user.id)
+
+    access_token, _ = AuthService.create_access_token(test_user.id)
+    res = await client.post(
+        "/api/v1/knowledge/distill/notes",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 2
+    assert body["queued"] == 2
+    assert body["duplicate"] == 0
+    assert body["skipped"] == 0
+
+    documents = (
+        await db_session.execute(select(IngestDocument).order_by(IngestDocument.source_type))
+    ).scalars().all()
+    assert [d.source_type for d in documents] == ["note", "upload"]
+    by_type = {d.source_type: d for d in documents}
+    assert by_type["note"].external_id == f"note:{kb_note.id}"
+    assert by_type["upload"].external_id == f"note-doc:{'a' * 64}"
+    assert by_type["upload"].document_note_id == doc_note.id
+
+    again = await client.post(
+        "/api/v1/knowledge/distill/notes",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert again.json()["duplicate"] == 2
+    assert again.json()["queued"] == 0
+
+
+@pytest.mark.asyncio
+async def test_call_llm_really_calls_model(monkeypatch, db_session, test_user):
+    """LLM 抽取必须真的发起模型调用。
+
+    单测环境会跳过模型调用，超时参数一旦取不到就会整条链路退回规则抽取
+    （卡片全是低置信度），因此这里用假 provider 单独覆盖这一步。
+    """
+    from types import SimpleNamespace
+
+    from app.services.knowledge import knowledge_extract_service as svc
+
+    monkeypatch.delenv("AIDRIVE_TESTING", raising=False)
+
+    class _FakeProvider:
+        async def chat_with_tools(self, messages, options):
+            return {"content": '{"cards": []}'}
+
+    async def _fake_resolve(db, user_id, **kwargs):
+        return SimpleNamespace(
+            provider="OLLAMA",
+            model_id="qwen2.5",
+            endpoint="http://ollama:11434",
+            api_key="",
+            model_name="Ollama/qwen2.5",
+        )
+
+    monkeypatch.setattr(svc.AIProviderFactory, "create", lambda *args, **kwargs: _FakeProvider())
+    monkeypatch.setattr(svc.LLMRouter, "resolve", _fake_resolve)
+
+    result = await svc._call_llm(db_session, test_user.id, "正文")
+    assert result is not None
+    assert result[0] == '{"cards": []}'
+
+
+@pytest.mark.asyncio
+async def test_retry_all_cards_requeues_documents(db_session, test_user, client):
+    """「用模型重跑」把待审卡片作废，并让来源文档重新入队蒸馏。"""
+    document, _duplicate = await ingest(
+        db_session,
+        test_user.id,
+        source_type="note",
+        external_id="retry-all-1",
+        title="待重跑文档",
+        text="正文内容。",
+    )
+    card = KnowledgeCard(
+        user_id=test_user.id,
+        document_id=document.id,
+        version=1,
+        card_key="card-1",
+        status="pending_review",
+        knowledge_type="concept",
+        title="标题",
+        summary="摘要",
+        confidence="low",
+        payload={},
+        extractor="rule",
+    )
+    db_session.add(card)
+    await db_session.commit()
+
+    access_token, _ = AuthService.create_access_token(test_user.id)
+    res = await client.post(
+        "/api/v1/knowledge/cards/retry-all",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["documents"] == 1
+
+    await db_session.refresh(card)
+    await db_session.refresh(document)
+    assert card.status == "ignored"
+    assert document.status == "parsed"
+    job = (
+        await db_session.execute(select(IngestJob).where(IngestJob.stage == "distill"))
+    ).scalar_one()
+    assert job.document_id == document.id
+
+
+@pytest.mark.asyncio
+async def test_search_knowledge_only_returns_library_cards(db_session, test_user, client):
+    """知识卡检索只返回已入库的卡，并同时被 AI 工具 / HTTP 接口复用。"""
+    from app.ai_tools.registry import ToolRegistry
+    from app.services.knowledge.search_service import search_cards
+
+    document, _duplicate = await ingest(
+        db_session,
+        test_user.id,
+        source_type="upload",
+        external_id="search-1",
+        title="采购标准",
+        text="设备噪声不得超过 75 分贝。",
+    )
+    approved = KnowledgeCard(
+        user_id=test_user.id,
+        document_id=document.id,
+        version=1,
+        card_key="card-1",
+        status="approved",
+        knowledge_type="decision",
+        title="噪声限值决策",
+        summary="设备噪声不得超过 75 分贝",
+        confidence="high",
+        payload={"key_points": ["75 分贝"], "keywords": ["噪声"]},
+        extractor="llm",
+    )
+    pending = KnowledgeCard(
+        user_id=test_user.id,
+        document_id=document.id,
+        version=1,
+        card_key="card-2",
+        status="pending_review",
+        knowledge_type="concept",
+        title="未审核噪声卡",
+        summary="待审核内容",
+        confidence="low",
+        payload={},
+        extractor="rule",
+    )
+    db_session.add_all([approved, pending])
+    await db_session.commit()
+
+    cards = await search_cards(db_session, test_user.id, "噪声")
+    assert [card["title"] for card in cards] == ["噪声限值决策"]
+
+    tool_result = await ToolRegistry.execute(
+        "search_knowledge", db_session, test_user.id, query="噪声",
+    )
+    assert tool_result["success"] is True
+    assert tool_result["found"] == 1
+    assert tool_result["cards"][0]["knowledgeType"] == "decision"
+
+    access_token, _ = AuthService.create_access_token(test_user.id)
+    res = await client.get(
+        "/api/v1/knowledge/search",
+        params={"q": "噪声"},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_note_sources_lists_origin_documents(db_session, test_user, client):
+    """知识笔记可以追溯回源文档与卡片。"""
+    from app.services.note.note_service import NoteService
+
+    document, _duplicate = await ingest(
+        db_session,
+        test_user.id,
+        source_type="upload",
+        external_id="source-1",
+        title="原始标准",
+        text="原文。",
+    )
+    note = await NoteService.create_note(db_session, {
+        "title": "知识笔记",
+        "note_type": "markdown",
+        "content": {"text": "正文"},
+        "created_by": test_user.id,
+        "updated_by": test_user.id,
+    })
+    db_session.add(NoteSource(note_id=note.id, document_id=document.id, role="primary"))
+    await db_session.commit()
+
+    access_token, _ = AuthService.create_access_token(test_user.id)
+    res = await client.get(
+        f"/api/v1/knowledge/notes/{note.id}/sources",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert res.status_code == 200, res.text
+    items = res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["sourceType"] == "upload"
+    assert items[0]["title"] == "原始标准"

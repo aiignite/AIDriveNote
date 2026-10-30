@@ -235,6 +235,19 @@ async def run_ingest_worker(stop_event: asyncio.Event) -> None:
             logger.info("另一个 ingest worker 已持有锁，本实例退出")
             return
 
+        # 上一次进程在处理中途被杀（重启/发布）时任务会停在 running，
+        # 没有消费者会再取它，这里在持锁后统一放回队列。
+        try:
+            await lock_db.execute(
+                text(
+                    "UPDATE ingest_jobs SET status = 'pending', scheduled_at = now() "
+                    "WHERE status = 'running'"
+                )
+            )
+            await lock_db.commit()
+        except Exception:  # noqa: BLE001 — 非 PostgreSQL 环境没有该表结构时忽略
+            await lock_db.rollback()
+
         while not stop_event.is_set():
             try:
                 processed = await process_pending_ingest_jobs()

@@ -223,3 +223,38 @@ def test_sniff_rejects_mismatched_zip(tmp_path, monkeypatch):
 
     with pytest.raises(BadRequestException):
         document_storage.store(_docx_bytes(), "wrong.xlsx")
+
+
+@pytest.mark.asyncio
+async def test_upload_document_enqueues_knowledge_distill(doc_env, db_session):
+    """上传文档笔记后自动进入知识管线，蒸馏结果供收件箱审核。"""
+    from sqlalchemy import select
+
+    from app.models.knowledge import IngestDocument, IngestJob
+
+    client, user, _other, _tmp = doc_env
+    res = await _upload(
+        client,
+        "标准.docx",
+        _docx_bytes("验收标准：设备噪声不得超过 75 分贝。"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    assert res.status_code == 201, res.text
+    note_id = uuid.UUID(res.json()["id"])
+
+    document = (
+        await db_session.execute(
+            select(IngestDocument).where(IngestDocument.user_id == user.id)
+        )
+    ).scalar_one()
+    assert document.source_type == "upload"
+    assert document.document_note_id == note_id
+    assert document.status == "received"
+
+    job = (
+        await db_session.execute(
+            select(IngestJob).where(IngestJob.document_id == document.id)
+        )
+    ).scalar_one()
+    assert job.stage == "parse"
+    assert job.status == "pending"
