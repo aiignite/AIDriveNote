@@ -1,6 +1,6 @@
 # AIDriveNote MCP Server
 
-把外部 AI Agent（Claude Desktop、Cursor、Trae 等）检索到的文档，通过 MCP 协议写入你的 AIDriveNote 笔记。
+把外部 AI Agent（Claude Desktop、Cursor、Trae 等）检索到的文档，通过 MCP 协议写入你的 AIDriveNote 笔记，并检索已蒸馏的知识卡。
 
 ```
 Claude Desktop / Cursor / Trae
@@ -148,8 +148,10 @@ aidrivenote-mcp
 | 工具 | 说明 |
 |------|------|
 | `create_note` | 把文档写入为新笔记；支持指定文件夹、标签、类型（markdown / rich_text） |
+| `ingest_document` | 把文档送入知识收件箱（解析 + 蒸馏，人工审核后落库） |
 | `append_to_note` | 向已有笔记末尾追加内容（markdown / rich_text 类型） |
 | `search_notes` | 全文检索，定位要追加的笔记 |
+| `search_knowledge` | 检索已审核入库的知识卡（摘要 / 要点 / 关键词 / 来源） |
 | `list_folders` | 列出文件夹层级路径，确认归档位置 |
 | `list_tags` | 列出已有标签，避免重复创建 |
 
@@ -159,6 +161,8 @@ aidrivenote-mcp
 - `folder_name` 只做匹配、**不会自动创建文件夹**：找不到或匹配到多个时，会返回可用文件夹列表请你确认。
 - `tags` 中不存在的标签会**自动创建**并挂到笔记上。
 - 每次追加都会生成笔记修订记录，可在版本历史中回滚。
+- `ingest_document` 只负责入库，蒸馏结果需在应用的「知识收件箱」中人工审核后才会生成知识笔记。
+- `search_knowledge` 只返回已审核卡片，返回的 `noteId` 可在应用内打开对应知识笔记。
 
 ## 六、验证与排障
 

@@ -1,6 +1,6 @@
 # AIDriveNote
 
-独立 AI 笔记应用：**富文本 / Markdown / 思维导图 / 流程图** 四种笔记形态，配合 **Wiki 双向链接、中文全文检索、版本历史、文档加密、分享协作、录音转写、发送到邮箱、离线可用、本机文件夹双向同步、RAG 增强 AI 助手与 MCP 开放集成**。
+独立 AI 笔记应用：**富文本 / Markdown / 思维导图 / 流程图** 四种笔记形态，配合 **Wiki 双向链接、中文全文检索、版本历史、文档加密、分享协作、录音转写、发送到邮箱、离线可用、本机文件夹双向同步、文档与笔记知识蒸馏、pgvector 语义检索、RAG 增强 AI 助手与 MCP 开放集成**。
 
 从 AIIgnite PLM 的 NOTE 模块独立拆分，可单独部署运行。
 
@@ -12,6 +12,7 @@
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
 - [核心功能详解](#核心功能详解)
+- [知识库与蒸馏](#知识库与蒸馏)
 - [AI 助手](#ai-助手)
 - [录音与语音转写](#录音与语音转写)
 - [离线使用与本地同步](#离线使用与本地同步)
@@ -37,6 +38,8 @@
 | 组织 | 多级文件夹树、标签、置顶 / 收藏、模板库、回收站（可恢复 / 永久删除） |
 | 知识链接 | `[[Wiki 链接]]` 双链、反向链接面板 |
 | 搜索 | 三级降级检索：zhparser 分词 → pg_trgm 三元组 → ILIKE 模糊；标题 / 描述 / 正文 |
+| 知识库 | 上传文档 / 自写笔记 / 邮件 / 剪藏入库 → 解析 → 蒸馏知识卡 → 人工审核 → 编译知识笔记；来源可追溯、失败可重跑 |
+| 语义检索 | pgvector 分块向量 + 中文全文 RRF 融合（RAG v2）；未装 pgvector 自动回退整篇向量（v1）；向量服务可配 Ollama 或任意 OpenAI 兼容接口 |
 | 加密 | 单篇笔记与整个文件夹加密（密码 ≥ 4 位），解锁票据仅存内存，忘记密码不可恢复 |
 | 协作 | 笔记分享（view / edit 权限）、用户搜索、管理员用户管理（含软删除） |
 | 版本 | 自动保存修订、严格递增序号、置位快照不淘汰、保留最近 N 条、一键恢复 |
@@ -47,7 +50,7 @@
 | 离线 | PWA 可安装、离线阅读与编辑、IndexedDB 缓存、写队列与冲突处理 |
 | 同步 | 本机文件夹双向同步（File System Access API，三方比对）；**知识库管理模式**：本地文件为事实源、永不删除/覆盖、保护目录只导入 |
 | 导出 | 富文本/Markdown → PDF / DOCX / HTML / MD；导图 → PDF / PNG / SVG / JSON / XMind；流程图 → PDF / PNG / SVG / XML；全部笔记原格式批量导出（保留文件夹层级） |
-| AI | 侧栏 SSE 流式对话（Markdown + Mermaid 渲染）、笔记页快捷操作、混合 RAG、17 个笔记工具、13 个内置技能、写入需确认、OpenCode Zen 免 Key 公共模型（含匿名可用） |
+| AI | 侧栏 SSE 流式对话（Markdown + Mermaid 渲染）、笔记页快捷操作、混合 RAG、18 个笔记与知识工具、13 个内置技能、写入需确认、OpenCode Zen 免 Key 公共模型（含匿名可用） |
 | 集成 | MCP Server（外部 Agent 写入笔记）、SSO 单点登录、API 访问令牌（PAT） |
 | 界面 | 深色 / 浅色主题、统一命令面板（⌘K）、大纲面板、移动端适配、安装到桌面 |
 | 开放策略 | 注册开关、单用户笔记配额与上传体积上限、匿名免注册试用（自动销毁） |
@@ -62,7 +65,7 @@
 | 前端 | React 19 · Vite 6 · TypeScript 5.8 · Tailwind CSS 4 · React Router 7 |
 | 编辑器 | BlockNote（富文本）· @uiw/react-md-editor（Markdown）· simple-mind-map（导图）· Draw.io embed（流程图） |
 | 渲染 | KaTeX（公式）· rehype-highlight（代码）· Mermaid（AI 回复中的图表） |
-| 数据库 | PostgreSQL 16+ |
+| 数据库 | PostgreSQL 16+（生产镜像内置 pgvector；RAG v2 需要该扩展） |
 | 语音 | faster-whisper · ffmpeg（本地或独立 asr_gateway 网关） |
 | AI | Ollama（默认）· OpenAI · Anthropic · MiniMax · LM Studio（OpenAI 兼容） |
 | 邮件 | QQ SMTP（`smtplib`，465 隐式 SSL） |
@@ -76,8 +79,8 @@
 
 - Python 3.12+
 - Node.js 20+
-- PostgreSQL 16+（默认 `localhost:5432`）
-- Ollama（可选，AI 功能；默认 `http://localhost:11434`）
+- PostgreSQL 16+（默认 `localhost:5432`；本地未装 pgvector 时 RAG v2 自动降级为整篇向量）
+- Ollama（可选，AI 与默认向量服务；默认 `http://localhost:11434`）
 
 ### 初始化数据库
 
@@ -187,6 +190,55 @@ cd frontend && npm install && npm run dev
 
 ---
 
+## 知识库与蒸馏
+
+把零散来源加工成**可审核、可检索、可追溯**的知识笔记。
+
+```
+上传文档 / 自写笔记 / 邮件 / 剪藏 / Agent 推送
+        │  入库（source_type + external_id + 内容哈希 去重）
+        ▼
+ingest_documents ──解析──▶ ingest_jobs ──蒸馏──▶ knowledge_cards
+                                                    │ 人工审核
+                                                    ▼
+                                  知识笔记（Note） ◀── 编译（NoteSource 记录来源）
+```
+
+### 入口
+
+- **知识收件箱 `/inbox`**：顶部「上传并蒸馏」「蒸馏已有笔记」「用模型重跑」，以及批量批准 / 忽略。
+- **文档笔记**：上传后正文可用时自动入库；文档工具栏与命令面板也可手动「抽取知识」。
+- **知识库笔记**：带 `kb:` 标签的笔记可被「蒸馏已有笔记」批量送入管线；单篇笔记走命令面板 / 笔记菜单。
+- **外部来源**：邮件同步、网页剪藏、MCP `ingest_document` 推送。
+- **幂等**：同一来源只入库一次；**失败文档重新提交视为重试**，不会静默去重。
+
+### 知识卡与编译
+
+| 知识类型 | 说明 | 编译落点 |
+|----------|------|----------|
+| `concept` | 概念 | `concepts/`，标签 `kb:concept` |
+| `entity` | 实体 | `entities/`，标签 `kb:entity` |
+| `topic` | 主题 | `topics/`，标签 `kb:topic` |
+| `decision` | 决策 | `decisions/`，标签 `kb:decision` |
+| `note` | 一般笔记 | `topics/` |
+
+- 卡片包含摘要、要点、关键词、实体、论断与置信度；模型不可用时回退规则抽取，**推理模型 token 预算不足会退回低置信度规则卡**（已把 `KNOWLEDGE_DISTILL_MAX_TOKENS` 默认提到 8192、超时 180s）。
+- 批准后编译成知识笔记；「忽略」只丢弃卡片。可对单张卡重跑，也可「用模型重跑」所有仍由规则兜底的待审文档。
+- `GET /knowledge/notes/{note_id}/sources` 可追溯知识笔记由哪些文档与卡片编译而来。
+- 编译产物带 `title` / `tags` / `type` / `topic` / `confidence` / `sources` / `related` frontmatter，可经「知识库管理模式」写回本地 Markdown。
+
+### 检索
+
+- `GET /knowledge/search` 只返回已审核（`approved` / `merged`）的卡片，支持关键词、知识类型与来源类型过滤。
+- AI 助手内置 `search_knowledge` 工具，回答「之前整理过什么结论 / 有哪些决策」时优先查卡片，再用 `get_note` 打开对应知识笔记。
+- MCP 客户端同样暴露 `search_knowledge`，外部 Agent 可直接读取蒸馏结果。
+
+### 用户设置（`/settings/knowledge`）
+
+按用户配置蒸馏开关、是否允许发送到商用模型（默认关闭，需显式授权）、每日次数上限与所用模型；模型解析链为「用户选择 → 环境变量 `KNOWLEDGE_DISTILL_MODEL` → 用户默认模型 → Ollama」。出站前默认对邮箱 / 手机号脱敏。
+
+---
+
 ## AI 助手
 
 ### 对话
@@ -209,6 +261,8 @@ cd frontend && npm install && npm run dev
 | MiniMax | API Key | `https://api.minimax.chat/v1` | `abab6.5s-chat` |
 
 支持新增 / 编辑 / 删除模型与**连通性测试**（按 provider 分别调用真实接口并返回延迟）。API Key 采用加密存储，接口只返回 `hasApiKey` 布尔值，留空即不修改。
+
+**系统预置模型**（`user_id IS NULL`，由种子创建）对全站共享：普通用户只读，**管理员可编辑与删除**；改名时会同步引用该模型的助手与用户默认模型，避免静默回退。种子缺失的管理员删除后，服务启动会按需补回。
 
 模型解析优先级：请求指定 → 助手绑定 → 用户默认 → 数据库首个 → 兜底 Ollama（环境变量）。
 
@@ -243,7 +297,7 @@ OpenCode Zen 是 OpenCode 的匿名免费通道，**不需要任何 API Key**（
 
 **技能路由**：按页面绑定权重、助手绑定权重、笔记类型匹配、命中关键词、负向关键词与优先级加权打分，取分数最高的 3 个技能激活并注入提示词；也可在对话中手动指定技能强制命中。
 
-### 工具（17 个）
+### 工具（18 个）
 
 | 工具 | 功能 | 需确认 |
 |------|------|--------|
@@ -259,13 +313,23 @@ OpenCode Zen 是 OpenCode 的匿名免费通道，**不需要任何 API Key**（
 | `add_tags_to_note` / `batch_add_tags` | 打标签（不存在自动创建） | 否 |
 | `batch_summarize_notes` | 批量摘要 | 否 |
 | `generate_note_title` | 依据正文生成标题并保存 | 否 |
+| `search_knowledge` | 检索已审核知识卡（摘要 / 要点 / 关键词 / 来源） | 否 |
 | `web_search` | 联网搜索（Bing，免 Key） | 否 |
 
 写入类工具返回变更预览卡片，用户确认后才真正落库。
 
 ### RAG
 
-混合检索：PostgreSQL 全文检索（权重 0.4）与 Ollama embedding 余弦相似度（权重 0.6）融合排序，取 **Top-5** 相关笔记；当前打开的笔记以预览单独置顶。上下文以「引用格式 `[标题](note_id=...)`」注入系统提示词，并要求回答中标注来源。
+检索分两级，默认优先走分块语义检索：
+
+- **RAG v2**：pgvector 分块索引 + PostgreSQL 全文检索 + RRF 融合排序，块级命中更精准；引用芯片同时展示知识类型与来源类型。PostgreSQL 未装 pgvector 时自动降级 v1。
+- **RAG v1**：整篇向量（JSONB）余弦相似度（权重 0.6）与全文检索（权重 0.4）融合，取 **Top-5**。
+
+向量服务由 `EMBEDDING_PROVIDER` 选择：`ollama`（本地 `/api/embeddings`）或 `openai`（任意兼容 `/embeddings` 的云服务，含 MiniMax 等）；`EMBEDDING_MODEL_REF` 可复用「模型管理」里某个模型的 endpoint 与 Key，**密钥只存数据库一份**。分块索引按批（默认 16 块）生成向量，遇 429 自动退避重试；查询侧区分 `query` / `db` 语义，适配非对称向量模型。
+
+> 换向量模型必须同步调整 `EMBEDDING_DIM` 并重建索引（`backend/scripts/reindex_embeddings.py`）；维度超过 2000 时不建 HNSW 索引，退回精确扫描。
+
+当前打开的笔记以预览单独置顶。上下文以「引用格式 `[标题](note_id=...)`」注入系统提示词，并要求回答中标注来源。
 
 ### 附件
 
@@ -416,7 +480,7 @@ ASR 设置（`/settings/asr`）以数据库为准、覆盖环境变量；网关 
 - **每个匿名会话一个独立账号**：这是隐私硬要求。笔记按 `created_by` 隔离，若所有匿名访客共用一个账号，所有人将互相看到对方的笔记。
 - **数据不长期保存**：匿名账号超过 `GUEST_IDLE_TIMEOUT_MINUTES`（默认 30 分钟）无任何请求后，后台定时任务会**物理删除**其笔记、文件夹、标签、AI 会话与附件、**自建的模型与助手**、上传文件乃至账号行。主动点击「退出」则立即清除，无需等待宽限期。
 - **可用**：笔记全功能（富文本 / Markdown / 思维导图 / 流程图）、离线缓存、AI 对话与工具调用、AI 生成标题、AI 偏好设置，以及**创建和使用自己的** AI 模型 / 助手 / 技能。
-- **不可用**：录音转写、本地同步、访问令牌（PAT）、笔记分享、发送到邮箱、语音转写与常用词库设置（后两者是全局配置，匿名写入无法按用户回收）。前端隐藏入口，后端以 `require_not_guest` 拦截。
+- **不可用**：录音转写、本地同步、访问令牌（PAT）、笔记分享、发送到邮箱、文档笔记上传与知识入库 / 蒸馏、语音转写与常用词库设置（后两者是全局配置，匿名写入无法按用户回收）。前端隐藏入口，后端以 `require_not_guest` 拦截。
 - **匿名登录事件**：管理员可在 `/settings/guest-events` 查看匿名用户的登录信息与会话生命周期（类型、时间、IP、User-Agent、存活时长、笔记数）与汇总统计，并可点击「立即清除超时账号」。事件**仅记录元数据**，绝不包含笔记标题或正文；`guest_events` 表刻意不设 `users` 外键，因此账号被清除后事件仍保留，便于统计与审计。
 
 ### AI 模型与助手的归属
@@ -425,7 +489,8 @@ ASR 设置（`/settings/asr`）以数据库为准、覆盖环境变量；网关 
 
 | 对象 | 可见范围 | 可写范围 |
 |------|----------|----------|
-| 系统预置模型 / 助手（`user_id IS NULL`，由种子创建） | 所有用户 | **不可写**——改动会全站生效，请先克隆或新建 |
+| 系统预置模型（`user_id IS NULL`，由种子创建） | 所有用户 | **仅管理员可写**——改动会全站生效 |
+| 系统预置助手（`user_id IS NULL`） | 所有用户 | **不可写**——请先克隆或新建 |
 | 系统预置 **OPENCODE 公共免费模型** | 所有用户（**含匿名**） | 不可写；走免 Key 匿名通道，不携带任何站点 Key |
 | 本人创建的 | 本人 | 本人 |
 | 其他用户创建的 | **不可见** | 不可写（返回 404） |
@@ -454,7 +519,7 @@ ASR 设置（`/settings/asr`）以数据库为准、覆盖环境变量；网关 
 
 ## MCP 接入（外部 Agent 写入笔记）
 
-内置 [mcp-server](mcp-server/README.md)，让 Claude Desktop / Cursor / Trae 等外部 Agent 把检索到的文档直接写入笔记。
+内置 [mcp-server](mcp-server/README.md)，让 Claude Desktop / Cursor / Trae 等外部 Agent 把检索到的文档直接写入笔记，并检索已蒸馏的知识卡。
 
 调用链路：
 
@@ -597,8 +662,10 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 | 工具 | 说明 |
 |------|------|
 | `create_note` | 把文档写入为新笔记；支持指定文件夹、标签、类型（`markdown` / `rich_text`） |
+| `ingest_document` | 把文档送入知识收件箱（解析 + 蒸馏，人工审核后落库） |
 | `append_to_note` | 向已有笔记末尾追加内容（`markdown` / `rich_text` 类型） |
 | `search_notes` | 全文检索，定位要追加的笔记 |
+| `search_knowledge` | 检索已审核入库的知识卡（摘要 / 要点 / 关键词 / 来源） |
 | `list_folders` | 列出文件夹层级路径，确认归档位置 |
 | `list_tags` | 列出已有标签，避免重复创建 |
 
@@ -608,6 +675,7 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 - `folder_name` 只做匹配、**不会自动创建文件夹**：找不到或匹配到多个时，会返回可用文件夹列表请 Agent 向你确认，避免误建目录。
 - `tags` 中不存在的标签会**自动创建**并挂到笔记上。
 - 每次追加都会生成笔记修订记录，可在版本历史中回滚。
+- `search_knowledge` 只返回已审核卡片，返回的 `noteId` 可直接在应用内打开对应知识笔记。
 
 ### 常见问题
 
@@ -636,6 +704,7 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 | `/notes` | 笔记 CRUD、文件夹、标签、模板、搜索、版本、分享、双链、**加密 / 解锁 / 解密 / 改密**、图片资源 `/notes/assets` |
 | `/notes/email` | 发送笔记到邮箱 |
 | `/notes/title` | AI 生成 / 派生标题 |
+| `/knowledge` | 知识收件箱、知识卡审核 / 重跑、批量蒸馏、知识卡检索、来源追溯、会话设置与体检 |
 | `/note-recordings` | 录音上传、列表、详情、转写文本、音频流、重新转写 / AI 整理润色、删除 |
 | `/note-asr` | ASR 设置读写、网关连通性测试、常用词库 CRUD |
 | `/ai` | 模型 / 助手 / 技能 / 会话 / 附件 / SSE 流式对话（匿名禁用） |
@@ -652,6 +721,7 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 | `/login` | 登录 | 含「匿名使用」入口 |
 | `/register` | 注册 | 三步邮箱验证码；`SELF_REGISTRATION_ENABLED=false` 时入口隐藏 |
 | `/` | 笔记页 | 列表 + 编辑器 + AI 侧栏；移动端单列导航 |
+| `/inbox` | 知识收件箱 | 上传 / 批量蒸馏、知识卡审核与重跑、来源查看；匿名禁用 |
 | `/settings` | 设置 | 匿名账号默认落到 `offline`，普通用户落到 `models` |
 | `/settings/models` | AI 模型 | 匿名禁用 |
 | `/settings/assistants` | AI 助手 | 匿名禁用 |
@@ -659,6 +729,8 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 | `/settings/asr` | 语音转写 | 匿名禁用 |
 | `/settings/common-terms` | 专有名词词表 | 匿名禁用 |
 | `/settings/sync` | 本机同步 | 匿名禁用 |
+| `/settings/knowledge` | 知识入库 | 蒸馏开关 / 模型授权 / 日限额；匿名禁用 |
+| `/settings/mcp` | MCP 工具 | MCP 服务器与调用审计；匿名禁用 |
 | `/settings/offline` | 离线缓存 | 匿名可用 |
 | `/settings/tokens` | 访问令牌 | 匿名禁用 |
 | `/settings/users` | 用户管理 | 仅管理员 |
@@ -678,7 +750,7 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 |------|------|------|
 | frontend | `3270:80` | nginx 托管构建产物，对外入口 |
 | backend | `127.0.0.1:3275` | FastAPI，仅本机，不对外暴露 |
-| postgres | 内部 | 数据卷 `postgres_data` |
+| postgres | 内部 | `pgvector/pgvector:pg16`（RAG v2 需要），数据卷 `postgres_data` |
 | asr_gateway | `127.0.0.1:8091` | 语音转写网关（默认 CPU `small + int8`，`mem_limit 1536m`、`cpus 1.5`） |
 
 ```bash
@@ -712,7 +784,7 @@ docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
 
 ### 数据库迁移
 
-`backend/alembic/versions/` 目前 **14 个**迁移：初始表 → AI 平台 → 模型扩展字段 → 用户角色 → 技能扩展与笔记向量 → AI 附件 → 笔记性能索引 → 访问令牌 → 录音 → P0 可靠性（修订置位/序号、`note_type` 约束、中文检索扩展）→ 笔记加密 → 邮箱验证码 → 匿名用户 → 匿名事件。
+`backend/alembic/versions/` 目前 **26 个**迁移：初始表 → AI 平台 → 模型扩展字段 → 用户角色 → 技能扩展与笔记向量 → AI 附件 → 笔记性能索引 → 访问令牌 → 录音 → P0 可靠性（修订置位/序号、`note_type` 约束、中文检索扩展）→ 笔记加密 → 邮箱验证码 → 匿名用户 → 匿名事件 → RAG v2 → MCP 客户端 → 知识库资产 → 公开链接 → 令牌范围 → MCP stdio → 知识入库 → RAG 块元数据 → 知识 P2 → 蒸馏模型 → 文档笔记 → 文件夹系统标记。
 
 ---
 
@@ -763,6 +835,28 @@ docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `MINIMAX_API_KEY` | — | 云端模型兜底密钥 |
 | `AI_WEB_SEARCH_ENABLED` / `_TIMEOUT` / `_MAX_RESULTS` | `false` / 10 / 5 | AI 联网搜索（免 Key 网页抓取） |
 
+### 知识入库与向量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `EMBEDDING_PROVIDER` | `ollama` | `ollama` / `openai`（任意兼容 `/embeddings`）/ `minimax` |
+| `EMBEDDING_MODEL_REF` | 空 | 复用「模型管理」中的模型名取 endpoint 与 Key；显式 `EMBEDDING_*` 优先 |
+| `EMBEDDING_MODEL` | 空 | 向量模型名；ollama 留空时用 `OLLAMA_EMBED_MODEL`（默认 `nomic-embed-text`） |
+| `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | 空 | 直接指定向量服务地址与密钥 |
+| `EMBEDDING_DIM` | 768 | 向量维度；换模型必须同步重建索引 |
+| `RAG_V2_ENABLED` | `true` | 关闭则固定走 v1 整篇向量 |
+| `KNOWLEDGE_INGEST_ENABLED` | `true` | 知识入库总开关（上传文档 / 知识库笔记自动入库） |
+| `KNOWLEDGE_DISTILL_ENABLED` | `true` | 用户默认的蒸馏开关 |
+| `KNOWLEDGE_DISTILL_MODEL` | 空 | 默认蒸馏模型引用，留空走模型解析链 |
+| `KNOWLEDGE_DISTILL_ALLOW_EXTERNAL` | `false` | 是否允许把内容发送到商用模型 |
+| `KNOWLEDGE_DISTILL_REDACT` | `true` | 出站前脱敏邮箱 / 手机号 |
+| `KNOWLEDGE_DISTILL_DAILY_LIMIT` | 100 | 每用户每日蒸馏次数，0 = 不限 |
+| `KNOWLEDGE_DISTILL_MAX_INPUT_CHARS` | 12000 | 送入模型原文上限（头 8k + 均分采样） |
+| `KNOWLEDGE_DISTILL_MAX_TOKENS` | 8192 | 蒸馏输出预算（推理模型需留足思考空间） |
+| `KNOWLEDGE_DISTILL_TIMEOUT` | 180 | 单次蒸馏超时（秒） |
+| `KNOWLEDGE_MAX_CARDS` | 3 | 单个源文档最多生成的卡片数 |
+| `KNOWLEDGE_MERGE_THRESHOLD` | 0.82 | 合并建议阈值（默认动作仍是新建） |
+
 ### 录音与转写
 
 | 变量 | 默认值 | 说明 |
@@ -803,13 +897,14 @@ AIDriveNote/
 ├── backend/                  FastAPI + SQLAlchemy + Alembic
 │   ├── app/
 │   │   ├── routers/          auth、api_tokens、users、admin/{users,guest_events}、
-│   │   │                     note/{note,email,title,recordings,asr}、ai
-│   │   ├── services/         note（含加密、资源、检索、增强）、AI 平台与供应商、录音转写
-│   │   ├── models/           用户、笔记、AI、录音、匿名事件数据模型
-│   │   └── ai_tools/         17 个 AI 工具（note_tools 16 + web_tools 1）
-│   └── alembic/versions/     14 次迁移
+│   │   │                     note/{note,email,title,recordings,asr}、ai、knowledge
+│   │   ├── services/         note（含加密、资源、检索、增强）、AI 平台与供应商、录音转写、
+│   │   │                     knowledge（入库 / 蒸馏 / 编译 / 卡片检索）
+│   │   ├── models/           用户、笔记、AI、知识库、录音、匿名事件数据模型
+│   │   └── ai_tools/         18 个 AI 工具（note_tools 16 + knowledge_tools 1 + web_tools 1）
+│   └── alembic/versions/     26 次迁移
 ├── frontend/                 React 19 + Vite + 四种编辑器
-│   ├── src/pages/            笔记页、登录、注册、settings/ 11 个设置页
+│   ├── src/pages/            笔记页、知识收件箱、登录、注册、settings/ 12 个设置页
 │   ├── src/components/       笔记组件、AI 组件、录音组件、通用组件
 │   ├── src/services/         API 客户端、离线缓存与队列、本机同步、解锁票据
 │   ├── src/hooks/            语音输入、取图拍照、移动端判定、持久化状态
@@ -828,16 +923,26 @@ AIDriveNote/
 ## 测试
 
 ```bash
-cd backend  && pytest --asyncio-mode=auto      # 214 个用例
+cd backend  && pytest --asyncio-mode=auto      # 316 个用例
 cd frontend && npm run type-check
 cd frontend && npm run build                   # tsc + vite build + gzip
 ```
 
-后端测试基于内存 SQLite 运行，覆盖认证、管理员、笔记接口、双链解析、加密锁定、中文检索策略、修订治理、图片资产、录音与 ASR 设置、AI 平台、AI 供应商、会话历史、工具注册表、技能路由、匿名登录与附件抽取。
+后端测试基于内存 SQLite 运行，覆盖认证、管理员、笔记接口、双链解析、加密锁定、中文检索策略、修订治理、图片资产、录音与 ASR 设置、AI 平台、AI 供应商、会话历史、工具注册表、技能路由、匿名登录、附件抽取、文档笔记上传、知识入库 / 蒸馏流水线、向量服务与 RAG 索引。
 
 ---
 
 ## 更新日志
+
+### 2026-10-31
+
+- **向量服务可配置**：新增 `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL_REF` / `EMBEDDING_MODEL` / `EMBEDDING_DIM`，可复用「模型管理」中的 endpoint 与 Key（密钥只存一份），支持 Ollama 与任意 OpenAI 兼容 `/embeddings` 服务（含 MiniMax）；查询侧区分 `query` / `db` 语义。
+- **批量嵌入与索引健壮性**：分块索引按批（16 块）生成向量，429 自动退避重试；索引记录实际向量模型名；无归属笔记不进入检索；v2 可用时重建脚本不再重复生成 v1 向量；生产 PostgreSQL 镜像换成 `pgvector/pgvector:pg16`，维度超过 2000 时自动跳过 HNSW。
+- **知识入库闭环**：上传文档笔记与 `kb:` 知识库笔记可直接送入蒸馏；新增 `POST /knowledge/distill/notes`（批量、幂等）、`GET /knowledge/search`（知识卡检索）、`GET /knowledge/notes/{id}/sources`（来源追溯）与「用模型重跑」；失败文档重新提交视为重试，worker 启动时回收残留 `running` 任务。
+- **蒸馏预算修复**：`KNOWLEDGE_DISTILL_MAX_TOKENS`（默认 8192）与 `KNOWLEDGE_DISTILL_TIMEOUT`（默认 180s）改为可配置，避免推理模型思考耗尽 token 导致正文为空、卡片降级为规则抽取。
+- **AI / MCP 检索知识卡**：笔记助手默认挂载 `search_knowledge` 工具；MCP Server 新增同名工具，并可经 `ingest_document` 把文档送入知识收件箱。
+- **管理员可维护系统预置模型**：系统模型（`user_id IS NULL`）对普通用户仍只读，管理员可编辑 / 删除；模型改名会同步助手与用户默认模型引用，避免静默回退。
+- **前端**：知识收件箱新增「上传并蒸馏」「蒸馏已有笔记」「用模型重跑」；文档笔记工具栏与命令面板支持「抽取知识」；引用芯片展示知识类型与来源类型；导入文档时提示自动入库。
 
 ### 2026-10-26
 
@@ -869,7 +974,6 @@ cd frontend && npm run build                   # tsc + vite build + gzip
 
 ## 路线图
 
-- pgvector 语义检索（当前 embedding 以 JSONB 存储并全量扫描）
 - 知识图谱 UI
 - 编辑器内 Slash 唤起 AI
 - 块级双链、画布视图与协作编辑（CRDT）
