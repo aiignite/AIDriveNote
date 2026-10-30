@@ -138,7 +138,7 @@ async def search_chunks(
         filter_sql += " AND " + " AND ".join(extra_clauses)
         filter_params.update(extra_params)
 
-    query_embedding = await EmbeddingService.embed_text(query)
+    query_embedding = await EmbeddingService.embed_query(query)
     base_params: dict[str, Any] = {
         "user_id": str(user_id),
         "query": query,

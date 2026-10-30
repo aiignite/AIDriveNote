@@ -33,28 +33,134 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+async def _resolve_backend() -> tuple[str, str, str, str] | None:
+    """解析向量服务：(kind, base_url, api_key, model)。
+
+    优先用「模型管理」里的模型（``EMBEDDING_MODEL_REF``）取 endpoint 与密钥，
+    这样站点密钥只存数据库一份；没配引用时退回本地 Ollama。
+    """
+    settings = get_settings()
+    provider = (settings.EMBEDDING_PROVIDER or "ollama").strip().lower()
+    base_url = (settings.EMBEDDING_BASE_URL or "").strip()
+    api_key = (settings.EMBEDDING_API_KEY or "").strip()
+    model = (settings.EMBEDDING_MODEL or "").strip()
+
+    if settings.EMBEDDING_MODEL_REF:
+        from app.models.ai import AIModel
+        from app.services.secret_crypto import decrypt_secret
+
+        async with AsyncSessionLocal() as db:
+            row = (
+                await db.execute(
+                    select(AIModel).where(
+                        AIModel.name == settings.EMBEDDING_MODEL_REF,
+                        AIModel.is_deleted == False,  # noqa: E712
+                    )
+                )
+            ).scalars().first()
+        if row is not None:
+            if not base_url and provider == "minimax":
+                # MiniMax 的 Anthropic 兼容地址不能用于向量，固定官方 v1 路径
+                base_url = "https://api.minimaxi.com/v1"
+            base_url = base_url or (row.endpoint or "").strip()
+            api_key = api_key or (decrypt_secret(row.api_key) or "").strip()
+            if provider in ("", "auto"):
+                provider = "openai"
+            model = model or row.model_id
+
+    if provider in ("", "auto"):
+        provider = "openai" if api_key else "ollama"
+
+    if provider in ("openai", "minimax"):
+        if not (base_url and api_key and model):
+            return None
+        return provider, base_url, api_key, model
+
+    return "ollama", base_url or settings.OLLAMA_BASE_URL, "", model or settings.OLLAMA_EMBED_MODEL
+
+
 class EmbeddingService:
     @staticmethod
-    async def embed_text(text: str) -> list[float] | None:
-        # 测试环境不访问 Ollama：既避免 30s 超时拖慢单测，也保证结果可确定
+    async def effective_model_name() -> str:
+        """当前生效的向量模型名（写入索引元数据，换模型时便于排查）。"""
+        backend = await _resolve_backend()
+        return backend[3] if backend else ""
+
+    @staticmethod
+    async def embed_text(text: str, *, purpose: str = "db") -> list[float] | None:
+        vectors = await EmbeddingService.embed_texts([text], purpose=purpose)
+        return vectors[0] if vectors else None
+
+    @staticmethod
+    async def embed_query(text: str) -> list[float] | None:
+        """检索侧向量。MiniMax 等非对称模型要求 type=query。"""
+        return await EmbeddingService.embed_text(text, purpose="query")
+
+    @staticmethod
+    async def embed_texts(
+        texts: list[str], *, purpose: str = "db",
+    ) -> list[list[float] | None] | None:
+        """批量生成向量；失败返回 None，由调用方降级。
+
+        批量能显著减少小模型接口的请求数（也更容易撞限流），失败会自动退避重试。
+        """
+        # 测试环境不访问模型服务：既避免超时拖慢单测，也保证结果可确定
         if os.getenv("AIDRIVE_TESTING") == "1":
             return None
-        settings = get_settings()
-        payload_text = (text or "").strip()
-        if not payload_text:
+        payloads = [(text or "").strip()[:8000] for text in texts]
+        if not payloads or not any(payloads):
             return None
-        url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embeddings"
-        model = getattr(settings, "OLLAMA_EMBED_MODEL", None) or "nomic-embed-text"
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json={"model": model, "prompt": payload_text[:8000]})
+        backend = await _resolve_backend()
+        if backend is None:
+            logger.warning("Embedding backend 未配置完整，跳过向量生成")
+            return None
+        kind, base_url, api_key, model = backend
+        url = f"{base_url.rstrip('/')}/embeddings" if kind != "ollama" else (
+            f"{base_url.rstrip('/')}/api/embeddings"
+        )
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    if kind == "minimax":
+                        resp = await client.post(
+                            url,
+                            headers={"Authorization": f"Bearer {api_key}"},
+                            json={"model": model, "texts": payloads, "type": purpose},
+                        )
+                    elif kind == "openai":
+                        resp = await client.post(
+                            url,
+                            headers={"Authorization": f"Bearer {api_key}"},
+                            json={"model": model, "input": payloads},
+                        )
+                    else:
+                        # Ollama 没有批量接口，逐条调用
+                        resp = await client.post(
+                            url,
+                            json={"model": model, "prompt": payloads[0]},
+                        )
+                if resp.status_code == 429:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
                 resp.raise_for_status()
                 data = resp.json()
-                emb = data.get("embedding")
-                if isinstance(emb, list) and emb:
-                    return [float(x) for x in emb]
-        except Exception as exc:
-            logger.debug("Embedding unavailable: %s", exc)
+                if kind == "minimax":
+                    vectors = data.get("vectors") or []
+                elif kind == "openai":
+                    rows = sorted(data.get("data") or [], key=lambda row: row.get("index", 0))
+                    vectors = [row.get("embedding") for row in rows]
+                else:
+                    vectors = [data.get("embedding")]
+                if not vectors:
+                    logger.warning("Embedding 返回空向量：%s", str(data)[:200])
+                    return None
+                return [
+                    [float(x) for x in vec] if isinstance(vec, list) and vec else None
+                    for vec in vectors
+                ]
+            except Exception as exc:  # noqa: BLE001 — 向量服务不可用时调用方降级
+                logger.warning("Embedding unavailable（第 %s 次）: %s", attempt + 1, exc)
+                await asyncio.sleep(1 * (attempt + 1))
         return None
 
     @staticmethod
@@ -98,7 +204,7 @@ class EmbeddingService:
         limit: int = 5,
         include_shared: bool = False,
     ) -> list[tuple[Note, float]]:
-        query_emb = await EmbeddingService.embed_text(query)
+        query_emb = await EmbeddingService.embed_query(query)
         if not query_emb:
             return []
 

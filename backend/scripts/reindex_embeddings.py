@@ -73,14 +73,16 @@ async def main(args: argparse.Namespace) -> int:
                 continue
             if not args.skip_search_fields:
                 await NoteSearchService.update_search_fields(db, note)
-            succeeded = await EmbeddingService.update_note_embedding(db, note)
             if use_v2:
-                # v2 块索引失败不应掩盖 v1 结果：两者都有才算完全成功
+                # v2 已能分块索引时不再生成 v1 整篇向量，避免白跑一倍嵌入调用
+                succeeded = True
                 try:
                     await index_note(db, note)
                 except Exception as exc:  # noqa: BLE001
                     print(f"  [警告] v2 分块索引失败 note={note_id}: {exc}")
                     succeeded = False
+            else:
+                succeeded = await EmbeddingService.update_note_embedding(db, note)
             ok += 1 if succeeded else 0
             failed += 0 if succeeded else 1
             if index % max(1, args.batch) == 0:

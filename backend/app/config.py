@@ -25,6 +25,19 @@ class Settings(BaseSettings):
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
     AI_PROVIDER: str = "ollama"
 
+    # ── 向量接口（语义检索 / RAG v2）──
+    # openai：调用兼容 /embeddings 的云服务；ollama：本地 /api/embeddings
+    EMBEDDING_PROVIDER: str = "ollama"
+    # 复用「模型管理」里某个模型（按 name）的 endpoint 与 API Key，密钥不必再配一份
+    EMBEDDING_MODEL_REF: str = ""
+    # 向量模型名；openai 模式下必填（如 embedding-2），ollama 模式下留空用 OLLAMA_EMBED_MODEL
+    EMBEDDING_MODEL: str = ""
+    # 也可直接给 base_url / key（优先级低于显式配置，高于模型引用）
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_API_KEY: str = ""
+    # 向量维度：换模型必须同步重建索引（rag_chunks.embedding 是定长 vector）
+    EMBEDDING_DIM: int = 768
+
     # ── RAG v2：pgvector 分块检索 ──
     # 关闭时回退 v1（整篇向量 + JSONB 扫描）；PostgreSQL 未装 pgvector 时自动降级
     RAG_V2_ENABLED: bool = True

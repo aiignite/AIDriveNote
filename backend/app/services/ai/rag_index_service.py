@@ -195,6 +195,7 @@ async def _sync_chunks(
     used: set[str] = set()
     inserted = 0
 
+    pending: list[NoteChunk] = []
     for chunk in chunks:
         key = (chunk.heading_path or "", chunk.content_hash)
         if key in existing and existing[key][0] not in used:
@@ -206,13 +207,25 @@ async def _sync_chunks(
                     {"index": chunk.index, "id": chunk_id},
                 )
             continue
+        pending.append(chunk)
 
-        embedding = await EmbeddingService.embed_text(
-            f"{note.title}\n{chunk.heading_path}\n{chunk.content}"[:8000],
+    # 批量嵌入：小模型接口按请求计费/限流，逐块调用既慢又容易 429
+    batch_size = 16
+    vectors: list[list[float] | None] = []
+    for start in range(0, len(pending), batch_size):
+        batch = pending[start:start + batch_size]
+        batch_vectors = await EmbeddingService.embed_texts(
+            [f"{note.title}\n{chunk.heading_path}\n{chunk.content}" for chunk in batch],
         )
-        if not embedding:
+        if not batch_vectors or len(batch_vectors) != len(batch):
             await db.rollback()
             raise RuntimeError("嵌入服务不可用，索引任务将重试")
+        vectors.extend(batch_vectors)
+
+    for chunk, embedding in zip(pending, vectors):
+        if not embedding:
+            await db.rollback()
+            raise RuntimeError("嵌入服务返回空向量，索引任务将重试")
         chunk_meta = {**meta, "is_summary": chunk.is_summary}
         await db.execute(
             text(
@@ -256,6 +269,12 @@ async def index_note(db: AsyncSession, note: Note) -> int:
     note_id = str(note.id)
     user_id = str(note.created_by or "")
 
+    if note.created_by is None:
+        # 作者账号已删除时 created_by 会被置空，这类无归属笔记不进入检索
+        await _delete_note_chunks(db, note_id)
+        await db.commit()
+        return 0
+
     if note.is_deleted or note.is_encrypted:
         await _delete_note_chunks(db, note_id)
         await _mark_document(
@@ -297,7 +316,7 @@ async def index_note(db: AsyncSession, note: Note) -> int:
         user_id,
         _content_hash(note),
         len(chunks),
-        embedding_model=settings.OLLAMA_EMBED_MODEL,
+        embedding_model=await EmbeddingService.effective_model_name(),
     )
     await db.commit()
     return len(chunks)
