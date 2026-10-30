@@ -176,6 +176,29 @@ class AIDriveNoteClient:
             retry=True,
         )
 
+    async def search_knowledge(
+        self,
+        query: str = "",
+        *,
+        knowledge_type: str | None = None,
+        source_type: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """检索已审核入库的知识卡（蒸馏产物）。
+
+        @param query 关键词（匹配标题/摘要/要点/关键词）
+        @param knowledge_type concept|entity|topic|decision|note
+        @param source_type upload|note|clip|web_clip|mcp|email|kb
+        @param limit 返回条数上限
+        @returns {items, total}
+        """
+        params: dict[str, Any] = {"q": query, "limit": limit}
+        if knowledge_type:
+            params["knowledgeType"] = knowledge_type
+        if source_type:
+            params["sourceType"] = source_type
+        return await self._request("GET", "knowledge/search", params=params, retry=True)
+
     # ── 文件夹与标签 ──────────────────────────────────────
 
     async def list_folders(self) -> list[dict[str, Any]]:

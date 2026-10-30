@@ -1,10 +1,11 @@
 """MCP 工具定义 — 把外部 Agent 检索到的文档写入 AIDriveNote 笔记。
 
-对外暴露 6 个工具：
+对外暴露 7 个工具：
 - create_note      把文档写入为新笔记（核心）
 - ingest_document  把文档送入知识收件箱（解析 + 蒸馏，人工审核后落库）
 - append_to_note   追加内容到已有笔记
 - search_notes     全文检索，用于定位目标笔记
+- search_knowledge 检索已入库的知识卡（蒸馏后的摘要/要点）
 - list_folders     列出文件夹，用于指定归档位置
 - list_tags        列出标签，用于指定分类
 """
@@ -252,6 +253,57 @@ def create_server(settings: Settings) -> FastMCP:
         lines = [f"检索到 {result.get('total', len(items))} 篇与「{query}」相关的笔记（展示前 {len(items)} 篇）："]
         lines.extend(_note_summary_line(n) for n in items)
         lines.append("\n可用 append_to_note 配合上面的 id 追加内容。")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def search_knowledge(
+        query: str = "",
+        knowledge_type: str = "",
+        source_type: str = "",
+        limit: int = 5,
+    ) -> str:
+        """检索已审核入库的知识卡（蒸馏后的摘要、要点、关键词）。
+
+        @param query 关键词，留空则列出最近入库的卡片
+        @param knowledge_type 概念 concept / 实体 entity / 主题 topic / 决策 decision / 笔记 note
+        @param source_type 来源：upload 上传文档 / note 自写笔记 / clip 剪藏 / kb 知识库文件 等
+        @param limit 返回条数上限（1-20）
+        """
+        limit = max(1, min(20, limit))
+        try:
+            async with AIDriveNoteClient(settings) as client:
+                result = await client.search_knowledge(
+                    query,
+                    knowledge_type=knowledge_type or None,
+                    source_type=source_type or None,
+                    limit=limit,
+                )
+        except ApiError as exc:
+            return f"检索知识卡失败：{exc}"
+
+        items = result.get("items", [])
+        if not items:
+            return f"未检索到知识卡{('：' + query) if query else ''}。可改用 search_notes 找原始笔记。"
+
+        lines = [f"检索到 {len(items)} 张知识卡："]
+        for card in items:
+            source = card.get("source") or {}
+            origin = " · ".join(
+                part for part in (source.get("type"), source.get("title")) if part
+            )
+            lines.append(
+                f"- **{card.get('title', '(无标题)')}**（{card.get('knowledgeType') or 'note'}，"
+                f"置信度 {card.get('confidence') or '-'}，noteId `{card.get('noteId') or ''}`）"
+            )
+            summary = (card.get("summary") or "").replace("\n", " ").strip()
+            if summary:
+                lines.append(f"  {summary[:160]}")
+            points = card.get("keyPoints") or []
+            if points:
+                lines.append("  要点：" + "；".join(str(p) for p in points[:5]))
+            if origin:
+                lines.append(f"  来源：{origin}")
+        lines.append("\n可用 get_note 打开 noteId 对应的知识笔记。")
         return "\n".join(lines)
 
     @mcp.tool()
