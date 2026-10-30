@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, Maximize2, Minimize2, FileText } from 'lucide-react';
+import { Download, Maximize2, Minimize2, FileText, Loader2, Sparkles } from 'lucide-react';
 import type { NoteDocumentMeta } from '../../../services/note/note';
 import { formatBytes, pageUnit } from './documentLimits';
 
@@ -10,6 +10,8 @@ interface Props {
   downloading?: boolean;
   onDownload: () => void;
   onToggleFullscreen: () => void;
+  onDistill?: () => void;
+  distilling?: boolean;
   children?: React.ReactNode;
 }
 
@@ -20,6 +22,8 @@ export const DocumentToolbar: React.FC<Props> = ({
   downloading = false,
   onDownload,
   onToggleFullscreen,
+  onDistill,
+  distilling = false,
   children,
 }) => (
   <div
@@ -38,6 +42,22 @@ export const DocumentToolbar: React.FC<Props> = ({
       </div>
     </div>
     {children}
+    {onDistill && (
+      <button
+        type="button"
+        onClick={onDistill}
+        disabled={distilling}
+        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] transition-colors ${
+          isDark
+            ? 'text-orange-300 hover:bg-gray-700 disabled:opacity-50'
+            : 'text-orange-600 hover:bg-orange-50 disabled:opacity-50'
+        }`}
+        title="蒸馏成知识卡，送入知识收件箱审核"
+      >
+        {distilling ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+        抽取知识
+      </button>
+    )}
     <button
       type="button"
       onClick={onDownload}

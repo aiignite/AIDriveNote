@@ -8,6 +8,24 @@ interface CitationChipsProps {
   isDark: boolean;
 }
 
+const KNOWLEDGE_LABELS: Record<string, string> = {
+  concept: '概念',
+  entity: '实体',
+  topic: '主题',
+  decision: '决策',
+  note: '笔记',
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  email: '邮件',
+  upload: '上传',
+  clip: '剪藏',
+  web_clip: '网页',
+  mcp: 'Agent',
+  note: '自写',
+  kb: '知识库',
+};
+
 /**
  * AI 回答的引用来源芯片。点击直接跳到对应笔记（P0 为笔记级定位），
  * hover 展示命中片段，让用户能验证回答是否有依据。
@@ -38,6 +56,16 @@ const CitationChips: React.FC<CitationChipsProps> = ({ citations, isDark }) => {
           >
             <Link2 size={11} className="shrink-0" />
             <span className="truncate max-w-[180px]">{citation.title}</span>
+            {citation.knowledgeType ? (
+              <span className="shrink-0 rounded bg-orange-100 px-1 text-[10px] text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
+                {KNOWLEDGE_LABELS[citation.knowledgeType] || citation.knowledgeType}
+              </span>
+            ) : null}
+            {citation.sourceType ? (
+              <span className="shrink-0 rounded bg-gray-100 px-1 text-[10px] text-gray-600 dark:bg-gray-600/50 dark:text-gray-300">
+                {SOURCE_LABELS[citation.sourceType] || citation.sourceType}
+              </span>
+            ) : null}
           </button>
         ))}
       </div>

@@ -183,6 +183,16 @@ export const knowledgeApi = {
 
   lint: (): Promise<KnowledgeLint> => api.get<KnowledgeLint>('/knowledge/lint'),
 
+  distillNotes: (): Promise<{
+    total: number;
+    queued: number;
+    duplicate: number;
+    skipped: number;
+  }> => api.post('/knowledge/distill/notes'),
+
+  retryAllCards: (): Promise<{ documents: number }> =>
+    api.post('/knowledge/cards/retry-all'),
+
   ingestDocument: (body: {
     sourceType?: string;
     externalId?: string;

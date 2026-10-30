@@ -12,6 +12,7 @@ import {
   Loader2,
   RefreshCw,
   Sparkles,
+  Upload,
   X,
 } from 'lucide-react';
 import { knowledgeApi, type KnowledgeCard, type KnowledgeLint, type KnowledgeStats } from '../services/knowledge';
@@ -66,6 +67,7 @@ const KnowledgeInboxPage: React.FC = () => {
   const [editTags, setEditTags] = useState('');
   const [showRaw, setShowRaw] = useState(false);
   const selectedRef = useRef<string | null>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
 
   selectedRef.current = selectedId;
 
@@ -236,6 +238,45 @@ const KnowledgeInboxPage: React.FC = () => {
     });
   };
 
+  const uploadForDistill = (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    void runAction('upload', async () => {
+      const result = await knowledgeApi.uploadDocument(file);
+      setTab('pending_review');
+      setNotice(
+        result.duplicate
+          ? `《${file.name}》已在知识库中，未重复蒸馏`
+          : `已上传《${file.name}》，解析与蒸馏完成后会出现在左侧`,
+      );
+      await load(false);
+    });
+  };
+
+  const distillExistingNotes = () => {
+    void runAction('kb-distill', async () => {
+      const result = await knowledgeApi.distillNotes();
+      setTab('pending_review');
+      setNotice(
+        result.total === 0
+          ? '没有可蒸馏的笔记（知识库笔记或已上传文档）'
+          : `已入队 ${result.queued} 篇${
+              result.duplicate ? `，${result.duplicate} 篇已蒸馏过` : ''
+            }${result.skipped ? `，${result.skipped} 篇无正文已跳过` : ''}`,
+      );
+      await load(false);
+    });
+  };
+
+  const retryAll = () => {
+    if (!pendingCards.length) return;
+    void runAction('retry-all', async () => {
+      const result = await knowledgeApi.retryAllCards();
+      setNotice(`已重新入队 ${result.documents} 篇文档，正在用模型重新蒸馏`);
+      await load(false);
+    });
+  };
+
   const createEntityPage = (name: string, entityType: string) => {
     if (!selected) return;
     void runAction(`entity:${name}`, async () => {
@@ -275,6 +316,24 @@ const KnowledgeInboxPage: React.FC = () => {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <input
+              ref={uploadRef}
+              type="file"
+              className="hidden"
+              onChange={(event) => {
+                uploadForDistill(event.target.files);
+                event.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => uploadRef.current?.click()}
+              disabled={busy === 'upload'}
+              className="flex items-center gap-1 rounded-lg bg-orange-500 px-3 py-1.5 text-sm text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === 'upload' ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+              上传并蒸馏
+            </button>
             <button
               type="button"
               onClick={() => void load(true)}
@@ -290,6 +349,26 @@ const KnowledgeInboxPage: React.FC = () => {
             >
               {busy === 'lint' ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
               知识库体检
+            </button>
+            <button
+              type="button"
+              onClick={distillExistingNotes}
+              disabled={busy === 'kb-distill'}
+              className="flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+              title="把知识库笔记与已上传文档批量送进蒸馏，已处理过的自动跳过"
+            >
+              {busy === 'kb-distill' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              蒸馏已有笔记
+            </button>
+            <button
+              type="button"
+              onClick={retryAll}
+              disabled={!pendingCards.length || busy === 'retry-all'}
+              className="flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+              title="把待审卡片对应的文档全部用大模型重新蒸馏一遍"
+            >
+              {busy === 'retry-all' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              用模型重跑
             </button>
             <button
               type="button"
@@ -351,7 +430,9 @@ const KnowledgeInboxPage: React.FC = () => {
             </div>
           ) : cards.length === 0 ? (
             <div className="px-4 py-16 text-center text-sm text-gray-500">
-              暂无知识卡。上传文档、同步邮件或分享网页后会自动出现在这里。
+              {tab === 'pending_review'
+                ? '暂无待审核知识卡。点右上角「上传并蒸馏」或「蒸馏已有笔记」即可生成。'
+                : '当前筛选下没有知识卡。'}
             </div>
           ) : (
             cards.map((card) => (

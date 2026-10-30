@@ -558,7 +558,7 @@ const NotesPage: React.FC = () => {
         toast.error(`${file.name}: ${err instanceof Error ? err.message : '导入失败'}`);
       }
     }
-    if (imported > 0) toast.success(`已导入 ${imported} 个文档`);
+    if (imported > 0) toast.success(`已导入 ${imported} 个文档；解析成功的正文会自动蒸馏进知识收件箱`);
   }, [resolveCreateFolderId, userId]);
 
   const handleDocumentDrop = useCallback((event: React.DragEvent) => {

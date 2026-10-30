@@ -220,6 +220,11 @@ export interface CitationItem {
   chunkId?: string | null;
   headingPath?: string | null;
   source?: 'current' | 'retrieval';
+  /** 蒸馏元数据：知识类型与来源类型（来自知识卡） */
+  knowledgeType?: string | null;
+  sourceType?: string | null;
+  sourceUrl?: string | null;
+  summary?: string | null;
 }
 
 export interface ChatStreamEvent {

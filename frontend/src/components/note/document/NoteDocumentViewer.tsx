@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Download, FileText, RefreshCw } from 'lucide-react';
+import toast from 'react-hot-toast';
 import type { NoteDocumentMeta } from '../../../services/note/note';
 import { noteDocumentApi } from '../../../services/note/note';
+import { knowledgeApi } from '../../../services/knowledge';
 import { DocumentToolbar } from './DocumentToolbar';
 import { useDocumentBytes } from './useDocumentBytes';
 import { formatBytes } from './documentLimits';
@@ -47,6 +49,7 @@ const NoteDocumentViewer: React.FC<Props> = ({
 }) => {
   const [fullscreen, setFullscreen] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [distilling, setDistilling] = useState(false);
   const { bytes, loading, error, reload } = useDocumentBytes({
     noteId,
     etag: meta.etag,
@@ -83,6 +86,22 @@ const NoteDocumentViewer: React.FC<Props> = ({
       setDownloading(false);
     }
   }, [bytes, meta.fileName, meta.mime, noteId, publicToken, unlockToken]);
+
+  const distill = useCallback(async () => {
+    setDistilling(true);
+    try {
+      const result = await knowledgeApi.distillNote(noteId);
+      toast.success(
+        result.duplicate
+          ? '该文档已抽取过，未重复生成知识卡'
+          : '已送入知识收件箱，审核后生成知识笔记',
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '抽取知识失败');
+    } finally {
+      setDistilling(false);
+    }
+  }, [noteId]);
 
   const fallback = (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
@@ -171,6 +190,8 @@ const NoteDocumentViewer: React.FC<Props> = ({
         downloading={downloading}
         onDownload={() => void download()}
         onToggleFullscreen={() => setFullscreen((value) => !value)}
+        onDistill={publicToken ? undefined : () => void distill()}
+        distilling={distilling}
       />
       <div className="min-h-0 flex-1">{renderBody()}</div>
       {!meta.viewable && (

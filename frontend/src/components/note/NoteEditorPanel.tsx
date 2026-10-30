@@ -1179,12 +1179,12 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       }]),
       { id: 'view.share', label: '分享笔记', keywords: 'share 分享', run: () => { void loadShares(); setShowSidePanel(v => (v === 'share' ? 'none' : 'share')); }, isChecked: () => showSidePanel === 'share' },
       { id: 'view.tags', label: '管理标签', keywords: 'tag 标签', run: () => setShowTagPopover(v => !v) },
-      ...(isDocument ? [] : [{
+      {
         id: 'knowledge.distill',
         label: '抽取知识',
-        keywords: 'knowledge distill 知识 蒸馏 抽取',
-        run: () => { void knowledgeApi.distillNote(note.id).then(() => toast.success('已送入知识收件箱，审核后生成知识笔记')).catch((err: unknown) => toast.error(err instanceof Error ? err.message : '抽取知识失败')); },
-      }]),
+        keywords: 'knowledge distill 知识 蒸馏 抽取 知识库',
+        run: () => { void knowledgeApi.distillNote(note.id).then((res) => toast.success(res.duplicate ? '已抽取过，未重复生成知识卡' : '已送入知识收件箱，审核后生成知识笔记')).catch((err: unknown) => toast.error(err instanceof Error ? err.message : '抽取知识失败')); },
+      },
       { id: 'help.shortcuts', label: '快捷键说明', keywords: 'shortcut help 快捷键 帮助', run: () => setShowShortcuts(true) },
       { id: 'help.about', label: '关于笔记编辑器', keywords: 'about 关于', run: () => toast(`AIDriveNote · ${TYPE_META[note.noteType]?.label ?? note.noteType} 编辑器\n按 ⌘⇧K 可搜索全部命令`, { icon: 'ℹ️' }) },
     ];
@@ -1227,6 +1227,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
             { commandId: 'file.saveAsTemplate', separatorBefore: true },
           ]),
           ...(onImportDocument ? [{ commandId: 'file.importDocument' }] : []),
+          { commandId: 'knowledge.distill', separatorBefore: true },
           { commandId: 'file.duplicate' },
           { commandId: 'file.move' },
           { commandId: 'file.delete', separatorBefore: true },
