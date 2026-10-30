@@ -88,6 +88,8 @@ const PROVIDER_OPTIONS = [
 
 const SELECT_STYLES =
   'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100';
+
+const CONTEXT_OPTIONS = ['4K', '8K', '16K', '32K', '128K', '200K', '512K', '1M', '2M'];
 const FIELD_WRAPPER = 'space-y-2';
 const SECTION_CARD =
   'rounded-3xl border border-slate-200/80 bg-white/95 p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900/80';
@@ -210,6 +212,12 @@ export const ModelForm: React.FC<ModelFormProps> = ({ model, onSave, onClose }) 
                 <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
                   先定义模型身份，再补充连接方式、能力和对外展示策略。
                 </p>
+                {model?.isSystem && (
+                  <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-xs text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                    <Globe className="h-3.5 w-3.5" />
+                    系统预置模型：保存后对全站所有用户生效
+                  </p>
+                )}
               </div>
             </div>
             <button
@@ -409,14 +417,12 @@ export const ModelForm: React.FC<ModelFormProps> = ({ model, onSave, onClose }) 
                         onChange={(event) => updateForm({ context: event.target.value })}
                         className={SELECT_STYLES}
                       >
-                        <option value="4K">4K</option>
-                        <option value="8K">8K</option>
-                        <option value="16K">16K</option>
-                        <option value="32K">32K</option>
-                        <option value="128K">128K</option>
-                        <option value="200K">200K</option>
-                        <option value="1M">1M</option>
-                        <option value="2M">2M</option>
+                        {CONTEXT_OPTIONS.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                        {formData.context && !CONTEXT_OPTIONS.includes(formData.context) ? (
+                          <option value={formData.context}>{formData.context}</option>
+                        ) : null}
                       </select>
                     </div>
                   </div>

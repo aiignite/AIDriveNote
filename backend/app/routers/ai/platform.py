@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -40,7 +40,7 @@ from app.services.ai.ownership import (
     assistants_visible_to,
     models_visible_to,
     owned_assistant,
-    owned_model,
+    writable_model,
 )
 from app.services.ai.seed_service import AISeedService
 from app.services.ai_providers.factory import AIProviderFactory
@@ -367,6 +367,23 @@ async def create_model(
     return _model_to_out(m, is_default=is_default)
 
 
+async def _sync_model_name_references(db: AsyncSession, old_name: str, new_name: str) -> None:
+    """模型改名后同步引用它的助手与用户默认模型，避免静默回退到别的模型。"""
+    await db.execute(
+        update(AIAssistant).where(AIAssistant.model == old_name).values(model=new_name)
+    )
+    await db.execute(
+        update(UserAISettings)
+        .where(UserAISettings.default_model_name == old_name)
+        .values(default_model_name=new_name)
+    )
+    await db.execute(
+        update(UserAISettings)
+        .where(UserAISettings.knowledge_distill_model == old_name)
+        .values(knowledge_distill_model=new_name)
+    )
+
+
 @router.put("/models/{model_id}")
 async def update_model(
     model_id: uuid.UUID,
@@ -375,13 +392,18 @@ async def update_model(
     user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        owned_model(user.id, model_id).where(AIModel.is_deleted == False)  # noqa: E712
+        writable_model(user.id, model_id, is_admin=user.role == "admin").where(
+            AIModel.is_deleted == False  # noqa: E712
+        )
     )
     m = result.scalar_one_or_none()
     if not m:
         raise NotFoundException("AIModel")
     updates = body.model_dump(exclude_unset=True)
     set_as_default = updates.pop("set_as_default", None)
+    new_name = updates.get("name")
+    renamed = bool(new_name and str(new_name).strip() and str(new_name) != m.name)
+    old_name = m.name
     for k, v in updates.items():
         if k == "api_key":
             # 留空 / 掩码占位符表示「保持原值不变」；非空则加密落库
@@ -390,6 +412,8 @@ async def update_model(
             setattr(m, k, encrypt_secret(str(v)))
             continue
         setattr(m, k, v)
+    if renamed:
+        await _sync_model_name_references(db, old_name, str(new_name).strip())
     if set_as_default is True:
         await _set_user_default_model(db, user.id, m.name)
     elif set_as_default is False:
@@ -406,9 +430,11 @@ async def delete_model(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # 归属校验：只能删除自己创建的模型（系统种子与其他用户的模型不可删）
+    # 归属校验：默认只能删除自己创建的模型；管理员可删除任意模型
     result = await db.execute(
-        owned_model(user.id, model_id).where(AIModel.is_deleted == False)  # noqa: E712
+        writable_model(user.id, model_id, is_admin=user.role == "admin").where(
+            AIModel.is_deleted == False  # noqa: E712
+        )
     )
     m = result.scalar_one_or_none()
     if not m:

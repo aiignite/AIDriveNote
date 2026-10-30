@@ -215,3 +215,78 @@ async def test_create_and_delete_custom_assistant(authed_client: AsyncClient):
 
     delete = await authed_client.delete(f"/ai/assistants/{assistant_id}")
     assert delete.status_code == 204
+
+
+@pytest_asyncio.fixture
+async def admin_client(db_session):
+    from app.auth import get_current_user
+    from app.main import app
+
+    user = await _create_user(db_session, "admin@test.com")
+    user.role = "admin"
+    await db_session.commit()
+
+    async def override_get_db():
+        yield db_session
+
+    async def override_user():
+        return user
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_user
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test/api/v1") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_can_edit_system_model(admin_client: AsyncClient, db_session: AsyncSession):
+    """管理员可改系统预置模型的参数，改名后同步引用，普通用户仍然只能改自己的。"""
+    from app.models.ai import AIAssistant, AIModel
+
+    system_model = AIModel(
+        name="GLM5.3F",
+        model_id="glm-5.3-flash",
+        provider="OPENAI",
+        endpoint="https://open.bigmodel.cn/api/coding/paas/v4",
+        context="1M",
+    )
+    assistant = AIAssistant(
+        name="引用该模型的助手", system_prompt="prompt", model="GLM5.3F", user_id=None,
+    )
+    db_session.add_all([system_model, assistant])
+    await db_session.commit()
+    await db_session.refresh(system_model)
+
+    res = await admin_client.put(
+        f"/ai/models/{system_model.id}",
+        json={"context": "512K", "description": "平台主力模型"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["context"] == "512K"
+
+    await db_session.refresh(system_model)
+    assert system_model.user_id is None
+    assert system_model.context == "512K"
+
+    renamed = await admin_client.put(f"/ai/models/{system_model.id}", json={"name": "GLM5.3F-512K"})
+    assert renamed.status_code == 200, renamed.text
+    await db_session.refresh(assistant)
+    assert assistant.model == "GLM5.3F-512K"
+
+
+@pytest.mark.asyncio
+async def test_normal_user_cannot_edit_system_model(
+    authed_client: AsyncClient, db_session: AsyncSession,
+):
+    from app.models.ai import AIModel
+
+    system_model = AIModel(name="Seed/Ollama", model_id="qwen2.5", provider="OLLAMA", context="128K")
+    db_session.add(system_model)
+    await db_session.commit()
+    await db_session.refresh(system_model)
+
+    res = await authed_client.put(f"/ai/models/{system_model.id}", json={"context": "512K"})
+    assert res.status_code == 404

@@ -90,6 +90,20 @@ def owned_model(db_user_id: uuid.UUID, model_id: uuid.UUID) -> Select:
     )
 
 
+def writable_model(
+    db_user_id: uuid.UUID, model_id: uuid.UUID, *, is_admin: bool = False,
+) -> Select:
+    """按 ID 取一个可写模型：管理员可改任意模型，其余用户只能改自己创建的。
+
+    系统种子是全站共享的平台配置，普通用户改动会波及所有用户，因此只有
+    管理员能调整它们的模型名、endpoint、API Key 等参数。
+    """
+    stmt = select(AIModel).where(AIModel.id == model_id)
+    if is_admin:
+        return stmt
+    return stmt.where(AIModel.user_id == db_user_id)
+
+
 def owned_assistant(db_user_id: uuid.UUID, assistant_id: uuid.UUID) -> Select:
     """按 ID 取一个**可写**的助手：必须是本人创建的。
 

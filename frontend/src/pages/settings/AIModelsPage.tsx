@@ -17,10 +17,13 @@ import {
   Trash2,
 } from 'lucide-react';
 import { aiApi, type AIModel, type AIModelInput } from '../../services/ai/ai';
+import { useAuth } from '../../contexts/AuthContext';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { ModelForm } from '../../components/ai/ModelForm';
 
 const AIModelsPage: React.FC = () => {
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === 'admin';
   const [models, setModels] = useState<AIModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -80,14 +83,14 @@ const AIModelsPage: React.FC = () => {
   }, []);
 
   const openEdit = useCallback((model: AIModel) => {
-    // 系统预置模型只读：所有用户共享，改动会全站生效，因此不允许直接编辑
-    if (model.isSystem) {
+    // 系统预置模型对全站共享：普通用户只读，管理员可调整平台级参数
+    if (model.isSystem && !isAdmin) {
       toast.error('系统预置模型不可修改，如需自定义请新建一个自己的模型');
       return;
     }
     setEditingModel(model);
     setShowForm(true);
-  }, []);
+  }, [isAdmin]);
 
   const handleSave = useCallback(
     async (data: AIModelInput) => {
@@ -111,13 +114,13 @@ const AIModelsPage: React.FC = () => {
   );
 
   const handleDelete = useCallback((model: AIModel) => {
-    // 系统预置模型所有用户可见但不可删（后端会返回 404），这里直接给出解释
-    if (model.isSystem) {
+    // 系统预置模型所有用户可见但默认不可删；管理员可删（种子缺失时会自动补回）
+    if (model.isSystem && !isAdmin) {
       toast.error('系统预置模型不可删除，如需调整请新建一个自己的模型');
       return;
     }
     setModelToDelete(model);
-  }, []);
+  }, [isAdmin]);
 
   const confirmDelete = useCallback(async () => {
     if (!modelToDelete) return;
@@ -380,6 +383,11 @@ const AIModelsPage: React.FC = () => {
                     {model.isDefault ? (
                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/30 text-xs font-medium text-amber-700 dark:text-amber-300">
                         <Star className="w-3.5 h-3.5" /> 默认
+                      </span>
+                    ) : null}
+                    {model.isSystem ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sky-50 dark:bg-sky-950/30 text-xs font-medium text-sky-700 dark:text-sky-300">
+                        <Shield className="w-3.5 h-3.5" /> 系统模型
                       </span>
                     ) : null}
                     <span className="px-2.5 py-1 rounded-full bg-gray-100 dark:bg-gray-700 text-xs font-medium text-gray-600 dark:text-gray-300">
