@@ -156,6 +156,12 @@ const KnowledgeInboxPage: React.FC = () => {
 
   const approveNew = () => {
     if (!selected) return;
+    if (
+      selected.extractor === 'rule' &&
+      !window.confirm('这张卡由规则兜底生成（未调用大模型），正文可能偏薄。仍要入库吗？')
+    ) {
+      return;
+    }
     void runAction('approve', async () => {
       const tags = editTags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
       const result = await knowledgeApi.approveCard(selected.id, {
@@ -170,6 +176,12 @@ const KnowledgeInboxPage: React.FC = () => {
 
   const approveMerge = () => {
     if (!selected?.mergeTarget) return;
+    if (
+      selected.extractor === 'rule' &&
+      !window.confirm('这张卡由规则兜底生成（未调用大模型），内容可能偏薄。仍要合并吗？')
+    ) {
+      return;
+    }
     void runAction('merge', async () => {
       const result = await knowledgeApi.approveCard(selected.id, {
         mode: 'merge',
@@ -589,11 +601,15 @@ const KnowledgeInboxPage: React.FC = () => {
                 </div>
               )}
 
-              {(selected.needsReview || Boolean(selected.source.error)) && (
+              {(selected.extractor === 'rule' ||
+                selected.needsReview ||
+                Boolean(selected.source.error)) && (
                 <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
                   <AlertTriangle size={16} className="mt-0.5 shrink-0" />
                   <span>
-                    这张卡片的置信度较低或原文文本不完整，建议核对原文后再入库。
+                    {selected.extractor === 'rule'
+                      ? '这张卡由规则兜底生成（未调用大模型），内容可能偏薄；建议先「重跑」得到模型卡再入库。'
+                      : '这张卡片的置信度较低或原文文本不完整，建议核对原文后再入库。'}
                   </span>
                 </div>
               )}
