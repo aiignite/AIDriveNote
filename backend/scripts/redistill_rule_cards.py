@@ -111,11 +111,16 @@ async def main(apply: bool, limit: int | None) -> int:
         parent = aliased(NoteFolder)
         rows = (
             await db.execute(
-                select(KnowledgeCard, Note, IngestDocument)
+                select(
+                    KnowledgeCard.id,
+                    KnowledgeCard.document_id,
+                    KnowledgeCard.user_id,
+                    KnowledgeCard.title,
+                    KnowledgeCard.knowledge_type,
+                )
                 .join(Note, Note.id == KnowledgeCard.note_id)
                 .join(NoteFolder, NoteFolder.id == Note.folder_id)
                 .join(parent, parent.id == NoteFolder.parent_id)
-                .join(IngestDocument, IngestDocument.id == KnowledgeCard.document_id)
                 .where(
                     KnowledgeCard.extractor == "rule",
                     KnowledgeCard.status == "approved",
@@ -133,22 +138,33 @@ async def main(apply: bool, limit: int | None) -> int:
             return 0
 
         updated = skipped = 0
-        for card, note, doc in rows:
+        for card_id, document_id, user_id, title, knowledge_type in rows:
             if not apply:
                 # 预演不调用模型，避免白耗额度
-                print(f"[待重做] 《{card.title}》（{card.knowledge_type}，规则兜底）")
+                print(f"[待重做] 《{title}》（{knowledge_type}，规则兜底）")
                 continue
-            drafts = await extract_cards(db, doc, card.user_id)
-            draft = _pick_draft(drafts, card)
-            if draft is None:
+            card = await db.get(KnowledgeCard, card_id)
+            doc = await db.get(IngestDocument, document_id)
+            if card is None or doc is None:
                 skipped += 1
-                print(f"[跳过] 《{card.title}》 模型仍不可用（限额/调用失败），保持规则卡")
-                await db.rollback()
+                print(f"[跳过] 《{title}》 卡片或源文档已不存在")
                 continue
-            await _apply_draft(db, card, doc, draft)
+            try:
+                drafts = await extract_cards(db, doc, user_id)
+                draft = _pick_draft(drafts, card)
+                if draft is None:
+                    skipped += 1
+                    print(f"[跳过] 《{title}》 模型仍不可用（限额/调用失败），保持规则卡")
+                    continue
+                await _apply_draft(db, card, doc, draft)
+            except Exception as exc:  # noqa: BLE001 — 单篇失败不阻断其余
+                await db.rollback()
+                skipped += 1
+                print(f"[失败] 《{title}》 {exc}")
+                continue
             updated += 1
             print(
-                f"[已重做] 《{card.title}》 {draft.confidence}"
+                f"[已重做] 《{title}》 {draft.confidence}"
                 f"（{draft.model or 'LLM'}，{draft.input_tokens or 0}/{draft.output_tokens or 0} tokens）"
             )
 
