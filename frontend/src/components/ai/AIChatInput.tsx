@@ -3,6 +3,7 @@ import { Image, Loader2, Mic, Paperclip, Send, Square, X } from 'lucide-react';
 import PendingAttachmentPreview, { type AttachmentPreviewItem } from './PendingAttachmentPreview';
 import ChatSkillPicker from './ChatSkillPicker';
 import { useVoiceInput } from '../../hooks/useVoiceInput';
+import { useAuth } from '../../contexts/AuthContext';
 import type { AISkill } from '../../services/ai/ai';
 
 export interface PendingAttachment {
@@ -116,7 +117,11 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
   }, [value, onChange]);
 
   // 统一语音入口：实时识别优先，移动端不可用时自动回退到录音转写
-  const voice = useVoiceInput({ onFinal: handleVoiceFinal });
+  const { isGuest } = useAuth();
+  const voice = useVoiceInput({
+    onFinal: handleVoiceFinal,
+    allowRecordingFallback: !isGuest,
+  });
 
   // 已固定技能（用于 chip 展示）
   const pinnedSkills = skills.filter(s => pinnedSkillCodes.includes(s.code));
@@ -196,7 +201,9 @@ const AIChatInput: React.FC<AIChatInputProps> = ({
           }`}
           title={
             !voice.supported
-              ? '当前浏览器不支持语音输入'
+              ? isGuest
+                ? '匿名模式不支持录音转写，请使用支持实时语音的浏览器或登录后使用'
+                : '当前浏览器不支持语音输入'
               : voice.transcribing
                 ? '正在识别语音…'
                 : voice.listening

@@ -68,8 +68,10 @@ function sleep(ms: number): Promise<void> {
 export interface UseVoiceInputOptions {
   /** 每识别出一段文本（实时识别的最终结果，或录音转写的整段结果）时回调 */
   onFinal?: (text: string) => void;
-  /** 强制使用录音转写通道（跳过硬实时识别） */
+  /** 强制使用录音转写通道（跳过实时识别） */
   forceRecording?: boolean;
+  /** 浏览器不支持实时识别时是否回退到后端录音转写（匿名账号应关闭） */
+  allowRecordingFallback?: boolean;
 }
 
 export interface UseVoiceInputReturn {
@@ -102,7 +104,11 @@ export interface UseVoiceInputReturn {
  * @returns 统一的语音输入状态与操作函数
  */
 export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInputReturn {
-  const { onFinal, forceRecording: forceRecordingProp = false } = options;
+  const {
+    onFinal,
+    forceRecording: forceRecordingProp = false,
+    allowRecordingFallback = true,
+  } = options;
 
   const onFinalRef = useRef(onFinal);
   onFinalRef.current = onFinal;
@@ -153,8 +159,8 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
     && !!navigator.mediaDevices?.getUserMedia
     && typeof MediaRecorder !== 'undefined';
 
-  /** 是否使用录音转写通道 */
-  const useRecording = forceRecording || !speechSupported;
+  /** 是否使用录音转写通道；匿名账号禁止回退到需要登录的后端转写 */
+  const useRecording = allowRecordingFallback && (forceRecording || !speechSupported);
 
   /** 综合可用性：实时通道可用，或录音通道可用 */
   const supported = useRecording ? recorderSupported : speechSupported;

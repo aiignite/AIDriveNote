@@ -1136,12 +1136,12 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
       })),
       ...(isDocument ? [] : [
         { id: 'file.saveAsTemplate', label: '另存为模板…', keywords: 'template 模板', run: handleSaveAsTemplate },
-        {
+        ...(isGuest ? [] : [{
           id: 'file.sendEmail',
           label: '发送到邮箱…',
           keywords: 'email mail 邮件 发信 发送',
           run: () => setShowEmailDialog(true),
-        },
+        }]),
       ]),
       {
         id: 'file.duplicate',
@@ -1177,7 +1177,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
         run: () => { void loadRevisions(); setShowSidePanel(v => (v === 'history' ? 'none' : 'history')); },
         isChecked: () => showSidePanel === 'history',
       }]),
-      { id: 'view.share', label: '分享笔记', keywords: 'share 分享', run: () => { void loadShares(); setShowSidePanel(v => (v === 'share' ? 'none' : 'share')); }, isChecked: () => showSidePanel === 'share' },
+      ...(isGuest ? [] : [{ id: 'view.share', label: '分享笔记', keywords: 'share 分享', run: () => { void loadShares(); setShowSidePanel(v => (v === 'share' ? 'none' : 'share')); }, isChecked: () => showSidePanel === 'share' }]),
       { id: 'view.tags', label: '管理标签', keywords: 'tag 标签', run: () => setShowTagPopover(v => !v) },
       {
         id: 'knowledge.distill',
@@ -1193,7 +1193,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
     note.noteType, note.id, note.folderId, handleManualSave, handleImport, handleExport,
     handleSaveAsTemplate, onDuplicateNote, onDeleteNote, onMoveNote, onToggleFullscreen,
     outlineAvailable, showOutline, isFullscreen, showSidePanel, loadRevisions, loadShares,
-    onImportDocument,
+    onImportDocument, isGuest,
   ]);
 
   /** 面板命令字典（编辑器命令的合并基准） */
@@ -1830,7 +1830,7 @@ const NoteEditorPanel: React.FC<NoteEditorPanelProps> = ({
               ))}
             </div>
           )}
-          {showSidePanel === 'share' && (
+          {showSidePanel === 'share' && !isGuest && (
             <div>
               <h4 className={`text-xs font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>分享笔记</h4>
               <div className="flex gap-2 mb-2">

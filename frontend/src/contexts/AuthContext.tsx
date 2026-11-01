@@ -11,6 +11,13 @@ import {
   writeCachedUser,
 } from '../services/client';
 import { bindUser } from '../services/offline/noteCache';
+import { bindSyncOwner } from '../services/sync/kbConfig';
+import { bindHandleOwner } from '../services/sync/folderAccess';
+
+function bindSyncUser(userId: string | null): void {
+  bindSyncOwner(userId);
+  bindHandleOwner(userId);
+}
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -30,7 +37,12 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // 本地快照用于首屏秒开：有快照时立即视为已登录并渲染，/auth/me 改为后台静默校验，
   // 避免跨机房一次往返（约 0.7s）造成的整屏白屏等待。
-  const [user, setUser] = useState<AuthUser | null>(() => readCachedUser());
+  const [user, setUser] = useState<AuthUser | null>(() => {
+    const cached = readCachedUser();
+    // 本地同步配置/目录句柄按用户隔离，必须在子组件首次渲染前绑定
+    bindSyncUser(cached?.id ?? null);
+    return cached;
+  });
   const [isLoading, setIsLoading] = useState(() => !readCachedUser());
   const nav = useNavigate();
 
@@ -55,6 +67,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const me = await authApi.me();
         writeCachedUser(me);
+        bindSyncUser(me.id);
         setUser(me);
       } catch (err) {
         if (isNetworkError(err) || isOffline()) {
@@ -62,6 +75,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
         // 鉴权失败：setAuthTokens(null) 会同时清除 token 与本地用户快照
+        bindSyncUser(null);
         setUser(null);
         setAuthTokens({ accessToken: null });
       } finally {
@@ -79,6 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       void authApi.me()
         .then((me) => {
           writeCachedUser(me);
+          bindSyncUser(me.id);
           setUser(me);
         })
         .catch(() => { /* 保持现状 */ });
@@ -90,6 +105,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const onUnauthorized = () => {
       writeCachedUser(null);
+      bindSyncUser(null);
       setUser(null);
       nav('/login');
     };
@@ -101,6 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 登录响应已携带用户信息，直接落库并写入快照，省去一次 /auth/me 往返
     const { user: loggedInUser } = await authApi.login(email, password);
     writeCachedUser(loggedInUser);
+    bindSyncUser(loggedInUser.id);
     setUser(loggedInUser);
     nav('/');
   }, [nav]);
@@ -109,6 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 与普通登录同构：服务端签发的是标准 JWT，笔记与 AI 接口无需特殊处理
     const { user: guestUser } = await authApi.guestLogin();
     writeCachedUser(guestUser);
+    bindSyncUser(guestUser.id);
     setUser(guestUser);
     nav('/');
   }, [nav]);
@@ -126,6 +144,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // authApi.logout 内部调用 setAuthTokens(null)，会一并清除本地用户快照
     // 与离线缓存（IndexedDB），满足「登出时清空本地数据」
     authApi.logout();
+    bindSyncUser(null);
     setUser(null);
     nav('/login');
   }, [nav]);

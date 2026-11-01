@@ -65,8 +65,43 @@ export const KB_LOCAL_DIR_NAME = 'KnowledgeBase';
 /** 本机知识库目录的固定路径（展示用） */
 export const KB_LOCAL_PATH_HINT = '~/Documents/KnowledgeBase/';
 
-/** 新配置的 localStorage 键 */
+/** 新配置的 localStorage 键（迁移前的全局键） */
 const STORAGE_KEY = 'aidrivenote.sync.sources';
+/** 按用户隔离的配置键前缀；同一浏览器多账号不能串同步配置 */
+const STORAGE_KEY_PREFIX = 'aidrivenote.sync.sources';
+
+/** 当前同步配置归属用户；由 AuthContext 在登录态变化时绑定 */
+let currentOwnerId: string | null = null;
+
+/**
+ * 绑定当前用户并迁移旧全局配置。
+ * 无归属的旧配置只迁给升级后首个登录本机的账号，之后按用户隔离。
+ */
+export function bindSyncOwner(userId: string | null): void {
+  const next = userId?.trim() || null;
+  if (currentOwnerId === next) return;
+  currentOwnerId = next;
+  if (next && typeof localStorage !== 'undefined') {
+    try {
+      const scoped = `${STORAGE_KEY_PREFIX}:${next}`;
+      if (!localStorage.getItem(scoped)) {
+        const legacy = localStorage.getItem(STORAGE_KEY);
+        if (legacy) {
+          localStorage.setItem(scoped, legacy);
+        }
+      }
+      // 全局键只允许迁移一次，避免后续其他账号继承
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* 隐私模式写失败时仅丢失旧配置迁移 */
+    }
+  }
+  notifyChanged();
+}
+
+function ownerStorageKey(): string | null {
+  return currentOwnerId ? `${STORAGE_KEY_PREFIX}:${currentOwnerId}` : null;
+}
 
 /** 旧版（单根目录）配置键，仅用于一次性迁移 */
 const LEGACY_KEY = 'aidrivenote.sync.kb';
@@ -228,8 +263,10 @@ function migrateLegacy(legacy: LegacyKbConfig): SyncConfig {
  */
 export function loadSyncConfig(): SyncConfig {
   if (typeof localStorage === 'undefined') return defaultSyncConfig();
+  const scopedKey = ownerStorageKey();
+  if (!scopedKey) return defaultSyncConfig();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(scopedKey);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<SyncConfig> | null;
       if (parsed && typeof parsed === 'object') {
@@ -258,9 +295,11 @@ export function loadSyncConfig(): SyncConfig {
  */
 export function saveSyncConfig(config: SyncConfig): void {
   if (typeof localStorage === 'undefined') return;
+  const scopedKey = ownerStorageKey();
+  if (!scopedKey) return;
   try {
     localStorage.setItem(
-      STORAGE_KEY,
+      scopedKey,
       JSON.stringify({
         version: 2,
         notes: {

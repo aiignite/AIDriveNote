@@ -77,8 +77,8 @@ const SettingsIndexRedirect: React.FC = () => <Navigate to="models" replace />;
 
 /**
  * 匿名账号禁用的设置子路由守卫：直连 URL 时统一退回「模型」。
- * 覆盖本地同步 / 访问令牌 / 语音转写 / 常用词库——与后端 require_not_guest 呼应，
- * 避免前端先渲染再报 403。
+ * 覆盖访问令牌 / MCP / 语音转写 / 常用词库——与后端 require_not_guest 呼应，
+ * 避免前端先渲染再报 403。本地同步与知识入库已对匿名开放。
  */
 const GuestDisabledRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isGuest, isLoading } = useAuth();
@@ -119,16 +119,16 @@ const App: React.FC = () => (
             element={<ProtectedRoute>{withSuspense(<SettingsRoute />)}</ProtectedRoute>}
           >
             <Route index element={<SettingsIndexRedirect />} />
-            {/* 模型 / 助手 / 技能：匿名可用（后端按归属只返回自己创建的行） */}
+            {/* 模型 / 助手 / 技能 / 本地同步 / 知识入库：匿名可用，后端按归属隔离 */}
             <Route path="models" element={withSuspense(<AIModelsPage />)} />
             <Route path="assistants" element={withSuspense(<AIAssistantsPage />)} />
             <Route path="skills" element={withSuspense(<AISkillsPage />)} />
-            {/* 以下四项匿名禁用：全局配置或会把数据带出系统 */}
+            <Route path="sync" element={withSuspense(<SyncSettingsPage />)} />
+            <Route path="knowledge" element={withSuspense(<KnowledgeSettingsPage />)} />
+            <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
+            {/* 以下四项匿名禁用：全局配置、长期凭据或高权限集成 */}
             <Route path="asr" element={<GuestDisabledRoute>{withSuspense(<ASRSettingsPage />)}</GuestDisabledRoute>} />
             <Route path="common-terms" element={<GuestDisabledRoute>{withSuspense(<CommonTermsPage />)}</GuestDisabledRoute>} />
-            <Route path="sync" element={<GuestDisabledRoute>{withSuspense(<SyncSettingsPage />)}</GuestDisabledRoute>} />
-            <Route path="knowledge" element={<GuestDisabledRoute>{withSuspense(<KnowledgeSettingsPage />)}</GuestDisabledRoute>} />
-            <Route path="offline" element={withSuspense(<OfflineSettingsPage />)} />
             <Route path="tokens" element={<GuestDisabledRoute>{withSuspense(<ApiTokensPage />)}</GuestDisabledRoute>} />
             <Route path="mcp" element={<GuestDisabledRoute>{withSuspense(<McpSettingsPage />)}</GuestDisabledRoute>} />
             <Route

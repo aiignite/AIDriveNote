@@ -19,9 +19,26 @@ export interface TokenResponse {
   user: AuthUser;
 }
 
+export interface GuestQuota {
+  idleTimeoutMinutes: number;
+  purgeAfter: string | null;
+  storageUsedBytes: number;
+  storageLimitBytes: number;
+  notesUsed: number;
+  maxNotes: number;
+  skillsUsed: number;
+  maxSkills: number;
+  dailyDistillLimit: number;
+  dailyDistillUsed: number;
+}
+
 export const authApi = {
   /** 公开认证配置：registration_enabled=false 时隐藏注册入口；guest_login_enabled 同理 */
-  getConfig: () => api.get<{ registrationEnabled: boolean; guestLoginEnabled: boolean }>('/auth/config'),
+  getConfig: () => api.get<{
+    registrationEnabled: boolean;
+    guestLoginEnabled: boolean;
+    guestIdleTimeoutMinutes: number;
+  }>('/auth/config'),
 
   /** 第一步：校验邮箱并发送注册验证码（未注册邮箱会创建占位账号） */
   requestRegister: (email: string, name: string) =>
@@ -45,7 +62,8 @@ export const authApi = {
    * 匿名登录：为本次会话创建独立账号并签发标准 JWT。
    *
    * 与普通登录同构——笔记与 AI 接口无需任何特殊处理即可使用。
-   * 该账号的数据在超过 30 分钟无请求后由服务器物理清除。
+   * 该账号的数据在超过 GUEST_IDLE_TIMEOUT_MINUTES（默认 120 分钟）
+   * 无请求后由服务器物理清除。
    */
   guestLogin: async () => {
     const tokens = await api.post<TokenResponse>('/auth/guest');
@@ -55,10 +73,13 @@ export const authApi = {
 
   me: () => api.get<AuthUser>('/auth/me'),
 
+  /** 匿名体验配额与到期时间（仅匿名账号可调用） */
+  getGuestQuota: () => api.get<GuestQuota>('/auth/guest/quota'),
+
   /**
    * 通知服务端「主动登出」。
    *
-   * 匿名账号据此**立即**清除其数据，而不必再等 30 分钟宽限期到期。
+   * 匿名账号据此**立即**清除其数据，而不必再等宽限期到期。
    * 调用失败（网络问题、401）一律静默忽略——登出必须永远成功。
    */
   notifyLogout: async () => {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Bot, History, Plus, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
@@ -542,6 +543,20 @@ const AISidebar: React.FC = () => {
               {option.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {models.length === 0 && (
+        <div className={`mx-3 mb-2 rounded-xl border px-3 py-2 text-xs ${
+          isDark
+            ? 'border-orange-900/60 bg-orange-950/30 text-orange-300'
+            : 'border-orange-200 bg-orange-50 text-orange-800'
+        }`}>
+          暂无可用模型，
+          <Link to="/settings/models" className="font-semibold underline underline-offset-2">
+            去设置添加
+          </Link>
+          （匿名可使用系统免费模型）。
         </div>
       )}
 

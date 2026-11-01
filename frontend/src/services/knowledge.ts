@@ -79,6 +79,9 @@ export interface KnowledgeSettings {
   usedToday: number;
   tokensToday: number;
   tokensTotal: number;
+  /** 匿名账号的日限额硬上限；正式账号为 null */
+  guestDailyLimit?: number | null;
+  isGuest?: boolean;
 }
 
 export interface KnowledgeSourceText {

@@ -426,13 +426,17 @@ const AIModelsPage: React.FC = () => {
                   {model.isPublic ? <Shield className="w-3.5 h-3.5 ml-auto" /> : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2 mt-5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    type="button"
-                    onClick={() => openEdit(model)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-orange-50 dark:hover:bg-orange-950/30"
-                  >
-                    <Pencil className="w-4 h-4" /> 编辑
-                  </button>
+                  {!model.isSystem || isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => openEdit(model)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-orange-50 dark:hover:bg-orange-950/30"
+                    >
+                      <Pencil className="w-4 h-4" /> 编辑
+                    </button>
+                  ) : (
+                    <span className="text-xs text-gray-400 dark:text-gray-500">系统模型只读</span>
+                  )}
                   {!model.isDefault ? (
                     <button
                       type="button"
@@ -453,13 +457,15 @@ const AIModelsPage: React.FC = () => {
                     <Database className="w-4 h-4" />{' '}
                     {testingModelId === model.id ? '测试中...' : '测试'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(model)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 dark:border-red-900/40 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
-                  >
-                    <Trash2 className="w-4 h-4" /> 删除
-                  </button>
+                  {!model.isSystem || isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(model)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 dark:border-red-900/40 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                    >
+                      <Trash2 className="w-4 h-4" /> 删除
+                    </button>
+                  ) : null}
                 </div>
               </article>
             ))}
@@ -502,14 +508,16 @@ const AIModelsPage: React.FC = () => {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openEdit(model)}
-                          className="p-2 rounded-lg text-gray-500 hover:text-orange-500 hover:bg-gray-100 dark:hover:bg-gray-700"
-                          title="编辑"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </button>
+                        {!model.isSystem || isAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => openEdit(model)}
+                            className="p-2 rounded-lg text-gray-500 hover:text-orange-500 hover:bg-gray-100 dark:hover:bg-gray-700"
+                            title="编辑"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                        ) : null}
                         {!model.isDefault ? (
                           <button
                             type="button"
@@ -529,13 +537,15 @@ const AIModelsPage: React.FC = () => {
                         >
                           <Database className="w-4 h-4" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(model)}
-                          className="p-2 rounded-lg text-gray-500 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {!model.isSystem || isAdmin ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(model)}
+                            className="p-2 rounded-lg text-gray-500 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>

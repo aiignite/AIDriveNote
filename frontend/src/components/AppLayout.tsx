@@ -9,6 +9,7 @@ import { knowledgeApi } from '../services/knowledge';
 import Logo from './Logo';
 import OfflineBanner from './OfflineBanner';
 import InstallPrompt from './InstallPrompt';
+import GuestBanner from './GuestBanner';
 
 const AISidebar = lazy(() => import('../components/ai/AISidebar'));
 
@@ -112,12 +113,20 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           <button type="button" onClick={toggleTheme} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}>
             {isDark ? <Sun size={18} /> : <Moon size={18} />}
           </button>
-          <span className={`text-sm hidden sm:inline ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>{user?.name}</span>
+          <span className={`text-sm hidden sm:inline ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+            {user?.name}
+            {isGuest && (
+              <span className="ml-1.5 rounded-full bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-700 dark:bg-orange-950/60 dark:text-orange-300">
+                匿名
+              </span>
+            )}
+          </span>
           <button type="button" onClick={logout} className={`p-2 rounded-lg ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`} title="退出">
             <LogOut size={18} />
           </button>
         </div>
       </header>
+      <GuestBanner />
       <OfflineBanner />
       <InstallPrompt />
       <div className="flex flex-1 min-h-0" style={{ paddingRight: aiPadding }}>

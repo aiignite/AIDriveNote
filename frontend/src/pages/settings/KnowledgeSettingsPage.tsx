@@ -148,13 +148,23 @@ const KnowledgeSettingsPage: React.FC = () => {
             <input
               type="number"
               min={0}
+              max={settings.guestDailyLimit ?? undefined}
               value={settings.dailyLimit}
-              onChange={(event) =>
-                setSettings({ ...settings, dailyLimit: Number(event.target.value) || 0 })
-              }
+              onChange={(event) => {
+                const raw = Number(event.target.value) || 0;
+                const cap = settings.guestDailyLimit ?? 0;
+                setSettings({
+                  ...settings,
+                  dailyLimit: cap > 0 ? Math.min(raw, cap) : raw,
+                });
+              }}
               className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 outline-none focus:border-orange-400 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
             />
-            <p className="mt-1 text-[11px] text-gray-400">0 表示不限制。</p>
+            <p className="mt-1 text-[11px] text-gray-400">
+              {settings.guestDailyLimit
+                ? `匿名体验每日最多 ${settings.guestDailyLimit} 次，登录后可自行调整。`
+                : '0 表示不限制。'}
+            </p>
           </div>
         </div>
       </section>

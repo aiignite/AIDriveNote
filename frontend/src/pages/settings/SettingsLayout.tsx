@@ -25,14 +25,14 @@ const aiNavItems = [
  * 「模型 / 助手 / 技能」**不在此列**：需求明确要求匿名用户可以创建并使用
  * 自己的大模型，后端已按归属严格隔离（只看得到自己创建的行）。
  *
- * - 本地同步 / 访问令牌：数据会被写到浏览器本地目录或签发长期凭据，
- *   而匿名数据到期即清除，届时将留下无主残留；
+ * - 访问令牌：匿名账号到期即清除，长期令牌会变成无主凭据；
  * - 语音转写 / 常用词库：这两处是全局单行配置，其 created_by 只是展示用字符串
- *   而非外键，匿名账号的写入无法按用户回收，会污染全体用户的配置。
+ *   而非外键，匿名账号的写入无法按用户回收，会污染全体用户的配置；
+ * - MCP：可注册 stdio 进程 / 外部 HTTP，属于高权限集成。
+ *
+ * 本地同步与知识入库已对匿名开放（配置与句柄按用户隔离）。
  */
 const guestHiddenPaths = new Set([
-  '/settings/sync',
-  '/settings/knowledge',
   '/settings/tokens',
   '/settings/mcp',
   '/settings/asr',
@@ -154,6 +154,14 @@ const SettingsLayout: React.FC = () => {
             </NavLink>
           ))}
         </nav>
+
+        {isGuest && (
+          <div className="mx-3 mb-3 rounded-xl border border-orange-200 bg-orange-50 p-3 text-[11px] leading-relaxed text-orange-800 dark:border-orange-900/60 dark:bg-orange-950/30 dark:text-orange-300">
+            <p className="font-semibold">匿名体验</p>
+            <p className="mt-1">数据闲置后自动清除；文档与知识库合计 100MB。</p>
+            <p className="mt-1">访问令牌、MCP、语音设置与常用词库需登录后使用。</p>
+          </div>
+        )}
 
         {showPreferences && (
           <div

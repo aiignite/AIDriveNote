@@ -15,12 +15,17 @@ const LoginPage: React.FC = () => {
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   /** 后端未开放匿名登录时隐藏「匿名使用」入口 */
   const [guestEnabled, setGuestEnabled] = useState(true);
+  /** 匿名数据闲置清除时长（分钟），由后端配置下发 */
+  const [guestIdleMinutes, setGuestIdleMinutes] = useState(120);
 
   useEffect(() => {
     authApi.getConfig()
       .then(cfg => {
         setRegistrationEnabled(Boolean(cfg.registrationEnabled));
         setGuestEnabled(Boolean(cfg.guestLoginEnabled));
+        if (cfg.guestIdleTimeoutMinutes > 0) {
+          setGuestIdleMinutes(cfg.guestIdleTimeoutMinutes);
+        }
       })
       .catch(() => { /* 查询失败按默认展示，后端仍会拦截 */ });
   }, []);
@@ -104,8 +109,9 @@ const LoginPage: React.FC = () => {
               {guestLoading ? '进入中…' : '匿名使用'}
             </button>
             <p className="text-xs text-center mt-3 text-gray-400 dark:text-gray-500 leading-relaxed">
-              无需注册即可使用全部笔记功能。<br />
-              AI 助手需登录后使用；数据仅临时保存在服务器，30 分钟无操作后自动清除。
+              无需注册即可体验笔记、文档上传、知识入库/蒸馏、本地同步与 AI（可使用免费模型）。<br />
+              数据临时保存在服务器，{guestIdleMinutes >= 60 ? `${guestIdleMinutes / 60} 小时` : `${guestIdleMinutes} 分钟`}无操作后自动清除；
+              邮件、访问令牌、MCP、录音转写与分享需登录。
             </p>
           </>
         )}

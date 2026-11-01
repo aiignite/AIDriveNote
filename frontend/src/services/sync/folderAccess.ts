@@ -155,8 +155,21 @@ function openHandleDb(): Promise<IDBDatabase> {
   });
 }
 
-/** 同步源的 IndexedDB 主键 */
-function handleKey(key: SyncSourceKey): string {
+/** 当前目录句柄归属用户；由 AuthContext 在登录态变化时绑定 */
+let currentOwnerId: string | null = null;
+
+/** 绑定句柄归属用户；切换账号后旧账号句柄不可见 */
+export function bindHandleOwner(userId: string | null): void {
+  currentOwnerId = userId?.trim() || null;
+}
+
+/** 按用户隔离后的 IndexedDB 主键；未绑定用户时返回 null */
+function scopedHandleKey(key: SyncSourceKey): string | null {
+  return currentOwnerId ? `${HANDLE_KEY_PREFIX}${currentOwnerId}:${key}` : null;
+}
+
+/** 旧版未按用户隔离的主键，仅用于一次性迁移 */
+function legacyHandleKey(key: SyncSourceKey): string {
   return `${HANDLE_KEY_PREFIX}${key}`;
 }
 
@@ -174,10 +187,12 @@ export async function saveHandleToIndexedDB(
   key: SyncSourceKey,
   handle: SyncDirectoryHandle,
 ): Promise<void> {
+  const storeKey = scopedHandleKey(key);
+  if (!storeKey) return;
   await requestPersistentStorage();
   const db = await openHandleDb();
   try {
-    await putHandle(db, handleKey(key), handle);
+    await putHandle(db, storeKey, handle);
   } finally {
     db.close();
   }
@@ -260,11 +275,17 @@ export async function isPersistent(): Promise<boolean> {
  * @param key 同步源标识
  * @param name 目录名；传空字符串表示清除镜像
  */
+function mirrorKey(key: SyncSourceKey): string | null {
+  return currentOwnerId ? `${NAME_MIRROR_PREFIX}${currentOwnerId}.${key}` : null;
+}
+
 function saveDirNameMirror(key: SyncSourceKey, name: string): void {
   if (typeof localStorage === 'undefined') return;
+  const storeKey = mirrorKey(key);
+  if (!storeKey) return;
   try {
-    if (name) localStorage.setItem(`${NAME_MIRROR_PREFIX}${key}`, name);
-    else localStorage.removeItem(`${NAME_MIRROR_PREFIX}${key}`);
+    if (name) localStorage.setItem(storeKey, name);
+    else localStorage.removeItem(storeKey);
   } catch {
     /* 隐私模式下写入可能失败，不影响主流程 */
   }
@@ -277,12 +298,19 @@ function saveDirNameMirror(key: SyncSourceKey, name: string): void {
  */
 export function loadDirNameMirror(key: SyncSourceKey): string {
   if (typeof localStorage === 'undefined') return '';
+  const storeKey = mirrorKey(key);
+  if (!storeKey) return '';
   try {
-    const current = localStorage.getItem(`${NAME_MIRROR_PREFIX}${key}`);
+    const current = localStorage.getItem(storeKey);
     if (current) return current;
-    // 旧版只有一个目录名镜像：仅在迁移目标正是该源时兜底
+    // 旧版只有一个目录名镜像：仅在迁移目标正是该源时兜底一次
     if (localStorage.getItem(LEGACY_HANDLE_TARGET_KEY) === key) {
-      return localStorage.getItem(LEGACY_NAME_MIRROR_KEY) ?? '';
+      const legacy = localStorage.getItem(LEGACY_NAME_MIRROR_KEY) ?? '';
+      if (legacy) {
+        localStorage.setItem(storeKey, legacy);
+        localStorage.removeItem(LEGACY_NAME_MIRROR_KEY);
+      }
+      return legacy;
     }
     return '';
   } catch {
@@ -302,18 +330,30 @@ export async function loadHandleFromIndexedDB(
   key: SyncSourceKey,
 ): Promise<SyncDirectoryHandle | null> {
   if (typeof indexedDB === 'undefined') return null;
+  const storeKey = scopedHandleKey(key);
+  if (!storeKey) return null;
   try {
     const db = await openHandleDb();
     try {
-      let handle = await getHandle(db, handleKey(key));
+      let handle = await getHandle(db, storeKey);
       if (!handle && shouldMigrateLegacy(key)) {
         const legacy = await getHandle(db, LEGACY_HANDLE_KEY);
         if (legacy) {
-          await putHandle(db, handleKey(key), legacy);
+          await putHandle(db, storeKey, legacy);
           await deleteHandle(db, LEGACY_HANDLE_KEY);
           handle = legacy;
         }
         clearLegacyMigrationFlag();
+      }
+      // 旧版未按用户隔离的句柄：首次登录时迁给当前账号，随后删除旧键
+      if (!handle) {
+        const oldKey = legacyHandleKey(key);
+        const oldHandle = await getHandle(db, oldKey);
+        if (oldHandle) {
+          await putHandle(db, storeKey, oldHandle);
+          await deleteHandle(db, oldKey);
+          handle = oldHandle;
+        }
       }
       if (handle) {
         // 数据还在：补写一次目录名镜像，并顺手申请持久化存储，
@@ -357,11 +397,12 @@ function clearLegacyMigrationFlag(): void {
  */
 export async function clearHandleFromIndexedDB(key: SyncSourceKey): Promise<void> {
   saveDirNameMirror(key, '');
-  if (typeof indexedDB === 'undefined') return;
+  const storeKey = scopedHandleKey(key);
+  if (!storeKey || typeof indexedDB === 'undefined') return;
   try {
     const db = await openHandleDb();
     try {
-      await deleteHandle(db, handleKey(key));
+      await deleteHandle(db, storeKey);
     } finally {
       db.close();
     }

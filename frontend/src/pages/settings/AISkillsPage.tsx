@@ -75,7 +75,7 @@ const AISkillsPage: React.FC = () => {
   const filteredSkills = useMemo(() => {
     const keyword = deferredSearchTerm.trim().toLowerCase();
     return skills.filter((skill) => {
-      if (showBuiltinOnly && !skill.isBuiltin) return false;
+      if (showBuiltinOnly && !(skill.isSystem || skill.isBuiltin)) return false;
       if (noteTypeFilter !== 'all' && !(skill.applicableNoteTypes || []).includes(noteTypeFilter)) {
         return false;
       }
@@ -165,8 +165,8 @@ const AISkillsPage: React.FC = () => {
   );
 
   const handleDeleteSkill = useCallback((skill: AISkill) => {
-    if (skill.isBuiltin) {
-      toast.error('内置技能不可删除，可编辑后禁用');
+    if (skill.isReadOnly || skill.isBuiltin) {
+      toast.error('系统内置技能只读，可调整笔记页绑定');
       return;
     }
     setSkillToDelete(skill);
@@ -369,9 +369,9 @@ const AISkillsPage: React.FC = () => {
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-mono">{skill.code}</p>
                   </div>
                   <div className="flex flex-col items-end gap-1 shrink-0">
-                    {skill.isBuiltin ? (
+                    {skill.isSystem || skill.isBuiltin ? (
                       <span className="px-2 py-0.5 rounded-full bg-orange-50 dark:bg-orange-950/30 text-xs text-orange-700 dark:text-orange-300">
-                        内置
+                        系统只读
                       </span>
                     ) : null}
                     <span
@@ -447,22 +447,26 @@ const AISkillsPage: React.FC = () => {
                   <span className="text-sm text-gray-700 dark:text-gray-300">笔记页启用</span>
                 </label>
                 <div className="flex flex-wrap items-center gap-2 mt-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    type="button"
-                    onClick={() => openEdit(skill)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-orange-50 dark:hover:bg-orange-950/30"
-                  >
-                    <Pencil className="w-4 h-4" /> 编辑
-                  </button>
-                  {!skill.isBuiltin ? (
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteSkill(skill)}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 dark:border-red-900/40 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
-                    >
-                      <Trash2 className="w-4 h-4" /> 删除
-                    </button>
-                  ) : null}
+                  {!skill.isReadOnly ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => openEdit(skill)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200 hover:bg-orange-50 dark:hover:bg-orange-950/30"
+                      >
+                        <Pencil className="w-4 h-4" /> 编辑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSkill(skill)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 dark:border-red-900/40 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                      >
+                        <Trash2 className="w-4 h-4" /> 删除
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-xs text-gray-400 dark:text-gray-500">系统资源只读</span>
+                  )}
                 </div>
               </article>
             ))}
@@ -507,24 +511,28 @@ const AISkillsPage: React.FC = () => {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openEdit(skill)}
-                          className="p-2 rounded-lg text-gray-500 hover:text-orange-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                          title="编辑"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        {!skill.isBuiltin ? (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteSkill(skill)}
-                            className="p-2 rounded-lg text-gray-500 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                            title="删除"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        ) : null}
+                        {!skill.isReadOnly ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEdit(skill)}
+                              className="p-2 rounded-lg text-gray-500 hover:text-orange-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+                              title="编辑"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSkill(skill)}
+                              className="p-2 rounded-lg text-gray-500 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+                              title="删除"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-gray-400 dark:text-gray-500">只读</span>
+                        )}
                       </div>
                     </td>
                   </tr>

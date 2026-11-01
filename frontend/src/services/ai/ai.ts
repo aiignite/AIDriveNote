@@ -162,6 +162,10 @@ export interface AISkill {
   priority: number;
   isEnabled: boolean;
   isBuiltin: boolean;
+  /** 系统资源（user_id 为空），对所有用户只读可见 */
+  isSystem?: boolean;
+  /** 当前用户不可编辑/删除（内置技能，或非管理员的系统历史技能） */
+  isReadOnly?: boolean;
   /** 适用笔记类型（markdown/rich_text/mindmap/flowchart）；null 表示走内置默认 */
   applicableNoteTypes?: string[] | null;
 }
