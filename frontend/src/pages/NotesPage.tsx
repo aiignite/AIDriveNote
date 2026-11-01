@@ -101,35 +101,24 @@ const NotesPage: React.FC = () => {
   /* ────── 路由 ↔ 笔记深链 ──────
    *
    * /note/:noteId 是笔记的唯一地址：可收藏、可多标签页、可被 AI 引用跳转。
-   * 列表切换只改 URL；刷新 / 直达 / 前进后退由 URL 反推选中笔记。
+   * 打开笔记的动作显式调用 openNote 写 URL；刷新 / 直达 / 前进后退只由
+   * 「URL → 选中笔记」反推。
+   *
+   * 不要再加「选中 → URL」的自动 effect：浏览器返回只改 URL，而选中态仍是
+   * 上一篇笔记，自动推 URL 会把返回顶回去，与反推 effect 形成 push/replace
+   * 死循环，最终 React 抛 Maximum update depth exceeded 卸载整页（白屏）。
    */
   const navigate = useNavigate();
   const { noteId: routeNoteId } = useParams<{ noteId: string }>();
   const [searchParams] = useSearchParams();
   /** AI 引用跳转携带的块 id（/note/:id?chunk=...） */
   const citationChunkId = searchParams.get('chunk');
-  /** 当前打开笔记 id 镜像，供异步回调读取最新值 */
+  /** 当前打开笔记 id 镜像，供路由同步与异步回调读取最新值 */
   const selectedNoteIdRef = useRef<string | null>(null);
+  selectedNoteIdRef.current = selectedNote?.id ?? null;
   /** 笔记列表镜像，供路由同步按 id 查找笔记 */
   const notesRef = useRef<Note[]>(notes);
   notesRef.current = notes;
-  /** 曾经打开过笔记：用于区分"主动关闭"与"深链首次挂载尚未加载" */
-  const hadSelectedNoteRef = useRef(false);
-
-  /** 选中笔记 → URL：列表内切换用 replace，避免历史里堆积一长串笔记 */
-  useEffect(() => {
-    selectedNoteIdRef.current = selectedNote?.id ?? null;
-    if (!selectedNote) {
-      // 首次挂载时 URL 可能自带 noteId（深链/刷新），此时不能重定向回首页，
-      // 交给下面的「URL → 选中笔记」effect 去加载。
-      if (hadSelectedNoteRef.current && routeNoteId) navigate('/', { replace: true });
-      hadSelectedNoteRef.current = false;
-      return;
-    }
-    hadSelectedNoteRef.current = true;
-    if (routeNoteId === selectedNote.id) return;
-    navigate(`/note/${selectedNote.id}`, { replace: Boolean(routeNoteId) });
-  }, [selectedNote, routeNoteId, navigate]);
 
   /** URL → 选中笔记：支持深链与前进/后退；不在当前筛选结果里时按 id 补拉 */
   useEffect(() => {
@@ -169,10 +158,17 @@ const NotesPage: React.FC = () => {
     return () => { cancelled = true; };
   }, [routeNoteId, notes.length, navigate]);
 
-  /** 关闭当前笔记：回到列表地址 */
+  /** 打开笔记：选中并同步地址；已有笔记地址时 replace，避免历史里堆积一长串笔记 */
+  const openNote = useCallback((note: Note) => {
+    setSelectedNote(note);
+    localStorage.setItem('note_last_opened_id', note.id);
+    navigate(`/note/${note.id}`, { replace: Boolean(routeNoteId) });
+  }, [navigate, routeNoteId]);
+
+  /** 关闭当前笔记：回到列表地址（replace，侧滑返回不会再弹回刚关闭的笔记） */
   const handleCloseNote = useCallback(() => {
     setSelectedNote(null);
-    if (routeNoteId) navigate('/');
+    if (routeNoteId) navigate('/', { replace: true });
   }, [navigate, routeNoteId]);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -554,8 +550,8 @@ const NotesPage: React.FC = () => {
       setNotes(prev => [note, ...prev]);
       setNotesTotal(t => t + 1);
     }
-    setSelectedNote(note);
-  }, [noteMatchesCurrentView]);
+    openNote(note);
+  }, [noteMatchesCurrentView, openNote]);
 
   /** 删除成功后从列表移除并校正总数 */
   const removeNotes = useCallback((ids: string[]) => {
@@ -790,12 +786,12 @@ const NotesPage: React.FC = () => {
       toast.success('笔记已恢复');
       // 回收站视图里恢复即离开：直接移除，不必重取整棵列表
       removeNotes([id]);
-      setSelectedNote(restored);
+      openNote(restored);
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('恢复失败');
     }
-  }, [removeNotes, notifyIfOffline]);
+  }, [removeNotes, notifyIfOffline, openNote]);
 
   const handlePermanentDeleteNote = useCallback(async (id: string) => {
     if (!confirm('确定永久删除这条笔记吗？此操作无法恢复。')) return;
@@ -944,12 +940,6 @@ const NotesPage: React.FC = () => {
   const handleEditorTagsChanged = useCallback(() => {
     bumpNotesRefresh();
   }, [bumpNotesRefresh]);
-
-  // Persist last opened note & restore on load
-  const handleSelectNote = useCallback((note: Note) => {
-    setSelectedNote(note);
-    localStorage.setItem('note_last_opened_id', note.id);
-  }, []);
 
   const handleQuickCaptureSave = useCallback(async (text: string) => {
     const firstLine = text.split('\n').find(line => line.trim())?.trim() ?? '';
@@ -1104,8 +1094,8 @@ const NotesPage: React.FC = () => {
     setFilterType('all');
     setSelectedTagIds([]);
     setSearchQuery('');
-    handleSelectNote(note);
-  }, [handleSelectNote, setFilterType, setSelectedTagIds, setSearchQuery]);
+    openNote(note);
+  }, [openNote, setFilterType, setSelectedTagIds, setSearchQuery]);
 
   useEffect(() => {
     // 移动端默认停留在列表页，不自动跳进上次打开的笔记
@@ -1116,7 +1106,7 @@ const NotesPage: React.FC = () => {
     const lastId = localStorage.getItem('note_last_opened_id');
     if (lastId && !selectedNote) {
       const found = notes.find(n => n.id === lastId);
-      if (found) setSelectedNote(found);
+      if (found) openNote(found);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notes, routeNoteId]);
@@ -1184,7 +1174,7 @@ const NotesPage: React.FC = () => {
       allTags={allTags}
       notesTotal={notesTotal}
       selectedNoteId={selectedNote?.id || null}
-      onSelectNote={handleSelectNote}
+      onSelectNote={openNote}
       onCreateNote={handleCreateNote}
       onImportDocument={handleImportDocument}
       onDeleteNote={handleDeleteNote}
@@ -1241,7 +1231,7 @@ const NotesPage: React.FC = () => {
       onBack={isMobile ? handleCloseNote : undefined}
       onOpenRelated={(id) => {
         const target = notes.find(n => n.id === id);
-        if (target) handleSelectNote(target);
+        if (target) openNote(target);
         else navigate(`/note/${id}`);
       }}
       onImportDocument={handleImportDocument}
@@ -1391,8 +1381,8 @@ const NotesPage: React.FC = () => {
           { id: 'note.new.markdown', label: '新建 Markdown 笔记', keywords: 'new md', run: () => { void handleCreateNote('markdown'); } },
           { id: 'note.new.mindmap', label: '新建思维导图', keywords: 'mindmap', run: () => { void handleCreateNote('mindmap'); } },
           { id: 'note.new.flowchart', label: '新建流程图', keywords: 'drawio flowchart', run: () => { void handleCreateNote('flowchart'); } },
-          { id: 'daily.today', label: '今日笔记', keywords: 'daily journal 日记 今日', run: () => { void noteApi.dailyToday().then(note => setSelectedNote(note)).catch(() => toast.error('打开今日笔记失败')); } },
-          { id: 'daily.review', label: '生成今日回顾', keywords: 'review daily 回顾 AI', run: () => { void noteApi.dailyReview().then(async review => { const created = await noteApi.create({ title: `回顾 ${review.date}`, noteType: 'markdown', content: { text: review.markdown } }); setSelectedNote(created); toast.success('回顾已生成'); }).catch(() => toast.error('生成回顾失败')); } },
+          { id: 'daily.today', label: '今日笔记', keywords: 'daily journal 日记 今日', run: () => { void noteApi.dailyToday().then(note => openNote(note)).catch(() => toast.error('打开今日笔记失败')); } },
+          { id: 'daily.review', label: '生成今日回顾', keywords: 'review daily 回顾 AI', run: () => { void noteApi.dailyReview().then(async review => { const created = await noteApi.create({ title: `回顾 ${review.date}`, noteType: 'markdown', content: { text: review.markdown } }); openNote(created); toast.success('回顾已生成'); }).catch(() => toast.error('生成回顾失败')); } },
           { id: 'note.template', label: '从模板新建', keywords: 'template 模板', run: () => setShowTemplateGallery(true) },
           { id: 'editor.commands', label: '打开编辑器命令…', hint: '⌘⇧K', keywords: 'palette 命令', run: () => window.dispatchEvent(new Event('aidrivenote:open-command-palette')) },
           { id: 'ai.open', label: '打开 AI 助手', hint: '⌘J', keywords: 'ai chat 助手', run: () => openAI() },
