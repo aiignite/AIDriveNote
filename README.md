@@ -225,6 +225,7 @@ ingest_documents ──解析──▶ ingest_jobs ──蒸馏──▶ knowled
 - 卡片包含摘要、要点、关键词、实体、论断与置信度；模型不可用时回退规则抽取，**推理模型 token 预算不足会退回低置信度规则卡**（已把 `KNOWLEDGE_DISTILL_MAX_TOKENS` 默认提到 8192、超时 180s）。
 - 批准后编译成知识笔记；「忽略」只丢弃卡片。可对单张卡重跑，也可「用模型重跑」所有仍由规则兜底的待审文档。
 - 编译产物统一归档到根级「蒸馏产出」目录，按类型分子目录（`concepts` / `entities` / `topics` / `decisions`），不再散落在笔记树根；实体页同样归档。存量散落笔记用 `python -m scripts.move_distilled_notes --apply` 一次性整理。
+- 模型调用失败、超时或 token 预算不足会静默回退规则抽取（`extractor=rule`，置信度固定 low）；可用 `python -m scripts.redistill_rule_cards --apply` 用大模型原地重做已批准的规则卡，单张批准时 UI 也会二次确认。
 - `GET /knowledge/notes/{note_id}/sources` 可追溯知识笔记由哪些文档与卡片编译而来。
 - 编译产物带 `title` / `tags` / `type` / `topic` / `confidence` / `sources` / `related` frontmatter，可经「知识库管理模式」写回本地 Markdown。
 
