@@ -152,6 +152,8 @@ export async function saveOfflineEdit(params: {
   const merged: CachedNote = {
     ...note,
     ...payload,
+    // 缓存里用 undefined 表示根目录，避免 null 与「未设置」两种空值混用
+    folderId: payload.folderId === null ? undefined : (payload.folderId ?? note.folderId),
     title: payload.title ?? note.title,
     cachedAt: Date.now(),
   };
@@ -297,7 +299,7 @@ async function applyCreate(op: OutboxOp): Promise<void> {
     title: op.payload.title ?? '无标题笔记',
     noteType: op.payload.noteType ?? 'markdown',
     content: op.payload.content,
-    folderId: op.payload.folderId,
+    folderId: op.payload.folderId ?? undefined,
     description: op.payload.description,
   });
 
@@ -338,7 +340,8 @@ async function applyUpdate(op: OutboxOp, result: OutboxRunResult): Promise<void>
       title: `${op.title}（冲突副本 ${stamp()}）`,
       noteType: remote.noteType,
       content: op.payload.content,
-      folderId: op.payload.folderId ?? remote.folderId,
+      // 冲突副本的落位：null 表示用户当初明确移到根目录，undefined 才回退到远端文件夹
+      folderId: op.payload.folderId === null ? undefined : (op.payload.folderId ?? remote.folderId),
       description: op.payload.description,
     });
     await cacheFullNote(copy, op.userId);

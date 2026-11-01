@@ -129,6 +129,337 @@ type FlatRow =
   | { kind: 'newFolder'; key: string; level: number }
   | { kind: 'note'; key: string; note: Note; level: number };
 
+/* ── 行组件 ──────────────────────────────────────
+ * 行做成独立的 memo 组件：面板每次 hover / 选中 / 开右键都会重渲染，
+ * 若行只是内联 JSX，可视区所有行都会被一起重渲染。
+ * 拆分后只有属性真正变化的行会更新（选中一行 = 只重渲染两行）。 */
+
+interface NoteRowProps {
+  note: Note;
+  level: number;
+  /** 在 sortedNotes 中的下标，Shift 连选靠它取区间 */
+  index: number;
+  isSelected: boolean;
+  isChecked: boolean;
+  /** 是否有任意笔记被勾选：多选态下勾选框常显 */
+  multiSelect: boolean;
+  isDragSource: boolean;
+  isDark: boolean;
+  isMobile: boolean;
+  showCheckbox: boolean;
+  /** 所属文件夹处于加密保护中 */
+  folderProtected: boolean;
+  onSelect: (note: Note) => void;
+  onRowClick: (note: Note, index: number, shiftKey: boolean) => void;
+  onToggleChecked: (id: string, index: number, shiftKey: boolean) => void;
+  onContextMenu: (e: React.MouseEvent, type: 'note' | 'folder', id: string) => void;
+  onDragStart: (e: React.DragEvent, id: string) => void;
+  onDragEnd: () => void;
+  onToggleFavorite?: (id: string, favorited: boolean) => void;
+  onPin?: (id: string, pinned: boolean) => void;
+}
+
+const NoteRow = React.memo(function NoteRow({
+  note,
+  level,
+  index,
+  isSelected,
+  isChecked,
+  multiSelect,
+  isDragSource,
+  isDark,
+  isMobile,
+  showCheckbox,
+  folderProtected,
+  onSelect,
+  onRowClick,
+  onToggleChecked,
+  onContextMenu,
+  onDragStart,
+  onDragEnd,
+  onToggleFavorite,
+  onPin,
+}: NoteRowProps) {
+  /** 移动端滑动起点：左滑收藏、右滑置顶 */
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  /** 滑动后抑制紧随其后的 click，避免误打开笔记 */
+  const suppressClickRef = useRef(false);
+  const typeCfg = TYPE_ICON[note.noteType] || TYPE_ICON.rich_text;
+  const paddingLeft = level * 16 + 12;
+  // 摘要优先取正文预览，其次用描述兜底；压缩空白并截断，避免长文撑爆行高
+  const preview = (note.previewText || note.description || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  const tags = note.tags ?? [];
+
+  return (
+    <div
+      role="option"
+      aria-selected={isSelected}
+      tabIndex={0}
+      onKeyDown={e => {
+        // 键盘可达：Enter 打开、Space 切换勾选
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (!multiSelect) onSelect(note);
+        } else if (e.key === ' ') {
+          e.preventDefault();
+          onToggleChecked(note.id, index, e.shiftKey);
+        }
+      }}
+      onTouchStart={e => {
+        if (!isMobile) return;
+        const touch = e.touches[0];
+        swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+        suppressClickRef.current = false;
+      }}
+      onTouchEnd={e => {
+        if (!isMobile) return;
+        const start = swipeStartRef.current;
+        swipeStartRef.current = null;
+        if (!start) return;
+        const touch = e.changedTouches[0];
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        if (Math.abs(dx) < 56 || Math.abs(dy) > 40) return;
+        suppressClickRef.current = true;
+        if (dx < 0) {
+          onToggleFavorite?.(note.id, !note.isFavorite);
+          toast.success(note.isFavorite ? '已取消收藏' : '已收藏');
+        } else {
+          onPin?.(note.id, !note.isPinned);
+          toast.success(note.isPinned ? '已取消置顶' : '已置顶');
+        }
+      }}
+      onClick={e => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          return;
+        }
+        onRowClick(note, index, e.shiftKey);
+      }}
+      onContextMenu={(e) => onContextMenu(e, 'note', note.id)}
+      draggable={!isMobile}
+      onDragStart={e => onDragStart(e, note.id)}
+      onDragEnd={onDragEnd}
+      className={`group flex items-center gap-2 px-3 py-2.5 md:py-2 cursor-pointer rounded-lg mx-1 transition-all ${
+        isDragSource ? 'opacity-40' : ''
+      } ${
+        isChecked
+          ? (isDark ? 'bg-orange-900/25' : 'bg-orange-50/70')
+          : isSelected
+            ? (isDark ? 'bg-orange-900/30' : 'bg-orange-50')
+            : (isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50')
+      }`}
+      style={{ paddingLeft: `${paddingLeft}px` }}
+    >
+      {/* 多选勾选框：桌面端悬停显现，进入多选态后常驻 */}
+      {showCheckbox && (
+        <span
+          onClick={e => {
+            e.stopPropagation();
+            onToggleChecked(note.id, index, e.shiftKey);
+          }}
+          title={isChecked ? '取消选中' : '选中（Shift 连选）'}
+          className={`shrink-0 cursor-pointer transition-opacity ${
+            multiSelect || isMobile
+              ? 'opacity-100'
+              : 'opacity-0 group-hover:opacity-100'
+          }`}
+        >
+          <span
+            className={`flex items-center justify-center w-3.5 h-3.5 rounded border transition-colors ${
+              isChecked
+                ? 'bg-orange-600 border-orange-600'
+                : (isDark ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white')
+            }`}
+          >
+            {isChecked && <Check size={11} className="text-white" strokeWidth={3} />}
+          </span>
+        </span>
+      )}
+      {/* Type icon badge */}
+      <div className={`shrink-0 p-1.5 rounded-md ${typeCfg.bgColor}`}>
+        <span className={typeCfg.color}>{typeCfg.icon}</span>
+      </div>
+      {/* 两行布局：标题 / 元信息（标签，无标签时改用摘要）+ 时间。
+          摘要不独占一行：列表项越矮一屏能看的条数越多，正文线索改由悬停 title 提供。 */}
+      <div className="flex-1 min-w-0" title={preview || undefined}>
+        <span className={`block text-sm truncate ${
+          isSelected
+            ? (isDark ? 'text-orange-300 font-medium' : 'text-orange-700 font-medium')
+            : (isDark ? 'text-gray-200' : 'text-gray-700')
+        }`}>
+          {note.isPinned && <Pin size={10} className="inline mr-1 text-amber-500" />}
+          {note.isFavorite && <Star size={10} className="inline mr-1 text-amber-400 fill-amber-400" />}
+          {(note.isEncrypted || folderProtected) && (
+            <Lock size={10} className="inline mr-1 text-orange-500" />
+          )}
+          {note.title || '无标题'}
+        </span>
+        {/* 不换行：标签保持原宽，摘要占据剩余空间并在溢出时省略 */}
+        <div className="flex items-center gap-1 mt-0.5 min-w-0">
+          {tags.length > 0 ? (
+            <>
+              {tags.slice(0, 2).map(tag => (
+                <span
+                  key={tag.id}
+                  className="shrink-0 text-[10px] px-1.5 py-0 rounded-full"
+                  style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
+                >
+                  {tag.name}
+                </span>
+              ))}
+              {tags.length > 2 && (
+                <span className={`shrink-0 text-[10px] ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+                  +{tags.length - 2}
+                </span>
+              )}
+            </>
+          ) : preview ? (
+            <span className={`min-w-0 flex-1 truncate text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+              {preview}
+            </span>
+          ) : null}
+          <span className={`shrink-0 text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
+            {formatRelativeTime(note.updatedAt)}
+          </span>
+        </div>
+      </div>
+      {/* Three-dot menu：触屏无 hover，移动端常显 */}
+      <button
+        onClick={e => { e.stopPropagation(); onContextMenu(e, 'note', note.id); }}
+        className={`p-1.5 md:p-0.5 rounded transition ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} ${isDark ? 'hover:bg-gray-600 text-gray-400' : 'hover:bg-gray-200 text-gray-400'}`}
+      >
+        <MoreHorizontal size={14} />
+      </button>
+    </div>
+  );
+});
+
+interface FolderRowProps {
+  node: TreeNode;
+  isExpanded: boolean;
+  isDark: boolean;
+  isMobile: boolean;
+  /** 当前是笔记拖拽的悬停目标 */
+  dropActive: boolean;
+  isRenaming: boolean;
+  renameValue: string;
+  isKbRoot: boolean;
+  /** 该文件夹是否处于加密保护中（含祖先加密的传播） */
+  folderProtected: boolean;
+  noteCount: number;
+  renameInputRef: React.RefObject<HTMLInputElement | null>;
+  onToggle: (id: string) => void;
+  onContextMenu: (e: React.MouseEvent, type: 'folder', id: string) => void;
+  onDragOverFolder: (e: React.DragEvent, id: string) => void;
+  onDragLeaveFolder: (id: string) => void;
+  onDrop: (e: React.DragEvent, id: string) => void;
+  onStartNewFolder: (id: string) => void;
+  onRenameChange: (value: string) => void;
+  onSubmitRename: () => void;
+  onCancelRename: () => void;
+}
+
+const FolderRow = React.memo(function FolderRow({
+  node,
+  isExpanded,
+  isDark,
+  isMobile,
+  dropActive,
+  isRenaming,
+  renameValue,
+  isKbRoot,
+  folderProtected,
+  noteCount,
+  renameInputRef,
+  onToggle,
+  onContextMenu,
+  onDragOverFolder,
+  onDragLeaveFolder,
+  onDrop,
+  onStartNewFolder,
+  onRenameChange,
+  onSubmitRename,
+  onCancelRename,
+}: FolderRowProps) {
+  const folder = node.folder!;
+  const hasChildren = node.children.length > 0;
+  const paddingLeft = node.level * 16 + 12;
+
+  return (
+    <div
+      onClick={() => onToggle(folder.id)}
+      onContextMenu={(e) => onContextMenu(e, 'folder', folder.id)}
+      onDragOver={e => onDragOverFolder(e, folder.id)}
+      onDragLeave={() => onDragLeaveFolder(folder.id)}
+      onDrop={e => onDrop(e, folder.id)}
+      className={`group flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg cursor-pointer transition-all ${
+        dropActive
+          ? (isDark ? 'bg-orange-900/40 ring-1 ring-orange-500' : 'bg-orange-100 ring-1 ring-orange-400')
+          : isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50'
+      }`}
+      style={{ paddingLeft: `${paddingLeft}px` }}
+    >
+      <span className={`shrink-0 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+        {hasChildren
+          ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)
+          : <span className="w-3.5" />}
+      </span>
+      {/* Folder icon */}
+      <span className="text-amber-400">
+        {isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />}
+      </span>
+      {/* Name or rename input */}
+      {isRenaming ? (
+        <input
+          ref={renameInputRef}
+          value={renameValue}
+          onChange={e => onRenameChange(e.target.value)}
+          onBlur={onSubmitRename}
+          onKeyDown={e => { if (e.key === 'Enter') onSubmitRename(); if (e.key === 'Escape') onCancelRename(); }}
+          className={`flex-1 text-sm px-1 py-0 border-b outline-none ${isDark ? 'bg-transparent border-gray-600 text-white' : 'bg-transparent border-gray-300 text-gray-800'}`}
+          onClick={e => e.stopPropagation()}
+        />
+      ) : (
+        <span className={`flex-1 text-sm font-medium truncate ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+          {folderProtected && (
+            <Lock size={11} className="inline mr-1 -mt-0.5 text-orange-500" />
+          )}
+          {folder.name}
+        </span>
+      )}
+      {/* 知识库根文件夹标记 */}
+      {isKbRoot && !isRenaming && (
+        <span
+          className="shrink-0 flex items-center"
+          title="知识库根文件夹：系统保护，不可删除或移动"
+        >
+          <Database size={12} className="text-emerald-500" />
+        </span>
+      )}
+      {/* Note count badge */}
+      {!isRenaming && noteCount > 0 && (
+        <span className={`text-xs px-1.5 rounded-full shrink-0 ${isDark ? 'bg-gray-700 text-gray-400' : 'bg-gray-100 text-gray-500'}`}>
+          {noteCount}
+        </span>
+      )}
+      {/* Hover actions：移动端常显，避免触屏无法触发 */}
+      <div className={`flex items-center gap-0.5 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+        <button
+          onClick={e => { e.stopPropagation(); onStartNewFolder(folder.id); }}
+          className={`p-1.5 md:p-0.5 rounded ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-400 hover:text-gray-700'}`}
+          title="新建子文件夹"
+        >
+          <FolderPlus size={13} />
+        </button>
+      </div>
+    </div>
+  );
+});
+
 export interface NoteListPanelProps {
   notes: Note[];
   folders: NoteFolder[];
@@ -165,6 +496,8 @@ export interface NoteListPanelProps {
   onCategoryChange?: (category: NoteCategory) => void;
   searchInputRef?: React.RefObject<HTMLInputElement | null>;
   loading?: boolean;
+  /** 后台刷新中：列表常驻，只在头部转小圈 */
+  refreshing?: boolean;
   isDark?: boolean;
   onRefresh?: () => void;
   isFullscreen?: boolean;
@@ -216,6 +549,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
   onCategoryChange,
   searchInputRef,
   loading = false,
+  refreshing = false,
   isDark = false,
   onRefresh,
   isFullscreen = false,
@@ -252,10 +586,9 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
    * 仅在非回收站视图启用：回收站的批量语义（永久删除）与常规批量操作差异较大，
    * 先保持单选，避免误触导致不可逆操作。 */
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
-  /** 移动端滑动起点：左滑收藏、右滑置顶 */
-  const swipeStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
-  /** 滑动后抑制紧随其后的 click，避免误打开笔记 */
-  const suppressRowClickRef = useRef(false);
+  /** 勾选数量镜像：点击行为要读最新值，但不应因它变化而重建所有行的回调 */
+  const checkedCountRef = useRef(0);
+  checkedCountRef.current = checkedIds.length;
   /** Shift 连选的锚点，取最后一次点击的笔记下标 */
   const selectionAnchorRef = useRef<number | null>(null);
   /** 移动端没有 hover，checkbox 需常显 */
@@ -498,12 +831,12 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
   /** 点击笔记行：多选态下改为切换勾选，否则正常打开 */
   const handleRowClick = useCallback((note: Note, index: number, shiftKey: boolean) => {
-    if (checkedIds.length > 0 || showCheckboxes && (shiftKey)) {
+    if (checkedCountRef.current > 0 || (showCheckboxes && shiftKey)) {
       toggleNoteChecked(note.id, index, shiftKey);
       return;
     }
     onSelectNote(note);
-  }, [checkedIds.length, showCheckboxes, toggleNoteChecked, onSelectNote]);
+  }, [showCheckboxes, toggleNoteChecked, onSelectNote]);
 
   /* ── 批量操作 ────────────────────────────────── */
 
@@ -582,28 +915,22 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
 
   const displayCount = notesTotal ?? sortedNotes.length;
 
-  // 递归计算文件夹下的笔记数量（含子文件夹）。
-  // 对同一棵树会被每个文件夹行调用一次，故按节点 id 缓存结果，
-  // 避免每次渲染都把整棵树重复遍历 N 遍。
-  const noteCountCacheRef = useRef(new Map<string, number>());
-
-  const countNotesInNode = useCallback((node: TreeNode): number => {
-    if (node.type !== 'folder' || !node.folder) return 0;
-    const cached = noteCountCacheRef.current.get(node.folder.id);
-    if (cached !== undefined) return cached;
-
-    let count = 0;
-    for (const child of node.children) {
-      if (child.type === 'note') count++;
-      else count += countNotesInNode(child);
-    }
-    noteCountCacheRef.current.set(node.folder.id, count);
-    return count;
-  }, []);
-
-  // 树变化时清空缓存（笔记移动、改名等都会影响计数）
-  useEffect(() => {
-    noteCountCacheRef.current.clear();
+  /**
+   * 每个文件夹（含子孙文件夹）下的笔记数。
+   * 一次遍历得出整张 map：既避免每个文件夹行各递归一遍，
+   * 也不会像「渲染时算 + effect 清缓存」那样在本地打补丁后残留旧计数。
+   */
+  const folderNoteCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    const walk = (node: TreeNode): number => {
+      if (node.type === 'note') return 1;
+      let total = 0;
+      for (const child of node.children) total += walk(child);
+      counts.set(node.id, total);
+      return total;
+    };
+    tree.forEach(walk);
+    return counts;
   }, [tree]);
 
   const toggleFolder = useCallback((id: string) => {
@@ -651,6 +978,11 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     setRenamingFolderId(null);
     setRenameValue('');
   }, [renamingFolderId, renameValue, onRenameFolder]);
+
+  const cancelRename = useCallback(() => {
+    setRenamingFolderId(null);
+    setRenameValue('');
+  }, []);
 
   const sortLabels: Record<SortMode, string> = { updatedAt: '修改时间', createdAt: '创建时间', title: '标题' };
 
@@ -774,260 +1106,31 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
     }
   }, [syncingLocal, userId, onRefresh]);
 
-  /* ── Render a single note item ─────────────────── */
-  const renderNoteItem = (note: Note, level: number) => {
-    const isSelected = note.id === selectedNoteId;
-    const isChecked = checkedIds.includes(note.id);
-    const noteIndex = sortedNotes.findIndex(n => n.id === note.id);
-    const typeCfg = TYPE_ICON[note.noteType] || TYPE_ICON.rich_text;
-    const paddingLeft = level * 16 + 12;
-    // 摘要优先取正文预览，其次用描述兜底；压缩空白并截断，避免长文撑爆行高
-    const preview = (note.previewText || note.description || '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 120);
-    const tags = note.tags ?? [];
+  /** 笔记 id → 在 sortedNotes 中的下标：避免每行渲染都做一次 findIndex */
+  const noteIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    sortedNotes.forEach((n, i) => map.set(n.id, i));
+    return map;
+  }, [sortedNotes]);
 
-    return (
-      <div
-        key={note.id}
-        role="option"
-        aria-selected={isSelected}
-        tabIndex={0}
-        onKeyDown={e => {
-          // 键盘可达：Enter 打开、Space 切换勾选
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            if (checkedIds.length === 0) onSelectNote(note);
-          } else if (e.key === ' ') {
-            e.preventDefault();
-            toggleNoteChecked(note.id, noteIndex, e.shiftKey);
-          }
-        }}
-        onTouchStart={e => {
-          if (!isMobile) return;
-          const touch = e.touches[0];
-          swipeStartRef.current = { id: note.id, x: touch.clientX, y: touch.clientY };
-          suppressRowClickRef.current = false;
-        }}
-        onTouchEnd={e => {
-          if (!isMobile) return;
-          const start = swipeStartRef.current;
-          swipeStartRef.current = null;
-          if (!start || start.id !== note.id) return;
-          const touch = e.changedTouches[0];
-          const dx = touch.clientX - start.x;
-          const dy = touch.clientY - start.y;
-          if (Math.abs(dx) < 56 || Math.abs(dy) > 40) return;
-          suppressRowClickRef.current = true;
-          if (dx < 0) {
-            onToggleFavorite?.(note.id, !note.isFavorite);
-            toast.success(note.isFavorite ? '已取消收藏' : '已收藏');
-          } else {
-            onPinNote?.(note.id, !note.isPinned);
-            toast.success(note.isPinned ? '已取消置顶' : '已置顶');
-          }
-        }}
-        onClick={e => {
-          if (suppressRowClickRef.current) {
-            suppressRowClickRef.current = false;
-            return;
-          }
-          handleRowClick(note, noteIndex, e.shiftKey);
-        }}
-        onContextMenu={(e) => handleContextMenu(e, 'note', note.id)}
-        draggable={!isMobile}
-        onDragStart={e => handleNoteDragStart(e, note.id)}
-        onDragEnd={handleDragEnd}
-        className={`group flex items-center gap-2 px-3 py-2.5 md:py-2 cursor-pointer rounded-lg mx-1 transition-all ${
-          draggingNoteId === note.id ? 'opacity-40' : ''
-        } ${
-          isChecked
-            ? (isDark ? 'bg-orange-900/25' : 'bg-orange-50/70')
-            : isSelected
-              ? (isDark ? 'bg-orange-900/30' : 'bg-orange-50')
-              : (isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50')
-        }`}
-        style={{ paddingLeft: `${paddingLeft}px` }}
-      >
-        {/* 多选勾选框：桌面端悬停显现，进入多选态后常驻 */}
-        {showCheckboxes && (
-          <span
-            onClick={e => {
-              e.stopPropagation();
-              toggleNoteChecked(note.id, noteIndex, e.shiftKey);
-            }}
-            title={isChecked ? '取消选中' : '选中（Shift 连选）'}
-            className={`shrink-0 cursor-pointer transition-opacity ${
-              checkedIds.length > 0 || isMobile
-                ? 'opacity-100'
-                : 'opacity-0 group-hover:opacity-100'
-            }`}
-          >
-            <span
-              className={`flex items-center justify-center w-3.5 h-3.5 rounded border transition-colors ${
-                isChecked
-                  ? 'bg-orange-600 border-orange-600'
-                  : (isDark ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white')
-              }`}
-            >
-              {isChecked && <Check size={11} className="text-white" strokeWidth={3} />}
-            </span>
-          </span>
-        )}
-        {/* Type icon badge */}
-        <div className={`shrink-0 p-1.5 rounded-md ${typeCfg.bgColor}`}>
-          <span className={typeCfg.color}>{typeCfg.icon}</span>
-        </div>
-        {/* 两行布局：标题 / 元信息（标签，无标签时改用摘要）+ 时间。
-            摘要不独占一行：列表项越矮一屏能看的条数越多，正文线索改由悬停 title 提供。 */}
-        <div className="flex-1 min-w-0" title={preview || undefined}>
-          <span className={`block text-sm truncate ${
-            isSelected
-              ? (isDark ? 'text-orange-300 font-medium' : 'text-orange-700 font-medium')
-              : (isDark ? 'text-gray-200' : 'text-gray-700')
-          }`}>
-            {note.isPinned && <Pin size={10} className="inline mr-1 text-amber-500" />}
-            {note.isFavorite && <Star size={10} className="inline mr-1 text-amber-400 fill-amber-400" />}
-            {(note.isEncrypted || (!!note.folderId && encryptedFolderIds.has(note.folderId))) && (
-              <Lock size={10} className="inline mr-1 text-orange-500" />
-            )}
-            {note.title || '无标题'}
-          </span>
-          {/* 不换行：标签保持原宽，摘要占据剩余空间并在溢出时省略 */}
-          <div className="flex items-center gap-1 mt-0.5 min-w-0">
-            {tags.length > 0 ? (
-              <>
-                {tags.slice(0, 2).map(tag => (
-                  <span
-                    key={tag.id}
-                    className="shrink-0 text-[10px] px-1.5 py-0 rounded-full"
-                    style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
-                  >
-                    {tag.name}
-                  </span>
-                ))}
-                {tags.length > 2 && (
-                  <span className={`shrink-0 text-[10px] ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
-                    +{tags.length - 2}
-                  </span>
-                )}
-              </>
-            ) : preview ? (
-              <span className={`min-w-0 flex-1 truncate text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-                {preview}
-              </span>
-            ) : null}
-            <span className={`shrink-0 text-xs ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
-              {formatRelativeTime(note.updatedAt)}
-            </span>
-          </div>
-        </div>
-        {/* Three-dot menu：触屏无 hover，移动端常显 */}
-        <button
-          onClick={e => { e.stopPropagation(); handleContextMenu(e, 'note', note.id); }}
-          className={`p-1.5 md:p-0.5 rounded transition ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} ${isDark ? 'hover:bg-gray-600 text-gray-400' : 'hover:bg-gray-200 text-gray-400'}`}
-        >
-          <MoreHorizontal size={14} />
-        </button>
-      </div>
-    );
-  };
+  /** 勾选状态集合：逐行 includes 在多选时是 O(n·k) */
+  const checkedIdSet = useMemo(() => new Set(checkedIds), [checkedIds]);
 
-  /* ── Render a folder node ──────────────────────── */
-  /**
-   * 渲染单个文件夹行（虚拟滚动单位）。
-   * 子节点不再在这里递归展开——拍平阶段（flatRows）已按展开状态输出全部可见行。
-   */
-  const renderFolderRow = (node: TreeNode) => {
-    const folder = node.folder!;
-    const isExpanded = expandedFolders.has(folder.id);
-    const hasChildren = node.children.length > 0;
-    const paddingLeft = node.level * 16 + 12;
+  /** 拖拽悬停文件夹高亮：只有正在拖笔记时才响应 */
+  const handleFolderDragOver = useCallback((e: React.DragEvent, folderId: string) => {
+    if (!draggingNoteId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDropFolderId(folderId);
+  }, [draggingNoteId]);
 
-    return (
-      <div
-          onClick={() => toggleFolder(folder.id)}
-          onContextMenu={(e) => handleContextMenu(e, 'folder', folder.id)}
-          onDragOver={e => {
-            if (!draggingNoteId) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            setDropFolderId(folder.id);
-          }}
-          onDragLeave={() => setDropFolderId(cur => (cur === folder.id ? null : cur))}
-          onDrop={e => handleDrop(e, folder.id)}
-          className={`group flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg cursor-pointer transition-all ${
-            dropFolderId === folder.id
-              ? (isDark ? 'bg-orange-900/40 ring-1 ring-orange-500' : 'bg-orange-100 ring-1 ring-orange-400')
-              : isDark ? 'hover:bg-gray-800/50' : 'hover:bg-gray-50'
-          }`}
-          style={{ paddingLeft: `${paddingLeft}px` }}
-        >
-          <span className={`shrink-0 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-            {hasChildren
-              ? (isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)
-              : <span className="w-3.5" />
-            }
-          </span>
-          {/* Folder icon */}
-          <span className="text-amber-400">
-            {isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />}
-          </span>
-          {/* Name or rename input */}
-          {renamingFolderId === folder.id ? (
-            <input
-              ref={renameInputRef}
-              value={renameValue}
-              onChange={e => setRenameValue(e.target.value)}
-              onBlur={submitRename}
-              onKeyDown={e => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') { setRenamingFolderId(null); } }}
-              className={`flex-1 text-sm px-1 py-0 border-b outline-none ${isDark ? 'bg-transparent border-gray-600 text-white' : 'bg-transparent border-gray-300 text-gray-800'}`}
-              onClick={e => e.stopPropagation()}
-            />
-          ) : (
-            <span className={`flex-1 text-sm font-medium truncate ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
-              {encryptedFolderIds.has(folder.id) && (
-                <Lock size={11} className="inline mr-1 -mt-0.5 text-orange-500" />
-              )}
-              {folder.name}
-            </span>
-          )}
-          {/* 知识库根文件夹标记 */}
-          {(folder.id === kbRootId || folder.isSystem) && renamingFolderId !== folder.id && (
-            <span
-              className="shrink-0 flex items-center"
-              title="知识库根文件夹：系统保护，不可删除或移动"
-            >
-              <Database size={12} className="text-emerald-500" />
-            </span>
-          )}
-          {/* Note count badge */}
-          {!renamingFolderId && (() => {
-            const cnt = countNotesInNode(node);
-            return cnt > 0 ? (
-              <span className={`text-xs px-1.5 rounded-full shrink-0 ${isDark ? 'bg-gray-700 text-gray-400' : 'bg-gray-100 text-gray-500'}`}>
-                {cnt}
-              </span>
-            ) : null;
-          })()}
-          {/* Hover actions：移动端常显，避免触屏无法触发 */}
-          <div className={`flex items-center gap-0.5 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-            <button
-              onClick={e => { e.stopPropagation(); startNewFolder(folder.id); }}
-              className={`p-1.5 md:p-0.5 rounded ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-400 hover:text-gray-700'}`}
-              title="新建子文件夹"
-            >
-              <FolderPlus size={13} />
-            </button>
-          </div>
-        </div>
-    );
-  };
+  const handleFolderDragLeave = useCallback((folderId: string) => {
+    setDropFolderId(cur => (cur === folderId ? null : cur));
+  }, []);
 
   /**
    * 新建文件夹输入框：作为独立行插在目标位置之前。
-   * 虚拟滚动下行高固定，混在 renderFolderRow 里会破坏 measure 测高，故抽出。
+   * 虚拟滚动下行高固定，混在文件夹行里会破坏 measure 测高，故抽出。
    */
   const renderNewFolderRow = (parentId: string | null, level: number) => (
     <div className="flex items-center gap-2 px-4 py-1 mx-1" style={{ paddingLeft: `${level * 16 + 12}px` }}>
@@ -1235,7 +1338,7 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
               className={`p-1.5 rounded-md transition-colors ${isDark ? 'text-gray-400 hover:text-white hover:bg-gray-700' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
               title="刷新"
             >
-              <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+              <RefreshCw size={15} className={refreshing || loading ? 'animate-spin' : ''} />
             </button>
           ) : null}
           {!isMobile && onToggleFullscreen ? (
@@ -1683,11 +1786,54 @@ const NoteListPanel: React.FC<NoteListPanelProps> = ({
                       transform: `translateY(${vItem.start}px)`,
                     }}
                   >
-                    {row.kind === 'folder'
-                      ? renderFolderRow(row.node)
-                      : row.kind === 'newFolder'
-                        ? renderNewFolderRow(newFolderParent ?? null, row.level)
-                        : renderNoteItem(row.note, row.level)}
+                    {row.kind === 'folder' ? (
+                      <FolderRow
+                        node={row.node}
+                        isExpanded={expandedFolders.has(row.node.folder!.id)}
+                        isDark={isDark}
+                        isMobile={isMobile}
+                        dropActive={dropFolderId === row.node.folder!.id}
+                        isRenaming={renamingFolderId === row.node.folder!.id}
+                        renameValue={renamingFolderId === row.node.folder!.id ? renameValue : ''}
+                        isKbRoot={row.node.folder!.id === kbRootId || !!row.node.folder!.isSystem}
+                        folderProtected={encryptedFolderIds.has(row.node.folder!.id)}
+                        noteCount={folderNoteCounts.get(row.node.folder!.id) ?? 0}
+                        renameInputRef={renameInputRef}
+                        onToggle={toggleFolder}
+                        onContextMenu={handleContextMenu}
+                        onDragOverFolder={handleFolderDragOver}
+                        onDragLeaveFolder={handleFolderDragLeave}
+                        onDrop={handleDrop}
+                        onStartNewFolder={startNewFolder}
+                        onRenameChange={setRenameValue}
+                        onSubmitRename={submitRename}
+                        onCancelRename={cancelRename}
+                      />
+                    ) : row.kind === 'newFolder' ? (
+                      renderNewFolderRow(newFolderParent ?? null, row.level)
+                    ) : (
+                      <NoteRow
+                        note={row.note}
+                        level={row.level}
+                        index={noteIndexById.get(row.note.id) ?? 0}
+                        isSelected={row.note.id === selectedNoteId}
+                        isChecked={checkedIdSet.has(row.note.id)}
+                        multiSelect={checkedIds.length > 0}
+                        isDragSource={draggingNoteId === row.note.id}
+                        isDark={isDark}
+                        isMobile={isMobile}
+                        showCheckbox={showCheckboxes}
+                        folderProtected={!!row.note.folderId && encryptedFolderIds.has(row.note.folderId)}
+                        onSelect={onSelectNote}
+                        onRowClick={handleRowClick}
+                        onToggleChecked={toggleNoteChecked}
+                        onContextMenu={handleContextMenu}
+                        onDragStart={handleNoteDragStart}
+                        onDragEnd={handleDragEnd}
+                        onToggleFavorite={onToggleFavorite}
+                        onPin={onPinNote}
+                      />
+                    )}
                   </div>
                 );
               })}

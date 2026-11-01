@@ -81,7 +81,12 @@ const NotesPage: React.FC = () => {
   // Notes data
   const [notes, setNotes] = useState<Note[]>([]);
   const [folders, setFolders] = useState<NoteFolder[]>([]);
-  const [loading, setLoading] = useState(false);
+  /** 首屏 / 空列表加载：只有这种状态才允许把列表替换成 spinner */
+  const [loading, setLoading] = useState(true);
+  /** 后台静默刷新：列表保持常驻，只在头部转小圈 */
+  const [refreshing, setRefreshing] = useState(false);
+  /** 请求序号：并发刷新时丢弃过期响应，避免旧数据覆盖新数据 */
+  const fetchSeqRef = useRef(0);
   // 搜索与筛选只在本次页面会话内有效：刷新后回到完整列表，
   // 避免用户看到被上一次筛选隐藏的笔记后误以为文件丢失。
   const [searchQuery, setSearchQuery] = useState('');
@@ -267,8 +272,10 @@ const NotesPage: React.FC = () => {
   }, [selectedCategory.type, filterType, activeFolderId, selectedTagIds, debouncedSearch]);
 
   // Fetch notes & folders
-  const fetchNotes = useCallback(async () => {
-    setLoading(true);
+  const fetchNotes = useCallback(async (options?: { background?: boolean }) => {
+    const seq = ++fetchSeqRef.current;
+    if (options?.background) setRefreshing(true);
+    else setLoading(true);
     try {
       const listParams: Parameters<typeof noteApi.list>[0] = {
         search: debouncedSearch || undefined,
@@ -289,6 +296,7 @@ const NotesPage: React.FC = () => {
         noteFolderApi.list(),
         noteTagApi.list(),
       ]);
+      if (seq !== fetchSeqRef.current) return;
       setNotes(notesRes.items);
       setNotesTotal(notesRes.total);
       setFolders(foldersData);
@@ -296,8 +304,10 @@ const NotesPage: React.FC = () => {
       // 旁路写入离线缓存：失败静默，绝不影响在线流程
       if (userId) void cacheList(notesRes.items, foldersData, tagsData, userId);
     } catch (err) {
+      if (seq !== fetchSeqRef.current) return;
       // 网络不可达时回退到本地缓存，避免整页空白
       const fallback = await buildOfflineList();
+      if (seq !== fetchSeqRef.current) return;
       if (fallback) {
         setNotes(fallback.notes);
         setNotesTotal(fallback.total);
@@ -309,7 +319,10 @@ const NotesPage: React.FC = () => {
         toast.error('加载笔记失败');
       }
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [debouncedSearch, filterType, selectedTagIds, activeFolderId, selectedCategory.type, userId, buildOfflineList]);
 
@@ -342,9 +355,10 @@ const NotesPage: React.FC = () => {
   }, []);
 
   // Refresh list when AI sidebar or other consumers bump the global token
+  // 外部改动触发的是后台刷新：列表保持常驻，不整棵替换成 spinner
   useEffect(() => {
     if (notesRefreshToken === 0) return;
-    fetchNotes();
+    fetchNotes({ background: true });
   }, [notesRefreshToken, fetchNotes]);
 
   // Sync selected note after global refresh
@@ -354,12 +368,35 @@ const NotesPage: React.FC = () => {
     if (updated) setSelectedNote(updated);
   }, [notes, notesRefreshToken, selectedNote?.id]);
 
-  /** 索引中：轮询列表，索引完成/失败后把状态同步到当前编辑器 */
+  /**
+   * 索引中：只轮询当前这一篇笔记的状态。
+   * 原先每 5 秒重拉整份列表（最多 500 条 + 文件夹 + 标签），
+   * 既慢又会与用户操作抢带宽、覆盖本地刚打的补丁。
+   */
   useEffect(() => {
-    if (selectedNote?.indexStatus !== 'pending') return;
-    const timer = window.setInterval(() => { fetchNotes(); }, 5000);
-    return () => window.clearInterval(timer);
-  }, [selectedNote?.indexStatus, fetchNotes]);
+    const noteId = selectedNote?.id;
+    if (!noteId || selectedNote?.indexStatus !== 'pending' || selectedNote.isLocked) return;
+    let cancelled = false;
+    let failures = 0;
+    const timer = window.setInterval(async () => {
+      try {
+        const fresh = await noteApi.get(noteId);
+        if (cancelled) return;
+        failures = 0;
+        if (fresh.indexStatus === 'pending') return;
+        setNotes(prev => prev.map(n => (n.id === noteId ? { ...n, indexStatus: fresh.indexStatus } : n)));
+        setSelectedNote(prev => (prev && prev.id === noteId ? { ...prev, indexStatus: fresh.indexStatus } : prev));
+      } catch {
+        // 单篇查询失败不打扰用户；连续失败则放弃这一轮轮询
+        failures += 1;
+        if (failures >= 3) window.clearInterval(timer);
+      }
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [selectedNote?.id, selectedNote?.indexStatus, selectedNote?.isLocked]);
 
   useEffect(() => {
     if (!routeNoteId) return;
@@ -466,6 +503,69 @@ const NotesPage: React.FC = () => {
     return false;
   }, []);
 
+  /* ────── 本地打补丁 ──────
+   * 所有写接口都会返回更新后的对象，增删改用返回值就地合并即可，
+   * 不再每次全量重取「笔记列表 + 文件夹 + 标签」——那会把整棵树卸载重建。
+   * 只有外部改动（AI 侧栏、同步、筛选切换）才重新拉取。 */
+
+  /**
+   * 当前列表视图（分类 / 类型 / 文件夹 / 标签 / 搜索）是否应包含该笔记。
+   * 口径与 fetchNotes 传给服务端的筛选参数保持一致。
+   */
+  const noteMatchesCurrentView = useCallback((note: Note): boolean => {
+    const inTrashView = selectedCategory.type === 'trash';
+    if (inTrashView) {
+      if (!note.isDeleted) return false;
+    } else {
+      if (note.isDeleted) return false;
+      if (filterType !== 'all' && note.noteType !== filterType) return false;
+      if (activeFolderId && note.folderId !== activeFolderId) return false;
+      if (selectedCategory.type === 'pinned' && !note.isPinned) return false;
+      if (selectedCategory.type === 'favorites' && !note.isFavorite) return false;
+      if (selectedTagIds.length > 0 && !(note.tags ?? []).some(t => selectedTagIds.includes(t.id))) return false;
+    }
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase();
+      const hay = `${note.title ?? ''} ${note.previewText ?? ''} ${note.description ?? ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  }, [selectedCategory.type, filterType, activeFolderId, selectedTagIds, debouncedSearch]);
+
+  /** 用接口返回的最新对象替换列表里的同一条；不再匹配当前筛选时移出列表 */
+  const applyNoteUpdate = useCallback((updated: Note) => {
+    const existed = notesRef.current.some(n => n.id === updated.id);
+    const matches = noteMatchesCurrentView(updated);
+    setNotes(prev => {
+      const idx = prev.findIndex(n => n.id === updated.id);
+      if (idx === -1) return prev;
+      if (!matches) return prev.filter(n => n.id !== updated.id);
+      const next = prev.slice();
+      next[idx] = updated;
+      return next;
+    });
+    if (existed && !matches) setNotesTotal(t => Math.max(0, t - 1));
+    setSelectedNote(prev => (prev && prev.id === updated.id ? updated : prev));
+  }, [noteMatchesCurrentView]);
+
+  /** 新建成功后插入列表；不匹配当前筛选（如置顶视图里新建普通笔记）时不插入 */
+  const insertNote = useCallback((note: Note) => {
+    if (noteMatchesCurrentView(note)) {
+      setNotes(prev => [note, ...prev]);
+      setNotesTotal(t => t + 1);
+    }
+    setSelectedNote(note);
+  }, [noteMatchesCurrentView]);
+
+  /** 删除成功后从列表移除并校正总数 */
+  const removeNotes = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    const removed = notesRef.current.reduce((acc, n) => (idSet.has(n.id) ? acc + 1 : acc), 0);
+    setNotes(prev => prev.filter(n => !idSet.has(n.id)));
+    if (removed > 0) setNotesTotal(t => Math.max(0, t - removed));
+  }, []);
+
   /**
    * 解析新建笔记的落位文件夹，优先级自高到低：
    * 1. 当前选中笔记所在的文件夹 —— 新笔记与选中文件同级；
@@ -493,9 +593,7 @@ const NotesPage: React.FC = () => {
         folderId: targetFolderId,
       };
       const newNote = await noteApi.create(data);
-      setNotes(prev => [newNote, ...prev]);
-      setNotesTotal(t => t + 1);
-      setSelectedNote(newNote);
+      insertNote(newNote);
       toast.success('笔记已创建');
       if (userId) void cacheNoteMetas([newNote], userId);
     } catch (err) {
@@ -508,15 +606,13 @@ const NotesPage: React.FC = () => {
           folderId: targetFolderId,
         });
         const note = toNote(local);
-        setNotes(prev => [note, ...prev]);
-        setNotesTotal(t => t + 1);
-        setSelectedNote(note);
+        insertNote(note);
         toast.success('已离线创建，联网后将自动同步');
         return;
       }
       toast.error('创建失败');
     }
-  }, [resolveCreateFolderId, userId]);
+  }, [resolveCreateFolderId, userId, insertNote]);
 
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const dragCounterRef = useRef(0);
@@ -549,9 +645,7 @@ const NotesPage: React.FC = () => {
         const newNote = await noteDocumentApi.upload(file, {
           folderId: resolveCreateFolderId(),
         });
-        setNotes(prev => [newNote, ...prev]);
-        setNotesTotal(total => total + 1);
-        setSelectedNote(newNote);
+        insertNote(newNote);
         if (userId) void cacheNoteMetas([newNote], userId);
         imported += 1;
       } catch (err) {
@@ -559,7 +653,7 @@ const NotesPage: React.FC = () => {
       }
     }
     if (imported > 0) toast.success(`已导入 ${imported} 个文档；解析成功的正文会自动蒸馏进知识收件箱`);
-  }, [resolveCreateFolderId, userId]);
+  }, [resolveCreateFolderId, userId, insertNote]);
 
   const handleDocumentDrop = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -588,15 +682,13 @@ const NotesPage: React.FC = () => {
       const newNote = await noteTemplateApi.createNoteFrom(templateId, {
         folderId: resolveCreateFolderId(),
       });
-      setNotes(prev => [newNote, ...prev]);
-      setNotesTotal(t => t + 1);
-      setSelectedNote(newNote);
+      insertNote(newNote);
       toast.success('笔记已从模板创建');
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('从模板创建失败');
     }
-  }, [resolveCreateFolderId, notifyIfOffline]);
+  }, [resolveCreateFolderId, notifyIfOffline, insertNote]);
 
   // Delete note
   const deleteNoteNow = useCallback(async (id: string) => {
@@ -611,7 +703,7 @@ const NotesPage: React.FC = () => {
       }
       void dropCached([id]);
       if (selectedNote?.id === id) handleCloseNote();
-      fetchNotes();
+      removeNotes([id]);
     } catch (err) {
       // 离线删除：本地立即移除，服务端删除排队等待回传
       if (isNetworkError(err) && !isTrash) {
@@ -619,15 +711,14 @@ const NotesPage: React.FC = () => {
         if (cached) {
           await deleteOfflineNote(cached);
           if (selectedNote?.id === id) handleCloseNote();
-          setNotes(prev => prev.filter(n => n.id !== id));
-          setNotesTotal(t => Math.max(0, t - 1));
+          removeNotes([id]);
           toast.success('已离线删除，联网后将自动同步');
           return;
         }
       }
       toast.error('删除失败');
     }
-  }, [selectedNote, fetchNotes, selectedCategory.type, handleCloseNote]);
+  }, [selectedNote, removeNotes, selectedCategory.type, handleCloseNote]);
 
   const handleDeleteNote = useCallback((id: string) => {
     const isTrash = selectedCategory.type === 'trash';
@@ -672,12 +763,12 @@ const NotesPage: React.FC = () => {
     }
     void dropCached(deleted);
     if (selectedNote && deleted.includes(selectedNote.id)) handleCloseNote();
-    fetchNotes();
+    removeNotes(deleted);
     const failed = ids.length - deleted.length;
     if (failed > 0) toast.error(`已删除 ${deleted.length} 篇，${failed} 篇删除失败`);
     else if (offlineQueued > 0) toast.success(`已离线删除 ${deleted.length} 篇，联网后将自动同步`);
     else toast.success(isTrash ? `已永久删除 ${deleted.length} 篇笔记` : `已删除 ${deleted.length} 篇笔记，可在回收站恢复`);
-  }, [selectedNote, fetchNotes, selectedCategory.type, handleCloseNote]);
+  }, [selectedNote, removeNotes, selectedCategory.type, handleCloseNote]);
 
   const handleDeleteNotes = useCallback((ids: string[]) => {
     if (!ids.length) return;
@@ -697,13 +788,14 @@ const NotesPage: React.FC = () => {
     try {
       const restored = await noteApi.restore(id);
       toast.success('笔记已恢复');
-      fetchNotes();
+      // 回收站视图里恢复即离开：直接移除，不必重取整棵列表
+      removeNotes([id]);
       setSelectedNote(restored);
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('恢复失败');
     }
-  }, [fetchNotes, notifyIfOffline]);
+  }, [removeNotes, notifyIfOffline]);
 
   const handlePermanentDeleteNote = useCallback(async (id: string) => {
     if (!confirm('确定永久删除这条笔记吗？此操作无法恢复。')) return;
@@ -711,12 +803,12 @@ const NotesPage: React.FC = () => {
       await noteApi.permanentDelete(id);
       toast.success('笔记已永久删除');
       if (selectedNote?.id === id) handleCloseNote();
-      fetchNotes();
+      removeNotes([id]);
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('删除失败');
     }
-  }, [selectedNote, fetchNotes, notifyIfOffline, handleCloseNote]);
+  }, [selectedNote, removeNotes, notifyIfOffline, handleCloseNote]);
 
   const handleToggleFavorite = useCallback(async (id: string, favorited: boolean) => {
     try {
@@ -727,88 +819,111 @@ const NotesPage: React.FC = () => {
         await noteApi.addFavorite(id);
         toast.success('已收藏');
       }
-      fetchNotes();
+      const current = notesRef.current.find(n => n.id === id);
+      if (current) applyNoteUpdate({ ...current, isFavorite: !favorited });
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('操作失败');
     }
-  }, [fetchNotes, notifyIfOffline]);
+  }, [applyNoteUpdate, notifyIfOffline]);
 
   const handleDuplicateNote = useCallback(async (id: string) => {
     try {
       const copied = await noteApi.duplicate(id);
       toast.success('笔记已复制');
-      fetchNotes();
-      setSelectedNote(copied);
+      insertNote(copied);
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('复制失败');
     }
-  }, [fetchNotes, notifyIfOffline]);
+  }, [insertNote, notifyIfOffline]);
 
   const handlePinNote = useCallback(async (id: string, pinned: boolean) => {
     try {
-      await noteApi.update(id, { isPinned: pinned } as NoteUpdate);
+      const updated = await noteApi.update(id, { isPinned: pinned } as NoteUpdate);
       toast.success(pinned ? '笔记已置顶' : '已取消置顶');
-      fetchNotes();
+      applyNoteUpdate(updated);
     } catch (err) {
       // 置顶属于字段修改，可安全排队到联网后回传
       if (isNetworkError(err) && (await queueOfflineEdit(id, { isPinned: pinned }))) {
+        const current = notesRef.current.find(n => n.id === id);
+        if (current) applyNoteUpdate({ ...current, isPinned: pinned });
         toast.success(pinned ? '已置顶，联网后同步' : '已取消置顶，联网后同步');
         return;
       }
       toast.error('操作失败');
     }
-  }, [fetchNotes, queueOfflineEdit]);
+  }, [applyNoteUpdate, queueOfflineEdit]);
 
   // Move note to folder
   const handleMoveNote = useCallback(async (noteId: string, folderId: string | null) => {
     try {
-      await noteApi.update(noteId, { folderId: folderId ?? undefined });
+      // 移到根目录必须显式传 null：undefined 会被序列化时丢弃，服务端视为「未修改」
+      const updated = await noteApi.update(noteId, { folderId });
       toast.success('笔记已移动');
-      fetchNotes();
+      applyNoteUpdate(updated);
     } catch (err) {
-      if (isNetworkError(err) && (await queueOfflineEdit(noteId, { folderId: folderId ?? undefined }))) {
+      if (isNetworkError(err) && (await queueOfflineEdit(noteId, { folderId }))) {
+        const current = notesRef.current.find(n => n.id === noteId);
+        if (current) applyNoteUpdate({ ...current, folderId: folderId ?? undefined });
         toast.success('已移动，联网后同步');
         return;
       }
       toast.error('移动失败');
     }
-  }, [fetchNotes, queueOfflineEdit]);
+  }, [applyNoteUpdate, queueOfflineEdit]);
 
   // Folder CRUD
   const handleCreateFolder = useCallback(async (name: string, parentId?: string) => {
     try {
-      await noteFolderApi.create({ name, parentId });
+      const folder = await noteFolderApi.create({ name, parentId });
       toast.success('文件夹已创建');
-      fetchNotes();
+      setFolders(prev => [...prev, folder]);
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('创建文件夹失败');
     }
-  }, [fetchNotes, notifyIfOffline]);
+  }, [notifyIfOffline]);
 
   const handleRenameFolder = useCallback(async (id: string, name: string) => {
     try {
-      await noteFolderApi.update(id, { name });
+      const updated = await noteFolderApi.update(id, { name });
       toast.success('文件夹已重命名');
-      fetchNotes();
+      setFolders(prev => prev.map(f => (f.id === id ? updated : f)));
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('重命名失败');
     }
-  }, [fetchNotes, notifyIfOffline]);
+  }, [notifyIfOffline]);
 
   const deleteFolderNow = useCallback(async (id: string) => {
     try {
       await noteFolderApi.delete(id);
       toast.success('文件夹已删除');
-      fetchNotes();
+      // 后端会连同子孙文件夹一起软删，并把其中的笔记移到根目录，这里同口径本地同步
+      const removedIds = new Set<string>([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const f of folders) {
+          if (f.parentId && removedIds.has(f.parentId) && !removedIds.has(f.id)) {
+            removedIds.add(f.id);
+            grew = true;
+          }
+        }
+      }
+      setFolders(prev => prev.filter(f => !removedIds.has(f.id)));
+      setNotes(prev => prev.map(n => (
+        n.folderId && removedIds.has(n.folderId) ? { ...n, folderId: undefined } : n
+      )));
+      if (selectedCategory.type === 'folder' && removedIds.has(selectedCategory.folderId)) {
+        setSelectedCategory({ type: 'all' });
+      }
     } catch (err) {
       if (notifyIfOffline(err)) return;
       toast.error('删除文件夹失败');
     }
-  }, [fetchNotes, notifyIfOffline]);
+  }, [folders, notifyIfOffline, selectedCategory, setSelectedCategory]);
 
   const handleDeleteFolder = useCallback((id: string) => {
     setConfirmState({
@@ -847,9 +962,7 @@ const NotesPage: React.FC = () => {
         content: { text },
         folderId,
       });
-      setNotes(prev => [note, ...prev]);
-      setNotesTotal(total => total + 1);
-      setSelectedNote(note);
+      insertNote(note);
       toast.success('已捕获到笔记');
     } catch (err) {
       if (isNetworkError(err) && userId) {
@@ -859,15 +972,13 @@ const NotesPage: React.FC = () => {
           payload: { title, content: { text } } as OutboxPayload,
         });
         const note = toNote(local);
-        setNotes(prev => [note, ...prev]);
-        setNotesTotal(total => total + 1);
-        setSelectedNote(note);
+        insertNote(note);
         toast.success('已离线捕获，联网后同步');
         return;
       }
       toast.error('捕获失败');
     }
-  }, [resolveCreateFolderId, userId]);
+  }, [resolveCreateFolderId, userId, insertNote]);
 
   /* ────── 加密文档 / 加密文件夹 ────── */
 
@@ -972,7 +1083,9 @@ const NotesPage: React.FC = () => {
       toast.success(res.affected > 0 ? `已取消加密（${res.affected} 篇文档）` : '已取消加密');
     }
 
-    fetchNotes();
+    // 加解密会改动整棵子树的锁定标记，接口只返回受影响数量，
+    // 这里做一次后台刷新同步标记，但列表保持常驻、不闪白
+    fetchNotes({ background: true });
     if (updatedNote && selectedNote?.id === updatedNote.id) handleNoteUpdated(updatedNote);
 
     // 加密成功后清除本地缓存的明文副本
@@ -1097,7 +1210,9 @@ const NotesPage: React.FC = () => {
       selectedCategory={selectedCategory}
       onCategoryChange={setSelectedCategory}
       searchInputRef={searchInputRef}
-      loading={loading}
+      // 只有「列表本身为空」时才允许整块换成 spinner；有数据时一律常驻
+      loading={loading && notes.length === 0}
+      refreshing={refreshing || loading}
       isDark={isDark}
       onRefresh={fetchNotes}
       isMobile={isMobile}

@@ -70,7 +70,8 @@ export interface NoteUpdate {
   title?: string;
   noteType?: NoteType;
   content?: Record<string, unknown>;
-  folderId?: string;
+  /** null 表示移到根目录；undefined 会在序列化时被丢弃，服务端视为未修改 */
+  folderId?: string | null;
   description?: string;
   status?: string;
   isPinned?: boolean;

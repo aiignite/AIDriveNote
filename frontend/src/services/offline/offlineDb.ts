@@ -95,8 +95,8 @@ export interface OutboxPayload {
   content?: Record<string, unknown>;
   /** 笔记类型（仅新建时有意义） */
   noteType?: Note['noteType'];
-  /** 所属文件夹 */
-  folderId?: string;
+  /** 所属文件夹；null 表示显式移到根目录，undefined 表示不修改 */
+  folderId?: string | null;
   /** 描述 */
   description?: string;
   /** 是否置顶 */

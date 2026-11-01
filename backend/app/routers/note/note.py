@@ -278,6 +278,7 @@ class RagChunkOut(BaseModel):
 # 哨兵：区分「未传入 lock」与「显式传入 None（已解锁）」
 _UNSET = object()
 _DOC_UNSET = object()
+_CONTENT_UNSET = object()
 
 
 async def _load_folder_maps(db: AsyncSession, user_id: UUID) -> tuple[dict, set]:
@@ -321,6 +322,7 @@ async def _enrich_note_out(
     is_locked: bool | None = None,
     index_status: str | None = None,
     document: NoteDocument | None | object = _DOC_UNSET,
+    content_override: object = _CONTENT_UNSET,
 ) -> NoteOut:
     # 多次 commit / 原生 SQL 更新后，server_default 列可能已过期；异步会话不能在
     # 同步属性访问时隐式补查，这里显式刷新一次。
@@ -328,6 +330,10 @@ async def _enrich_note_out(
 
     if sa_inspect(note).expired_attributes:
         await db.refresh(note)
+    # 解锁/刚加密场景需要在本次响应返回明文，但落库仍是密文；刷新会从库里
+    # 重新读回密文，所以覆盖值必须放在刷新之后。
+    if content_override is not _CONTENT_UNSET:
+        set_committed_value(note, "content", content_override)
     if tags is None:
         tags = await NoteTagService.get_note_tags(db, note.id)
     if is_favorite is None:
@@ -1058,6 +1064,8 @@ async def get_note(
     if not item:
         raise NotFoundException("Note")
     await _assert_note_access(db, item, user)
+    # 单篇查询也带上索引状态：前端轮询「索引中」时只拉这一篇，不再重取整个列表
+    index_status = (await _load_index_status_map(db, [item.id])).get(str(item.id))
     lock = await NoteLockService.resolve_lock(db, item)
     if lock:
         key = NoteLockService.resolve_key_from_token(lock, x_note_unlock, user.id)
@@ -1065,9 +1073,11 @@ async def get_note(
             plain = note_crypto.decrypt_content(item.content, key)
             if plain is not None:
                 # 已解锁：返回明文正文，但保留锁定来源信息
-                item.content = plain
-                return await _enrich_note_out(db, item, user, lock=lock, is_locked=False)
-    return await _enrich_note_out(db, item, user, lock=lock)
+                return await _enrich_note_out(
+                    db, item, user, lock=lock, is_locked=False,
+                    index_status=index_status, content_override=plain,
+                )
+    return await _enrich_note_out(db, item, user, lock=lock, index_status=index_status)
 
 
 @router.post("", response_model=NoteOut, status_code=status.HTTP_201_CREATED)
@@ -1129,10 +1139,13 @@ async def update_note(
         )
         if not item:
             raise NotFoundException("Note")
-        # 本次响应返回明文，但不落库（set_committed_value 避免被 autoflush 写回）
+        # 本次响应返回明文，但不落库（content_override 在刷新后覆盖，避免读回密文）
+        content_override: object = _CONTENT_UNSET
         if "content" in data:
-            set_committed_value(item, "content", note_crypto.decrypt_content(item.content, key))
-        return await _enrich_note_out(db, item, user, lock=lock, is_locked=False)
+            content_override = note_crypto.decrypt_content(item.content, key)
+        return await _enrich_note_out(
+            db, item, user, lock=lock, is_locked=False, content_override=content_override,
+        )
 
     item = await NoteService.update_note(
         db, note_id, data, save_revision=existing.note_type != "document",
@@ -1170,9 +1183,10 @@ async def encrypt_note(
     token = note_crypto.make_unlock_token(
         scope="note", target_id=note.id, user_id=user.id, key_b64=key,
     )
-    # 本次响应返回明文，但不落库：用 set_committed_value 赋值，避免被 autoflush 写回。
-    set_committed_value(note, "content", plain)
-    out = await _enrich_note_out(db, note, user, lock=("note", note.id), is_locked=False)
+    # 本次响应返回明文，但不落库；由 enrichment 在刷新后覆盖。
+    out = await _enrich_note_out(
+        db, note, user, lock=("note", note.id), is_locked=False, content_override=plain,
+    )
     return NoteLockOut(note=out, unlock_token=token)
 
 
@@ -1231,9 +1245,10 @@ async def unlock_note(
         scope=scope, target_id=target_id, user_id=user.id, key_b64=key,
     )
     plain = note_crypto.decrypt_content(note.content, key)
-    if plain is not None:
-        set_committed_value(note, "content", plain)  # 仅本次响应返回明文，不落库
-    out = await _enrich_note_out(db, note, user, lock=lock, is_locked=False)
+    out = await _enrich_note_out(
+        db, note, user, lock=lock, is_locked=False,
+        content_override=plain if plain is not None else _CONTENT_UNSET,
+    )
     return NoteLockOut(note=out, unlock_token=token)
 
 
@@ -1270,8 +1285,9 @@ async def change_note_password(
     token = note_crypto.make_unlock_token(
         scope="note", target_id=note.id, user_id=user.id, key_b64=new_key,
     )
-    set_committed_value(note, "content", plain)  # 仅本次响应返回明文，不落库
-    out = await _enrich_note_out(db, note, user, lock=("note", note.id), is_locked=False)
+    out = await _enrich_note_out(
+        db, note, user, lock=("note", note.id), is_locked=False, content_override=plain,
+    )
     return NoteLockOut(note=out, unlock_token=token)
 
 
