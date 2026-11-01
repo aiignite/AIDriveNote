@@ -475,12 +475,14 @@ ASR 设置（`/settings/asr`）以数据库为准、覆盖环境变量；网关 
 
 ### 匿名登录（免注册试用）
 
-登录页提供「匿名使用」入口，无需邮箱密码即可使用笔记功能与 AI 助手。
+登录页提供「匿名使用」入口，无需邮箱密码即可体验完整的笔记与知识工作流。
 
 - **每个匿名会话一个独立账号**：这是隐私硬要求。笔记按 `created_by` 隔离，若所有匿名访客共用一个账号，所有人将互相看到对方的笔记。
-- **数据不长期保存**：匿名账号超过 `GUEST_IDLE_TIMEOUT_MINUTES`（默认 30 分钟）无任何请求后，后台定时任务会**物理删除**其笔记、文件夹、标签、AI 会话与附件、**自建的模型与助手**、上传文件乃至账号行。主动点击「退出」则立即清除，无需等待宽限期。
-- **可用**：笔记全功能（富文本 / Markdown / 思维导图 / 流程图）、离线缓存、AI 对话与工具调用、AI 生成标题、AI 偏好设置，以及**创建和使用自己的** AI 模型 / 助手 / 技能。
-- **不可用**：录音转写、本地同步、访问令牌（PAT）、笔记分享、发送到邮箱、文档笔记上传与知识入库 / 蒸馏、语音转写与常用词库设置（后两者是全局配置，匿名写入无法按用户回收）。前端隐藏入口，后端以 `require_not_guest` 拦截。
+- **数据不长期保存**：匿名账号超过 `GUEST_IDLE_TIMEOUT_MINUTES`（默认 120 分钟）无任何请求后，后台定时任务会**物理删除**其笔记、文件夹、标签、AI 会话与附件、**自建的模型/助手/技能**、文档与知识库上传文件乃至账号行。主动点击「退出」则立即清除，无需等待宽限期。
+- **可用**：笔记全功能（富文本 / Markdown / 思维导图 / 流程图）、离线缓存、AI 对话与工具调用、AI 生成标题、AI 偏好设置；**文档笔记上传 / 预览 / 抽取知识**；**知识入库、知识收件箱、审核、单篇/批量蒸馏、重跑、体检、统计、知识设置、重建索引、实体页**；**本地同步**；以及**创建和使用自己的** AI 模型 / 助手 / 技能。
+- **不可用**：录音转写、访问令牌（PAT）、MCP、用户分享与公开链接、发送到邮箱、语音转写与常用词库设置（后两者是全局配置，匿名写入无法按用户回收）。前端隐藏入口，后端以 `require_not_guest` 拦截。
+- **资源可见性**：匿名只能看到「本人创建 + 系统内置只读」资源；系统内置包括 OPENCODE 免费模型、内置技能与系统助手，其他用户创建的模型/助手/技能不可见。
+- **成本与容量保护**：文档 + 知识库/知识入库上传合计 100MB；自定义技能最多 10 个；知识蒸馏每日最多 20 次（设置页不能调高）。存储按内容哈希去重统计。
 - **匿名登录事件**：管理员可在 `/settings/guest-events` 查看匿名用户的登录信息与会话生命周期（类型、时间、IP、User-Agent、存活时长、笔记数）与汇总统计，并可点击「立即清除超时账号」。事件**仅记录元数据**，绝不包含笔记标题或正文；`guest_events` 表刻意不设 `users` 外键，因此账号被清除后事件仍保留，便于统计与审计。
 
 ### AI 模型与助手的归属
@@ -507,9 +509,12 @@ ASR 设置（`/settings/asr`）以数据库为准、覆盖环境变量；网关 
 | 单个上传文件大小（图片资产 / AI 附件） | `USER_MAX_UPLOAD_BYTES` | 2MB |
 | 单条录音大小 | `NOTE_MAX_RECORDING_BYTES` | 25MB |
 | 匿名用户笔记数 | `GUEST_MAX_NOTES` | 50 |
+| 匿名文档 + 知识库/入库总存储 | `GUEST_MAX_STORAGE_BYTES` | 100MB |
+| 匿名自定义技能数 | `GUEST_MAX_SKILLS` | 10 |
+| 匿名知识蒸馏每日次数 | `GUEST_KNOWLEDGE_DAILY_LIMIT` | 20 |
 | 生产接口文档 | `API_DOCS_ENABLED` | compose 中 `false` |
 
-> `NOTE_MAX_RECORDING_BYTES` 变更时，nginx 各层 `client_max_body_size` 需 ≥ 该值 + 1MB。
+> 知识库/知识入库单文件上限 50MB，文档笔记 25MB，录音 25MB；nginx 各层 `client_max_body_size` 统一为 64m。
 
 ### MCP 集成
 
@@ -707,7 +712,7 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 | `/knowledge` | 知识收件箱、知识卡审核 / 重跑、批量蒸馏、知识卡检索、来源追溯、会话设置与体检 |
 | `/note-recordings` | 录音上传、列表、详情、转写文本、音频流、重新转写 / AI 整理润色、删除 |
 | `/note-asr` | ASR 设置读写、网关连通性测试、常用词库 CRUD |
-| `/ai` | 模型 / 助手 / 技能 / 会话 / 附件 / SSE 流式对话（匿名禁用） |
+| `/ai` | 模型 / 助手 / 技能 / 会话 / 附件 / SSE 流式对话（匿名可用，按归属隔离） |
 | `/api-tokens` | 访问令牌签发、列表、撤销 |
 
 健康检查：`GET /health` → `{ "status": "ok", "app": "AIDriveNote" }`
@@ -721,15 +726,15 @@ npx -y @modelcontextprotocol/inspector aidrivenote-mcp
 | `/login` | 登录 | 含「匿名使用」入口 |
 | `/register` | 注册 | 三步邮箱验证码；`SELF_REGISTRATION_ENABLED=false` 时入口隐藏 |
 | `/` | 笔记页 | 列表 + 编辑器 + AI 侧栏；移动端单列导航 |
-| `/inbox` | 知识收件箱 | 上传 / 批量蒸馏、知识卡审核与重跑、来源查看；匿名禁用 |
-| `/settings` | 设置 | 匿名账号默认落到 `offline`，普通用户落到 `models` |
-| `/settings/models` | AI 模型 | 匿名禁用 |
-| `/settings/assistants` | AI 助手 | 匿名禁用 |
-| `/settings/skills` | AI 技能 | 匿名禁用 |
+| `/inbox` | 知识收件箱 | 上传 / 批量蒸馏、知识卡审核与重跑、来源查看；匿名可用 |
+| `/settings` | 设置 | 匿名与普通用户默认落到 `models` |
+| `/settings/models` | AI 模型 | 匿名可用（自建 + OPENCODE 免费模型） |
+| `/settings/assistants` | AI 助手 | 匿名可用（自建 + 系统助手只读） |
+| `/settings/skills` | AI 技能 | 匿名可用（自建 + 系统技能只读） |
 | `/settings/asr` | 语音转写 | 匿名禁用 |
 | `/settings/common-terms` | 专有名词词表 | 匿名禁用 |
-| `/settings/sync` | 本机同步 | 匿名禁用 |
-| `/settings/knowledge` | 知识入库 | 蒸馏开关 / 模型授权 / 日限额；匿名禁用 |
+| `/settings/sync` | 本机同步 | 匿名可用（配置与目录句柄按用户隔离） |
+| `/settings/knowledge` | 知识入库 | 蒸馏开关 / 模型授权 / 日限额；匿名可用（日限额封顶 20） |
 | `/settings/mcp` | MCP 工具 | MCP 服务器与调用审计；匿名禁用 |
 | `/settings/offline` | 离线缓存 | 匿名可用 |
 | `/settings/tokens` | 访问令牌 | 匿名禁用 |
@@ -784,7 +789,7 @@ docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
 
 ### 数据库迁移
 
-`backend/alembic/versions/` 目前 **26 个**迁移：初始表 → AI 平台 → 模型扩展字段 → 用户角色 → 技能扩展与笔记向量 → AI 附件 → 笔记性能索引 → 访问令牌 → 录音 → P0 可靠性（修订置位/序号、`note_type` 约束、中文检索扩展）→ 笔记加密 → 邮箱验证码 → 匿名用户 → 匿名事件 → RAG v2 → MCP 客户端 → 知识库资产 → 公开链接 → 令牌范围 → MCP stdio → 知识入库 → RAG 块元数据 → 知识 P2 → 蒸馏模型 → 文档笔记 → 文件夹系统标记。
+`backend/alembic/versions/` 目前 **27 个**迁移：初始表 → AI 平台 → 模型扩展字段 → 用户角色 → 技能扩展与笔记向量 → AI 附件 → 笔记性能索引 → 访问令牌 → 录音 → P0 可靠性（修订置位/序号、`note_type` 约束、中文检索扩展）→ 笔记加密 → 邮箱验证码 → 匿名用户 → 匿名事件 → RAG v2 → MCP 客户端 → 知识库资产 → 公开链接 → 令牌范围 → MCP stdio → 知识入库 → RAG 块元数据 → 知识 P2 → 蒸馏模型 → 文档笔记 → 文件夹系统标记 → 技能归属。
 
 ---
 
@@ -819,9 +824,12 @@ docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `GUEST_LOGIN_ENABLED` | `true` | 是否开放匿名登录 |
-| `GUEST_IDLE_TIMEOUT_MINUTES` | 30 | 离线宽限期，超时即物理清除 |
+| `GUEST_IDLE_TIMEOUT_MINUTES` | 120 | 离线宽限期，超时即物理清除 |
 | `GUEST_PURGE_INTERVAL_SECONDS` | 300 | 清除任务扫描间隔（兼作心跳节流） |
 | `GUEST_MAX_NOTES` | 50 | 匿名用户笔记配额 |
+| `GUEST_MAX_STORAGE_BYTES` | 104857600 | 匿名文档 + KB/入库总存储（100MB） |
+| `GUEST_MAX_SKILLS` | 10 | 匿名自定义技能数 |
+| `GUEST_KNOWLEDGE_DAILY_LIMIT` | 20 | 匿名知识蒸馏每日上限 |
 | `GUEST_EVENTS_ENABLED` | `true` | 是否记录匿名登录事件 |
 
 ### 笔记与 AI
@@ -902,7 +910,7 @@ AIDriveNote/
 │   │   │                     knowledge（入库 / 蒸馏 / 编译 / 卡片检索）
 │   │   ├── models/           用户、笔记、AI、知识库、录音、匿名事件数据模型
 │   │   └── ai_tools/         18 个 AI 工具（note_tools 16 + knowledge_tools 1 + web_tools 1）
-│   └── alembic/versions/     26 次迁移
+│   └── alembic/versions/     27 次迁移
 ├── frontend/                 React 19 + Vite + 四种编辑器
 │   ├── src/pages/            笔记页、知识收件箱、登录、注册、settings/ 12 个设置页
 │   ├── src/components/       笔记组件、AI 组件、录音组件、通用组件
@@ -933,6 +941,14 @@ cd frontend && npm run build                   # tsc + vite build + gzip
 ---
 
 ## 更新日志
+
+### 2026-11-01
+
+- **匿名体验补齐**：匿名账号开放文档笔记上传/预览/抽取知识、知识入库 / 收件箱 / 审核 / 蒸馏 / 体检 / 统计 / 知识设置、本地同步，以及 AI 技能自定义；录音转写、邮件、PAT、MCP、用户分享与公开链接仍为登录专属。
+- **匿名资源与成本隔离**：技能与页面绑定增加 `user_id`（`027_skill_ownership`），匿名只可见「本人创建 + 系统内置只读」；文档 + KB/入库总存储 100MB、技能最多 10 个、知识蒸馏每日 20 次；LLM 调用补齐 `is_guest`，匿名不会回退到站点付费模型。
+- **数据生命周期**：匿名闲置清除从 30 分钟延长到 120 分钟；清除任务补上知识库/知识入库磁盘原件、ingest 临时文件、知识卡/来源关系、自定义技能与 RAG job。
+- **前端**：新增匿名横幅（到期与配额提示）、登录页能力说明、设置侧栏匿名说明；邮箱/分享入口对匿名隐藏；AI 语音仅保留浏览器实时识别；知识日限额对匿名封顶；无模型时显示「去设置添加」。
+- **部署**：nginx 各层上传上限 26m → 64m，支持 50MB 知识库/知识入库文件；本地同步配置与目录句柄按用户隔离；rsync 排除运行日志与上传目录。
 
 ### 2026-10-31
 

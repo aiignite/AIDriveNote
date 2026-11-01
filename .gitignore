@@ -19,6 +19,8 @@ __pycache__/
 
 # Runtime logs
 .runtime-logs/
+.runtime-demo/
+.workbuddy/
 
 # Runtime uploads (AI attachments at rest)
 backend/uploads/

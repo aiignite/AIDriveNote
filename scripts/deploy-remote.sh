@@ -85,11 +85,15 @@ rsync -avz \
   --exclude '.venv' \
   --exclude '__pycache__' \
   --exclude '.runtime-logs' \
+  --exclude '.runtime-demo' \
+  --exclude '.workbuddy' \
   --exclude 'backend/.env' \
+  --exclude 'backend/uploads' \
   --exclude '.git' \
   --exclude 'frontend/dist' \
   --exclude 'backend/.pytest_cache' \
   --exclude 'scripts/deploy.env' \
+  --exclude '.DS_Store' \
   -e "$(rsync_ssh)" \
   ./ "${USER}@${HOST}:${REMOTE_PATH}/"
 
