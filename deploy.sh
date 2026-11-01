@@ -17,18 +17,28 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-echo "==> 构建并启动容器..."
-docker compose -f docker-compose.prod.yml up -d --build
+echo "==> 构建后端镜像..."
+docker compose -f docker-compose.prod.yml build backend
+
+echo "==> 启动 PostgreSQL..."
+docker compose -f docker-compose.prod.yml up -d postgres
 
 echo "==> 等待 PostgreSQL 就绪..."
-sleep 5
+for _ in $(seq 1 30); do
+  pg_id="$(docker compose -f docker-compose.prod.yml ps -q postgres)"
+  status="$(docker inspect --format '{{.State.Health.Status}}' "$pg_id" 2>/dev/null || echo unknown)"
+  if [[ "$status" == "healthy" ]]; then
+    break
+  fi
+  sleep 2
+done
 
+# 先迁移再启动后端：后端 lifespan 会查询新列/种子数据，旧 schema 下会启动失败
 echo "==> 执行数据库迁移..."
 docker compose -f docker-compose.prod.yml run --rm --no-deps backend alembic upgrade head
 
-echo "==> 确保 backend 已加载最新 schema..."
-docker compose -f docker-compose.prod.yml up -d backend
-sleep 3
+echo "==> 构建并启动全部容器..."
+docker compose -f docker-compose.prod.yml up -d --build
 
 echo "==> 健康检查..."
 HEALTH_PATH="${APP_HEALTH_PATH:-/health}"
