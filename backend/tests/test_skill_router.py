@@ -8,7 +8,7 @@ from app.services.ai_skills.skill_router import SkillRouter
 
 
 @pytest.mark.asyncio
-async def test_skill_router_prefers_mindmap_skill(db_session):
+async def test_skill_router_prefers_mindmap_skill(db_session, test_user):
     skill_m = AISkill(
         code="note_mindmap_expand",
         name="扩展导图",
@@ -36,6 +36,7 @@ async def test_skill_router_prefers_mindmap_skill(db_session):
 
     match = await SkillRouter.resolve_for_page(
         db_session,
+        user_id=test_user.id,
         page_name="notes",
         message="请扩展节点",
         page_context={"noteType": "mindmap"},

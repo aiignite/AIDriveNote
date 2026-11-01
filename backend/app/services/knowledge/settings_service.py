@@ -41,15 +41,27 @@ class KnowledgeSettingsService:
         return row
 
     @staticmethod
+    def _cap_daily_limit(limit: int, *, is_guest: bool) -> int:
+        if not is_guest:
+            return max(0, int(limit or 0))
+        cap = max(0, int(get_settings().GUEST_KNOWLEDGE_DAILY_LIMIT or 0))
+        if cap <= 0:
+            return max(0, int(limit or 0))
+        # 匿名 0（不限制）也必须落到硬上限，不能借设置页绕过成本保护
+        return cap if int(limit or 0) <= 0 else min(int(limit), cap)
+
+    @staticmethod
     async def effective(
-        db: AsyncSession, user_id: uuid.UUID,
+        db: AsyncSession, user_id: uuid.UUID, *, is_guest: bool = False,
     ) -> EffectiveKnowledgeSettings:
         row = await KnowledgeSettingsService.get_or_create(db, user_id)
         model = (row.knowledge_distill_model or "").strip() or get_settings().KNOWLEDGE_DISTILL_MODEL
         return EffectiveKnowledgeSettings(
             distill_enabled=bool(row.knowledge_distill_enabled),
             allow_external=bool(row.knowledge_allow_external),
-            daily_limit=int(row.knowledge_daily_limit or 0),
+            daily_limit=KnowledgeSettingsService._cap_daily_limit(
+                int(row.knowledge_daily_limit or 0), is_guest=is_guest,
+            ),
             model=model,
             configured=bool(model),
         )
@@ -63,6 +75,7 @@ class KnowledgeSettingsService:
         allow_external: bool | None = None,
         daily_limit: int | None = None,
         model: str | None = None,
+        is_guest: bool = False,
     ) -> UserAISettings:
         row = await KnowledgeSettingsService.get_or_create(db, user_id)
         if distill_enabled is not None:
@@ -70,7 +83,9 @@ class KnowledgeSettingsService:
         if allow_external is not None:
             row.knowledge_allow_external = allow_external
         if daily_limit is not None:
-            row.knowledge_daily_limit = max(0, daily_limit)
+            row.knowledge_daily_limit = KnowledgeSettingsService._cap_daily_limit(
+                daily_limit, is_guest=is_guest,
+            )
         if model is not None:
             row.knowledge_distill_model = model.strip()[:255] or None
         await db.commit()

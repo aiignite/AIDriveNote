@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -153,6 +153,7 @@ class SkillRouter:
     async def resolve_all(
         db: AsyncSession,
         *,
+        user_id,
         page_name: str | None,
         message: str,
         assistant: AIAssistant | None = None,
@@ -189,9 +190,17 @@ class SkillRouter:
                     AISkill.code.in_(forced_codes),
                     AISkill.is_enabled == True,  # noqa: E712
                     AISkill.is_deleted == False,  # noqa: E712
+                    or_(AISkill.user_id == user_id, AISkill.user_id.is_(None)),
                 )
             )
-            by_code = {s.code: s for s in res.scalars().all()}
+            by_code: dict[str, AISkill] = {}
+            for candidate in res.scalars().all():
+                current = by_code.get(candidate.code)
+                # 同码时本人技能优先于系统技能
+                if current is None or (
+                    current.user_id is None and candidate.user_id is not None
+                ):
+                    by_code[candidate.code] = candidate
             matches: list[SkillMatch] = []
             for code in forced_codes:
                 skill = by_code.get(code)
@@ -213,18 +222,31 @@ class SkillRouter:
             .join(AISkill)
             .where(
                 PageSkillBinding.page_name == page_name,
-                PageSkillBinding.is_enabled == True,  # noqa: E712
                 PageSkillBinding.is_deleted == False,  # noqa: E712
                 AISkill.is_enabled == True,  # noqa: E712
                 AISkill.is_deleted == False,  # noqa: E712
+                or_(
+                    PageSkillBinding.user_id.is_(None),
+                    PageSkillBinding.user_id == user_id,
+                ),
+                or_(AISkill.user_id == user_id, AISkill.user_id.is_(None)),
             )
             .options(selectinload(PageSkillBinding.skill))
         )
-        bindings = list(result.scalars().all())
+        # 同一技能的系统默认绑定与本人生效绑定可能同时存在，本人覆盖系统
+        merged: dict[str, PageSkillBinding] = {}
+        for binding in result.scalars().all():
+            key = str(binding.skill_id)
+            current = merged.get(key)
+            if current is None or binding.user_id is not None:
+                merged[key] = binding
+        bindings = list(merged.values())
 
         msg_lower = message.lower()
         matches = []
         for binding in bindings:
+            if not binding.is_enabled:
+                continue
             skill = binding.skill
             score, reasons = SkillRouter._score_skill(
                 skill,
@@ -249,6 +271,7 @@ class SkillRouter:
     async def resolve_for_page(
         db: AsyncSession,
         *,
+        user_id,
         page_name: str | None,
         message: str,
         assistant: AIAssistant | None = None,
@@ -257,6 +280,7 @@ class SkillRouter:
         """兼容包装：返回单个最优技能（内部复用 resolve_all）。"""
         matches = await SkillRouter.resolve_all(
             db,
+            user_id=user_id,
             page_name=page_name,
             message=message,
             assistant=assistant,

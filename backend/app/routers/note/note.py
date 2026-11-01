@@ -992,8 +992,7 @@ async def upload_document_note(
     folder_id: Optional[UUID] = Form(None),
     description: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
-    _write_scope: User = Depends(require_write_scope),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
     """上传 PDF / Office / HTML，创建文档笔记并抽取正文。"""
     payload = await file.read()
@@ -1002,6 +1001,9 @@ async def upload_document_note(
         raise BadRequestException(
             f"文件过大（{len(payload) / 1024 / 1024:.1f}MB > {limit / 1024 / 1024:.0f}MB）",
         )
+    from app.services.guest_quota_service import GuestQuotaService
+
+    await GuestQuotaService.ensure_storage(db, user, len(payload))
     note, document = await document_service.create_document_note(
         db,
         user.id,
@@ -1508,7 +1510,10 @@ async def suggest_tags(
     await _assert_note_access(db, note, user)
     from app.services.note.tag_suggestion_service import TagSuggestionService
 
-    return await TagSuggestionService.suggest(db, user.id, note, limit=limit)
+    return await TagSuggestionService.suggest(
+        db, user.id, note, limit=limit,
+        is_guest=bool(getattr(user, "is_guest", False)),
+    )
 
 
 # ── Public read-only link ──
@@ -1517,7 +1522,7 @@ async def suggest_tags(
 async def create_public_link(
     note_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     note = await NoteService.get_note(db, note_id)
     if not note:
@@ -1540,7 +1545,7 @@ async def create_public_link(
 async def revoke_public_link(
     note_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     note = await NoteService.get_note(db, note_id)
     if not note:
@@ -1595,7 +1600,9 @@ async def daily_review(
 ):
     from app.services.note.daily_service import DailyNoteService
 
-    return await DailyNoteService.build_review(db, user.id, date)
+    return await DailyNoteService.build_review(
+        db, user.id, date, is_guest=bool(getattr(user, "is_guest", False)),
+    )
 
 
 # ── Revisions ──
@@ -1636,7 +1643,7 @@ async def restore_revision(
 async def list_shares(
     note_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     note = await NoteService.get_note(db, note_id)
     if not note:
@@ -1650,7 +1657,7 @@ async def add_share(
     note_id: UUID,
     body: ShareCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     note = await NoteService.get_note(db, note_id)
     if not note:
@@ -1668,7 +1675,7 @@ async def remove_share(
     note_id: UUID,
     shared_user_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_not_guest),
 ):
     note = await NoteService.get_note(db, note_id)
     if not note:

@@ -10,8 +10,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_write_scope
+from app.config import get_settings
 from app.database import get_db
-from app.exceptions import BadRequestException
+from app.exceptions import BadRequestException, ForbiddenException
 from app.models.user import User
 from app.services.knowledge.ingest_service import ingest
 from app.services.note.clip_service import ClipService
@@ -59,6 +60,8 @@ async def create_clip(
     审核通过后才生成知识笔记。
     """
     if body.ingest:
+        if not get_settings().KNOWLEDGE_INGEST_ENABLED:
+            raise ForbiddenException("知识入库功能未启用")
         try:
             document, _duplicate = await ingest(
                 db,

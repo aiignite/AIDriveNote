@@ -93,18 +93,24 @@ class Settings(BaseSettings):
     USER_MAX_NOTES: int = 100
     # 单个上传文件大小上限（笔记图片资产 / AI 对话附件）
     USER_MAX_UPLOAD_BYTES: int = 2 * 1024 * 1024
-    # 文档笔记原文件上限；与 nginx client_max_body_size 26m 对齐（留 multipart 余量）
+    # 文档笔记原文件上限；nginx client_max_body_size 64m 需留 multipart 余量
     USER_MAX_DOCUMENT_BYTES: int = 25 * 1024 * 1024
 
     # ── 匿名登录（Guest）──
     # 是否开放匿名登录入口；关闭后 /auth/guest 返回 403，前端隐藏按钮
     GUEST_LOGIN_ENABLED: bool = True
     # 离线宽限期（分钟）：匿名用户超过该时长无任何请求即被后台任务物理清除
-    GUEST_IDLE_TIMEOUT_MINUTES: int = 30
+    GUEST_IDLE_TIMEOUT_MINUTES: int = 120
     # 清除任务扫描间隔（秒）；同时作为 last_seen_at 的落库节流间隔
     GUEST_PURGE_INTERVAL_SECONDS: int = 300
     # 匿名用户的独立笔记配额（低于普通用户的 USER_MAX_NOTES，防止被用来囤积存储）
     GUEST_MAX_NOTES: int = 50
+    # 匿名用户文档 + 知识库/知识入库上传的总存储配额
+    GUEST_MAX_STORAGE_BYTES: int = 100 * 1024 * 1024
+    # 匿名用户可创建的自定义技能数量
+    GUEST_MAX_SKILLS: int = 10
+    # 匿名用户知识蒸馏每日上限（设置页不能把限额调得更高）
+    GUEST_KNOWLEDGE_DAILY_LIMIT: int = 20
     # 是否记录匿名登录事件（登录信息与会话生命周期，仅元数据）
     GUEST_EVENTS_ENABLED: bool = True
 

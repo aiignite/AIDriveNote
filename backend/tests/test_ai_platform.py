@@ -55,12 +55,14 @@ async def test_skill_router_matches_summarize_keyword(db_session: AsyncSession):
     from sqlalchemy import select
     from app.models.ai import AIAssistant
 
+    user = await _create_user(db_session)
     assistant = (await db_session.execute(
         select(AIAssistant).where(AIAssistant.name == "笔记助手")
     )).scalar_one()
 
     match = await SkillRouter.resolve_for_page(
         db_session,
+        user_id=user.id,
         page_name="notes",
         message="请帮我总结一下这篇笔记",
         assistant=assistant,

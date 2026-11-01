@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_not_guest, require_write_scope
+from app.auth import get_current_user, require_write_scope
 from app.config import get_settings
 from app.database import get_db
 from app.exceptions import BadRequestException, ForbiddenException, NotFoundException
@@ -160,7 +160,7 @@ async def list_inbox(
     cursor: Optional[str] = None,
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(get_current_user),
 ):
     stmt = (
         select(KnowledgeCard, IngestDocument)
@@ -207,7 +207,7 @@ async def list_inbox(
 async def get_card(
     card_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(get_current_user),
 ):
     card, doc = await _get_card(db, user.id, card_id)
     merge_title = None
@@ -225,7 +225,7 @@ async def get_card(
 async def get_card_source(
     card_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(get_current_user),
 ):
     """返回知识卡对应的完整源文本，供本地知识库写回使用。"""
     _card, doc = await _get_card(db, user.id, card_id)
@@ -241,8 +241,7 @@ async def approve_card(
     card_id: UUID,
     body: ApproveRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     try:
         note, kb_target = await compile_card(
@@ -269,8 +268,7 @@ async def ignore_card(
     card_id: UUID,
     body: IgnoreRequest | None = None,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     card, doc = await _get_card(db, user.id, card_id)
     card.status = "ignored"
@@ -327,8 +325,7 @@ async def _note_ingest_payload(
 async def distill_notes(
     limit: int = Query(200, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     """批量把知识库笔记与已上传文档送入蒸馏管线；已处理过的按幂等键跳过。"""
     if not get_settings().KNOWLEDGE_INGEST_ENABLED:
@@ -485,8 +482,7 @@ async def note_knowledge_sources(
 async def retry_card(
     card_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     card, doc = await _get_card(db, user.id, card_id)
     await _requeue_distill(db, doc)
@@ -497,8 +493,7 @@ async def retry_card(
 @router.post("/cards/retry-all")
 async def retry_all_cards(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     """把被规则兜底、尚未审完的文档重新蒸馏一次（换模型或修好抽取后重跑）。"""
     documents = (
@@ -524,8 +519,7 @@ async def retry_all_cards(
 async def batch_cards(
     body: BatchRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     results: list[dict] = []
     for card_id in body.card_ids[:50]:
@@ -559,8 +553,7 @@ async def update_kb_status(
     card_id: UUID,
     body: KbStatusRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     card, _doc = await _get_card(db, user.id, card_id)
     kb_target = dict(card.kb_target or {})
@@ -572,11 +565,13 @@ async def update_kb_status(
     return {"id": str(card.id), "kbTarget": kb_target}
 
 
-async def _knowledge_settings_payload(db: AsyncSession, user_id: UUID) -> dict:
-    prefs = await KnowledgeSettingsService.effective(db, user_id)
+async def _knowledge_settings_payload(
+    db: AsyncSession, user_id: UUID, *, is_guest: bool = False,
+) -> dict:
+    prefs = await KnowledgeSettingsService.effective(db, user_id, is_guest=is_guest)
     from app.services.ai.ownership import resolve_default_model
 
-    default_model = await resolve_default_model(db, user_id)
+    default_model = await resolve_default_model(db, user_id, is_guest=is_guest)
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     used_today = await db.scalar(
         select(func.count()).select_from(KnowledgeCard).where(
@@ -616,6 +611,8 @@ async def _knowledge_settings_payload(db: AsyncSession, user_id: UUID) -> dict:
         "usedToday": int(used_today or 0),
         "tokensToday": int(today_in or 0) + int(today_out or 0),
         "tokensTotal": int(total_in or 0) + int(total_out or 0),
+        "isGuest": is_guest,
+        "guestDailyLimit": int(get_settings().GUEST_KNOWLEDGE_DAILY_LIMIT) if is_guest else None,
     }
 
 
@@ -623,8 +620,7 @@ async def _knowledge_settings_payload(db: AsyncSession, user_id: UUID) -> dict:
 async def reindex_document(
     document_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     """按来源文档重建其知识笔记的 RAG 索引。"""
     document = await get_document(db, user.id, document_id)
@@ -657,8 +653,7 @@ async def create_entity_page(
     card_id: UUID,
     body: EntityPageRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     """从知识卡中提到的实体/主题创建一页 wiki 知识页（幂等按标题）。"""
     card, doc = await _get_card(db, user.id, card_id)
@@ -716,7 +711,7 @@ async def create_entity_page(
 @router.get("/lint")
 async def knowledge_lint(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(get_current_user),
 ):
     """知识库体检：无来源、重复标题、断链、孤儿页。"""
     kb_tag_ids = (
@@ -809,18 +804,20 @@ async def knowledge_lint(
 @router.get("/settings")
 async def get_knowledge_settings(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(get_current_user),
 ):
-    return await _knowledge_settings_payload(db, user.id)
+    return await _knowledge_settings_payload(
+        db, user.id, is_guest=bool(getattr(user, "is_guest", False)),
+    )
 
 
 @router.patch("/settings")
 async def update_knowledge_settings(
     body: KnowledgeSettingsUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
+    is_guest = bool(getattr(user, "is_guest", False))
     await KnowledgeSettingsService.update(
         db,
         user.id,
@@ -828,14 +825,15 @@ async def update_knowledge_settings(
         allow_external=body.allow_external,
         daily_limit=body.daily_limit,
         model=body.model,
+        is_guest=is_guest,
     )
-    return await _knowledge_settings_payload(db, user.id)
+    return await _knowledge_settings_payload(db, user.id, is_guest=is_guest)
 
 
 @router.get("/stats")
 async def knowledge_stats(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(get_current_user),
 ):
     rows = await db.execute(
         select(KnowledgeCard.status, func.count())
@@ -883,10 +881,11 @@ async def knowledge_stats(
 async def distill_note(
     note_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     """把一篇自写笔记送入同一蒸馏管线。"""
+    if not get_settings().KNOWLEDGE_INGEST_ENABLED:
+        raise ForbiddenException("知识入库功能未启用")
     note = await NoteService.get_note(db, note_id)
     if note is None:
         raise NotFoundException("note", str(note_id))

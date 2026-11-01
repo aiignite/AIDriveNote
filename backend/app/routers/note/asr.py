@@ -123,9 +123,9 @@ async def _build_settings_out(db: AsyncSession) -> dict[str, Any]:
 @router.get("/settings")
 async def get_asr_settings(
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_not_guest),
 ):
-    """读取当前生效的 ASR 设置（所有登录用户可读）。"""
+    """读取当前生效的 ASR 设置（录音与全局语音配置为登录专属）。"""
     return await _build_settings_out(db)
 
 
@@ -165,7 +165,7 @@ async def list_common_terms(
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_not_guest),
 ):
     """分页列举常用词，可按关键词与启用状态过滤。"""
     items = await NoteCommonTermService.list_terms(

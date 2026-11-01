@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.knowledge import IngestDocument, KnowledgeCard
+from app.models.user import User
 from app.services.ai.llm_router import LLMRouter
 from app.services.ai_providers.base import AIProviderConfig, ChatMessage, ChatOptions
 from app.services.ai_providers.factory import AIProviderFactory
@@ -188,7 +189,12 @@ async def _call_llm(
         # 单测不访问真实模型；规则兜底路径由测试直接覆盖
         return None
 
-    prefs = await KnowledgeSettingsService.effective(db, user_id)
+    is_guest = bool(
+        await db.scalar(select(User.is_guest).where(User.id == user_id))
+    )
+    prefs = await KnowledgeSettingsService.effective(
+        db, user_id, is_guest=is_guest,
+    )
     if not prefs.distill_enabled:
         return None
     if await _daily_limit_reached(db, user_id, prefs.daily_limit):
@@ -200,6 +206,7 @@ async def _call_llm(
             user_id,
             request_model=prefs.model or None,
             temperature=0.1,
+            is_guest=is_guest,
         )
     except Exception as exc:  # noqa: BLE001 — 无可用模型时走规则
         logger.info("知识蒸馏无可用模型，回退规则: %s", exc)

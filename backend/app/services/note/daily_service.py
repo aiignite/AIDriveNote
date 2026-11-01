@@ -69,6 +69,7 @@ class DailyNoteService:
     @staticmethod
     async def build_review(
         db: AsyncSession, user_id: uuid.UUID, date_str: str | None = None,
+        *, is_guest: bool = False,
     ) -> dict:
         """把最近 24 小时的笔记交给模型做回顾；模型不可用时返回规则版摘要。"""
         target = normalize_date(date_str)
@@ -118,6 +119,7 @@ class DailyNoteService:
                 user_id=user_id,
                 max_tokens=1200,
                 temperature=0.3,
+                is_guest=is_guest,
             )
             markdown = (raw or "").strip() or fallback
         except Exception as exc:  # noqa: BLE001 — 模型不可用时保证功能可用

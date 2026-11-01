@@ -193,6 +193,7 @@ class AIService:
 
         skill_matches = await SkillRouter.resolve_all(
             db,
+            user_id=user_id,
             page_name=(page_context or {}).get("pageName"),
             message=message,
             assistant=assistant,

@@ -204,22 +204,49 @@ async def test_events_disabled_skips_write(db_session: AsyncSession, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_guest_blocked_features_return_403(db_session: AsyncSession):
-    """录音与访问令牌对匿名账号禁用，并记录 blocked 事件。"""
+async def test_guest_blocked_features_and_skill_ownership(db_session: AsyncSession):
+    """访问令牌/用户检索仍禁用；技能可自定义但只可见本人 + 系统只读资源。"""
     guest = await _make_guest(db_session)
+    other = await _make_guest(db_session, name="另一个匿名")
     app, transport = _make_client(db_session, user=guest)
     async with AsyncClient(transport=transport, base_url="http://test/api/v1") as ac:
         tokens = await ac.post("/api-tokens", json={"name": "pat"})
         assert tokens.status_code == 403, tokens.text
         share_search = await ac.get("/users/search", params={"q": "a"})
         assert share_search.status_code == 403
-        # 技能是全局表（无 user_id 列），匿名写入会永久污染全局配置
-        skill_create = await ac.post("/ai/skills", json={
+
+        created = await ac.post("/ai/skills", json={
             "code": "guest_skill", "name": "匿名技能", "prompt_template": "p",
         })
-        assert skill_create.status_code == 403, "匿名不得创建全局技能"
-        page_skills = await ac.put("/ai/page-skills/notes", json=[])
-        assert page_skills.status_code == 403, "匿名不得改全局技能绑定"
+        assert created.status_code == 201, created.text
+        skill_id = created.json()["id"]
+
+        listed = (await ac.get("/ai/skills")).json()
+        codes = {item["code"] for item in listed}
+        assert "guest_skill" in codes
+        builtin = next(item for item in listed if item["isBuiltin"])
+        assert builtin["isReadOnly"] is True
+        assert (await ac.put(
+            f"/ai/skills/{builtin['id']}", json={"name": "改内置"},
+        )).status_code == 403
+        assert (await ac.delete(f"/ai/skills/{builtin['id']}")).status_code == 403
+
+        page_skills = await ac.put(
+            "/ai/page-skills/notes",
+            json=[{"skill_id": skill_id, "weight": 60, "is_enabled": True}],
+        )
+        assert page_skills.status_code == 200, page_skills.text
+        bindings = (await ac.get("/ai/page-skills/notes")).json()
+        assert any(str(item["skillId"]) == skill_id for item in bindings)
+
+    # 第二个匿名账号看不到第一个的自定义技能，也不能改
+    app2, transport2 = _make_client(db_session, user=other)
+    async with AsyncClient(transport=transport2, base_url="http://test/api/v1") as ac2:
+        codes2 = {item["code"] for item in (await ac2.get("/ai/skills")).json()}
+        assert "guest_skill" not in codes2
+        assert (await ac2.put(
+            f"/ai/skills/{skill_id}", json={"name": "越权"},
+        )).status_code == 404
     app.dependency_overrides.clear()
 
     blocked = (

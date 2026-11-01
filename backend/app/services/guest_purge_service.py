@@ -20,17 +20,20 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
-from app.models.ai import AIAssistant, AIModel
+from app.models.ai import AIAssistant, AIModel, AISkill, PageSkillBinding
 from app.models.guest_event import GuestEventType
+from app.models.kb import KbFile, KbRoot
+from app.models.knowledge import IngestDocument, IngestJob, KnowledgeCard, NoteSource
 from app.models.note.note import Note, NoteFolder, NoteRevision, NoteShare, NoteTag, NoteTemplate
 from app.models.note.document import NoteDocument
 from app.models.note.recording import NoteRecording
@@ -41,6 +44,27 @@ from app.services.note.note_asset_service import NoteAssetService
 from app.services.note.recording import audio_storage
 
 logger = logging.getLogger(__name__)
+
+_SHA_RE = re.compile(r"([0-9a-f]{64})")
+
+
+def _blob_from_path(
+    storage_path: str | None, *, fallback_sha: str | None = None,
+) -> tuple[str, str] | None:
+    """从内容寻址路径提取 ``(sha256, ext)``，供删除引用计数使用。"""
+    if not storage_path:
+        return None
+    match = _SHA_RE.search(storage_path)
+    sha = match.group(1) if match else fallback_sha
+    # 与 NoteDocument.ext / document_storage 的约定一致：扩展名带前导点
+    ext = Path(storage_path).suffix
+    if not sha or not ext:
+        return None
+    return sha, ext
+
+
+def _ingest_temp_dir() -> Path:
+    return (Path(__file__).resolve().parents[2] / "uploads" / "ingest").resolve()
 
 
 @contextlib.asynccontextmanager
@@ -176,12 +200,14 @@ class GuestPurgeService:
         )
         recording_paths = [p for p in recording_rows.scalars().all() if p]
 
-        # 待删笔记引用的资产哈希
+        # 待删笔记引用的资产哈希；同时保留笔记 id 供清理来源关系
         note_rows = await db.execute(
-            select(Note.content).where(Note.created_by == user_id)
+            select(Note.id, Note.content).where(Note.created_by == user_id)
         )
         asset_hashes: set[str] = set()
-        for content in note_rows.scalars().all():
+        note_ids: list[UUID] = []
+        for note_id, content in note_rows.all():
+            note_ids.append(note_id)
             asset_hashes |= NoteAssetService.find_asset_hashes(content)
 
         # 文档原文件（内容寻址，可能与他人共用，删除前需引用计数）
@@ -191,6 +217,36 @@ class GuestPurgeService:
             .where(Note.created_by == user_id)
         )
         document_blobs = [(sha, ext) for sha, ext in doc_rows.all()]
+
+        # 知识库原文件：storage_path 含 sha，与文档笔记共用同一内容寻址目录
+        kb_rows = await db.execute(
+            select(KbFile.storage_path, KbFile.content_hash)
+            .where(KbFile.user_id == user_id)
+        )
+        for storage_path, content_hash in kb_rows.all():
+            blob = _blob_from_path(storage_path, fallback_sha=content_hash)
+            if blob:
+                document_blobs.append(blob)
+
+        # 知识入库原文件与未能长期保存的临时文件
+        ingest_rows = await db.execute(
+            select(
+                IngestDocument.id,
+                IngestDocument.storage_path,
+                IngestDocument.raw_meta,
+            ).where(IngestDocument.user_id == user_id)
+        )
+        ingest_ids: list[UUID] = []
+        ingest_temp_paths: list[str] = []
+        for document_id, storage_path, raw_meta in ingest_rows.all():
+            ingest_ids.append(document_id)
+            blob = _blob_from_path(storage_path)
+            if blob:
+                document_blobs.append(blob)
+            if isinstance(raw_meta, dict) and raw_meta.get("file_path"):
+                ingest_temp_paths.append(str(raw_meta["file_path"]))
+
+        document_blobs = list(dict.fromkeys(document_blobs))
 
         session_seconds: int | None = None
         if user.created_at:
@@ -209,6 +265,9 @@ class GuestPurgeService:
             "recording_paths": recording_paths,
             "asset_hashes": asset_hashes,
             "document_blobs": document_blobs,
+            "note_ids": note_ids,
+            "ingest_ids": ingest_ids,
+            "ingest_temp_paths": ingest_temp_paths,
             "note_count": note_count,
             "session_seconds": session_seconds,
         }
@@ -230,6 +289,17 @@ class GuestPurgeService:
         except Exception:  # noqa: BLE001
             logger.warning("删除匿名 AI 附件目录失败", exc_info=True)
 
+        # 未能长期保存的 ingest 临时文件：必须在删行前按 raw_meta.file_path 清理。
+        # 只允许删除 uploads/ingest 目录内的文件，防止异常路径穿越。
+        ingest_dir = _ingest_temp_dir()
+        for raw_path in profile.get("ingest_temp_paths") or []:
+            try:
+                target = Path(str(raw_path)).resolve()
+                if ingest_dir in target.parents and target.is_file():
+                    target.unlink()
+            except Exception:  # noqa: BLE001
+                logger.warning("删除匿名 ingest 临时文件失败 path=%s", raw_path, exc_info=True)
+
         # 图片资产：引用计数归零才删
         await GuestPurgeService._purge_unreferenced_assets(
             profile["user_id"], profile["asset_hashes"], db=db,
@@ -240,13 +310,14 @@ class GuestPurgeService:
         """文档行已删除后，引用计数归零才删磁盘原文件。"""
         from app.services.note import document_storage
 
-        blobs = profile.get("document_blobs") or []
+        blobs = list(dict.fromkeys(profile.get("document_blobs") or []))
         if not blobs:
             return
         async with _session_scope(db) as session:
             for sha, ext in blobs:
                 try:
-                    await document_storage.delete_if_unreferenced(session, sha, ext)
+                    normalized = ext if ext.startswith(".") else f".{ext}"
+                    await document_storage.delete_if_unreferenced(session, sha, normalized)
                 except Exception:  # noqa: BLE001
                     logger.warning("删除匿名文档原文件失败 sha=%s", str(sha)[:8], exc_info=True)
 
@@ -287,7 +358,40 @@ class GuestPurgeService:
 
     @staticmethod
     async def _delete_db_rows(db: AsyncSession, user_id: UUID, profile: dict) -> None:
-        """删除数据库中的全部关联数据。顺序：先笔记，最后用户行。"""
+        """删除数据库中的全部关联数据。顺序：先来源/入库，再笔记/KB/技能，最后用户行。"""
+        note_ids: list[UUID] = list(profile.get("note_ids") or [])
+        ingest_ids: list[UUID] = list(profile.get("ingest_ids") or [])
+
+        # RAG 表是原生 SQL 建的，未装 pgvector 时不存在；逐个 SAVEPOINT 失败不影响主事务
+        if db.get_bind().dialect.name == "postgresql":
+            for table in ("rag_index_jobs", "rag_chunks", "rag_documents"):
+                try:
+                    async with db.begin_nested():
+                        await db.execute(
+                            text(f"DELETE FROM {table} WHERE user_id = :uid"),
+                            {"uid": str(user_id)},
+                        )
+                except Exception:  # noqa: BLE001 — 表可能不存在
+                    logger.debug("清理匿名 RAG 表失败 table=%s", table, exc_info=True)
+
+        # 知识来源关系、知识卡、入库文档必须先于笔记与 KB 删除
+        source_conditions = []
+        if note_ids:
+            source_conditions.append(NoteSource.note_id.in_(note_ids))
+        if ingest_ids:
+            source_conditions.append(NoteSource.document_id.in_(ingest_ids))
+        if source_conditions:
+            await db.execute(delete(NoteSource).where(or_(*source_conditions)))
+        await db.execute(delete(KnowledgeCard).where(KnowledgeCard.user_id == user_id))
+        if ingest_ids:
+            await db.execute(
+                delete(IngestJob).where(IngestJob.document_id.in_(ingest_ids)),
+            )
+        await db.execute(
+            delete(IngestDocument).where(IngestDocument.user_id == user_id),
+        )
+        await db.flush()
+
         # 笔记：ORM 上的 cascade="all, delete-orphan" 连带清掉
         # tag_links / favorites / links / revisions / shares
         notes = await db.execute(
@@ -295,9 +399,10 @@ class GuestPurgeService:
         )
         note_rows = list(notes.scalars().all())
         if note_rows:
-            note_ids = [note.id for note in note_rows]
             await db.execute(
-                delete(NoteDocument).where(NoteDocument.note_id.in_(note_ids)),
+                delete(NoteDocument).where(
+                    NoteDocument.note_id.in_([note.id for note in note_rows]),
+                ),
             )
         for note in note_rows:
             await db.delete(note)
@@ -316,6 +421,16 @@ class GuestPurgeService:
                 await db.execute(
                     delete(model).where(column["shared_with_user_id"] == user_id)
                 )
+
+        # 知识库资产（文件行删除后，_purge_document_blobs 再按引用计数删磁盘原件）
+        await db.execute(delete(KbFile).where(KbFile.user_id == user_id))
+        await db.execute(delete(KbRoot).where(KbRoot.user_id == user_id))
+
+        # 用户自定义技能与页面绑定；系统种子 user_id IS NULL 不受影响
+        await db.execute(
+            delete(PageSkillBinding).where(PageSkillBinding.user_id == user_id),
+        )
+        await db.execute(delete(AISkill).where(AISkill.user_id == user_id))
 
         # AI 模型与助手：模型已按 user_id 严格归属（见 services/ai/ownership.py），
         # 匿名账号创建的模型只对自己可见，因此可以安全地随账号一并删除。

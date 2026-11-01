@@ -166,3 +166,43 @@ async def test_stdio_create_server_rejects_unlisted_command(db_session, test_use
             command="bash",
             args=["-c", "echo hi"],
         )
+
+
+@pytest.mark.asyncio
+async def test_guest_cannot_access_mcp_routes(db_session):
+    """MCP 可拉起 stdio 进程 / 访问外部 HTTP，必须保持登录专属。"""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.auth import get_current_user
+    from app.database import get_db
+    from app.main import app
+    from app.models.user import User
+
+    guest = User(
+        email=f"mcp-guest-{uuid.uuid4().hex}@guest.local",
+        password_hash="hash",
+        name="匿名",
+        role="guest",
+        status="Active",
+        is_guest=True,
+    )
+    db_session.add(guest)
+    await db_session.commit()
+    await db_session.refresh(guest)
+
+    async def override_get_db():
+        yield db_session
+
+    async def override_user():
+        return guest
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_user
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test/api/v1",
+    ) as ac:
+        listed = await ac.get("/mcp/servers")
+        created = await ac.post("/mcp/servers", json={"name": "x"})
+    app.dependency_overrides.clear()
+    assert listed.status_code == 403
+    assert created.status_code == 403

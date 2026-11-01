@@ -12,15 +12,16 @@ import httpx
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.ai_tools.registry import ToolRegistry
 import app.ai_tools  # noqa: F401
-from app.auth import get_current_user, require_not_guest
+from app.auth import get_current_user, require_write_scope
 from app.database import get_db
-from app.exceptions import BadRequestException, NotFoundException
+from app.exceptions import BadRequestException, ForbiddenException, NotFoundException
+from app.services.guest_quota_service import GuestQuotaService
 
 logger = logging.getLogger(__name__)
 from app.models.ai import (
@@ -236,7 +237,19 @@ class SkillUpdate(BaseModel):
     applicable_note_types: Optional[list[str]] = None
 
 
-def _skill_to_out(s: AISkill) -> dict[str, Any]:
+def _skills_visible_to(user: User):
+    """技能可见范围：本人创建 + 系统内置（user_id IS NULL）。"""
+    return or_(AISkill.user_id == user.id, AISkill.user_id.is_(None))
+
+
+def _skill_read_only(skill: AISkill, user: User) -> bool:
+    """系统内置只读；系统历史自定义技能允许管理员维护。"""
+    if skill.is_builtin:
+        return True
+    return skill.user_id is None and user.role != "admin"
+
+
+def _skill_to_out(s: AISkill, user: User) -> dict[str, Any]:
     extra = s.extra_config if isinstance(s.extra_config, dict) else {}
     return {
         "id": s.id,
@@ -249,6 +262,8 @@ def _skill_to_out(s: AISkill) -> dict[str, Any]:
         "priority": s.priority,
         "isEnabled": s.is_enabled,
         "isBuiltin": s.is_builtin,
+        "isSystem": s.user_id is None,
+        "isReadOnly": _skill_read_only(s, user),
         "applicableNoteTypes": extra.get("applicable_note_types"),
     }
 
@@ -908,35 +923,75 @@ async def list_messages(
 
 # ── Skills ──
 
+async def _load_visible_skill_ids(
+    db: AsyncSession, skill_ids: list[uuid.UUID], user: User,
+) -> set[uuid.UUID]:
+    if not skill_ids:
+        return set()
+    rows = await db.execute(
+        select(AISkill.id).where(
+            AISkill.id.in_(skill_ids),
+            AISkill.is_deleted == False,  # noqa: E712
+            _skills_visible_to(user),
+        )
+    )
+    return {row[0] for row in rows.all()}
+
+
+async def _get_writable_skill(
+    db: AsyncSession, skill_id: uuid.UUID, user: User,
+) -> AISkill:
+    """取可写技能：本人创建；系统非内置技能仅管理员可维护。"""
+    result = await db.execute(
+        select(AISkill).where(AISkill.id == skill_id, AISkill.is_deleted == False)  # noqa: E712
+    )
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise NotFoundException("AISkill")
+    if skill.user_id is None:
+        if skill.is_builtin or user.role != "admin":
+            raise ForbiddenException("系统内置技能只读")
+        return skill
+    if skill.user_id != user.id:
+        raise NotFoundException("AISkill")
+    return skill
+
+
 @router.get("/skills")
 async def list_skills(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     await AISeedService.ensure_platform_seed(db)
     result = await db.execute(
-        select(AISkill).where(AISkill.is_deleted == False).order_by(desc(AISkill.priority))  # noqa: E712
+        select(AISkill)
+        .where(AISkill.is_deleted == False, _skills_visible_to(user))  # noqa: E712
+        .order_by(desc(AISkill.priority))
     )
-    return [_skill_to_out(s) for s in result.scalars().all()]
+    return [_skill_to_out(s, user) for s in result.scalars().all()]
 
 
 @router.post("/skills", status_code=201)
 async def create_skill(
     body: SkillCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
-    """创建自定义技能。
-
-    ``ai_skills`` 是全局表（无 ``user_id`` 列，无法归属到个人），匿名创建的
-    技能会在账号清除后永久残留并影响其他用户，故对匿名关闭写入口。
-    """
+    """创建用户自己的自定义技能；匿名用户受数量上限约束。"""
+    await GuestQuotaService.ensure_skill_slot(db, user)
     code = body.code.strip()
     if not code:
         raise BadRequestException("技能代码不能为空")
+    if len(code) > 100:
+        raise BadRequestException("技能代码不能超过 100 个字符")
     existing = await db.execute(
-        select(AISkill).where(AISkill.code == code, AISkill.is_deleted == False)  # noqa: E712
+        select(AISkill).where(
+            AISkill.code == code,
+            AISkill.is_deleted == False,  # noqa: E712
+            or_(AISkill.user_id.is_(None), AISkill.user_id == user.id),
+        )
     )
     if existing.scalar_one_or_none():
         raise BadRequestException(f"技能代码「{code}」已存在")
     skill = AISkill(
+        user_id=user.id,
         code=code,
         name=body.name.strip(),
         description=body.description,
@@ -951,7 +1006,7 @@ async def create_skill(
     db.add(skill)
     await db.commit()
     await db.refresh(skill)
-    return _skill_to_out(skill)
+    return _skill_to_out(skill, user)
 
 
 @router.put("/skills/{skill_id}")
@@ -959,14 +1014,9 @@ async def update_skill(
     skill_id: uuid.UUID,
     body: SkillUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
-    result = await db.execute(
-        select(AISkill).where(AISkill.id == skill_id, AISkill.is_deleted == False)  # noqa: E712
-    )
-    skill = result.scalar_one_or_none()
-    if not skill:
-        raise NotFoundException("AISkill")
+    skill = await _get_writable_skill(db, skill_id, user)
     data = body.model_dump(exclude_unset=True)
     # applicable_note_types 不是列字段，需合并进 extra_config 后单独持久化
     applicable = data.pop("applicable_note_types", None)
@@ -978,24 +1028,30 @@ async def update_skill(
         skill.extra_config = extra
     await db.commit()
     await db.refresh(skill)
-    return _skill_to_out(skill)
+    return _skill_to_out(skill, user)
 
 
 @router.delete("/skills/{skill_id}", status_code=204)
 async def delete_skill(
     skill_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
-    result = await db.execute(
-        select(AISkill).where(AISkill.id == skill_id, AISkill.is_deleted == False)  # noqa: E712
-    )
-    skill = result.scalar_one_or_none()
-    if not skill:
-        raise NotFoundException("AISkill")
+    skill = await _get_writable_skill(db, skill_id, user)
     if skill.is_builtin:
-        raise BadRequestException("内置技能不允许删除，可改为禁用")
+        raise ForbiddenException("内置技能不允许删除，可改为禁用")
     skill.is_deleted = True
+    # 只清对应命名空间的页面绑定；用户覆盖行保留但会因技能软删而不再返回
+    binding_filter = (
+        PageSkillBinding.user_id.is_(None)
+        if skill.user_id is None
+        else PageSkillBinding.user_id == skill.user_id
+    )
+    await db.execute(
+        update(PageSkillBinding)
+        .where(PageSkillBinding.skill_id == skill.id, binding_filter)
+        .values(is_deleted=True)
+    )
     await db.commit()
 
 
@@ -1003,13 +1059,26 @@ async def delete_skill(
 async def get_page_skills(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     result = await db.execute(
         select(PageSkillBinding)
-        .join(AISkill)
+        .join(AISkill, AISkill.id == PageSkillBinding.skill_id)
         .where(
             PageSkillBinding.page_name == "notes",
             PageSkillBinding.is_deleted == False,  # noqa: E712
+            AISkill.is_deleted == False,  # noqa: E712
+            or_(
+                PageSkillBinding.user_id.is_(None),
+                PageSkillBinding.user_id == user.id,
+            ),
+            _skills_visible_to(user),
         )
         .options(selectinload(PageSkillBinding.skill))
     )
+    # 同一技能可能同时有系统默认与本人覆盖；本人覆盖优先
+    merged: dict[str, PageSkillBinding] = {}
+    for binding in result.scalars().all():
+        key = str(binding.skill_id)
+        current = merged.get(key)
+        if current is None or binding.user_id is not None:
+            merged[key] = binding
     return [
         {
             "skillId": b.skill_id,
@@ -1017,7 +1086,7 @@ async def get_page_skills(db: AsyncSession = Depends(get_db), user: User = Depen
             "weight": b.weight,
             "isEnabled": b.is_enabled,
         }
-        for b in result.scalars().all()
+        for b in merged.values()
     ]
 
 
@@ -1025,16 +1094,28 @@ async def get_page_skills(db: AsyncSession = Depends(get_db), user: User = Depen
 async def save_page_skills(
     items: list[SkillBindingItem],
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
-    """保存页面技能绑定。
+    """保存本人页面技能绑定；系统默认绑定保持不变。"""
+    skill_ids = [item.skill_id for item in items]
+    visible_ids = await _load_visible_skill_ids(db, skill_ids, user)
+    if len(visible_ids) != len(set(skill_ids)):
+        raise BadRequestException("包含不可用的技能")
 
-    ``ai_page_skill_bindings`` 是全局表（无归属列），改动会影响所有用户的
-    技能命中，故对匿名关闭。
-    """
+    # 先软删本人旧绑定，再把提交清单写成本人覆盖行
+    await db.execute(
+        update(PageSkillBinding)
+        .where(
+            PageSkillBinding.user_id == user.id,
+            PageSkillBinding.page_name == "notes",
+            PageSkillBinding.is_deleted == False,  # noqa: E712
+        )
+        .values(is_deleted=True)
+    )
     for item in items:
         result = await db.execute(
             select(PageSkillBinding).where(
+                PageSkillBinding.user_id == user.id,
                 PageSkillBinding.page_name == "notes",
                 PageSkillBinding.skill_id == item.skill_id,
             )
@@ -1046,7 +1127,7 @@ async def save_page_skills(
             binding.is_deleted = False
         else:
             db.add(PageSkillBinding(
-                page_name="notes", skill_id=item.skill_id,
+                user_id=user.id, page_name="notes", skill_id=item.skill_id,
                 weight=item.weight, is_enabled=item.is_enabled,
             ))
     await db.commit()
@@ -1068,9 +1149,12 @@ async def get_assistant_skills(
         raise NotFoundException("AIAssistant")
     result = await db.execute(
         select(AIAssistantSkillBinding)
+        .join(AISkill, AISkill.id == AIAssistantSkillBinding.skill_id)
         .where(
             AIAssistantSkillBinding.assistant_id == assistant_id,
             AIAssistantSkillBinding.is_deleted == False,  # noqa: E712
+            AISkill.is_deleted == False,  # noqa: E712
+            _skills_visible_to(user),
         )
         .options(selectinload(AIAssistantSkillBinding.skill))
     )
@@ -1098,6 +1182,10 @@ async def save_assistant_skills(
     )
     if owned.scalar_one_or_none() is None:
         raise NotFoundException("AIAssistant")
+    skill_ids = [item.skill_id for item in items]
+    visible_ids = await _load_visible_skill_ids(db, skill_ids, user)
+    if len(visible_ids) != len(set(skill_ids)):
+        raise BadRequestException("包含不可用的技能")
     for item in items:
         result = await db.execute(
             select(AIAssistantSkillBinding).where(

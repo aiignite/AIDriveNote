@@ -44,11 +44,12 @@ async def dispatch_llm(
     model: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.2,
+    is_guest: bool = False,
 ) -> tuple[str, str | None]:
     """执行一次补全，返回 ``(text, model_name)``。
 
     解析级联（LLMRouter）：显式 ``model`` → 用户默认模型 → 首个数据库模型
-    → 环境 Ollama 兜底。全部失败时抛异常。
+    → 环境 Ollama 兜底。匿名用户不得回退到站点环境模型。
     """
     settings = get_settings()
     resolution = await LLMRouter.resolve(
@@ -56,6 +57,7 @@ async def dispatch_llm(
         user_id,  # type: ignore[argType]
         request_model=model or settings.NOTE_AI_MODEL or None,
         temperature=temperature,
+        is_guest=is_guest,
     )
     provider = AIProviderFactory.create(
         resolution.provider,
@@ -97,6 +99,7 @@ async def dispatch_llm_with_retry(
     model: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.2,
+    is_guest: bool = False,
 ) -> tuple[str, str | None]:
     """在内容过滤错误时做一次紧凑重试的 dispatch_llm。"""
     try:
@@ -108,6 +111,7 @@ async def dispatch_llm_with_retry(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
+            is_guest=is_guest,
         )
     except Exception as exc:  # noqa: BLE001
         if not _is_content_filter_error(exc):
@@ -124,4 +128,5 @@ async def dispatch_llm_with_retry(
         model=model,
         max_tokens=2048,
         temperature=temperature,
+        is_guest=is_guest,
     )

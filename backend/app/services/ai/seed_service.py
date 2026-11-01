@@ -426,7 +426,11 @@ class AISeedService:
         skill_by_code: dict[str, AISkill] = {}
         for item in BUILTIN_SKILLS:
             res = await db.execute(
-                select(AISkill).where(AISkill.code == item["code"], AISkill.is_deleted == False)  # noqa: E712
+                select(AISkill).where(
+                    AISkill.code == item["code"],
+                    AISkill.user_id.is_(None),
+                    AISkill.is_deleted == False,  # noqa: E712
+                )
             )
             skill = res.scalar_one_or_none()
             if skill:
@@ -455,11 +459,15 @@ class AISeedService:
                 select(PageSkillBinding).where(
                     PageSkillBinding.page_name == "notes",
                     PageSkillBinding.skill_id == skill.id,
+                    PageSkillBinding.user_id.is_(None),
                     PageSkillBinding.is_deleted == False,  # noqa: E712
                 )
             )
             if not pb_res.scalar_one_or_none():
-                db.add(PageSkillBinding(page_name="notes", skill_id=skill.id, weight=skill.priority))
+                db.add(PageSkillBinding(
+                    user_id=None, page_name="notes", skill_id=skill.id,
+                    weight=skill.priority,
+                ))
 
             # 设计类技能只绑定到专用设计助手，不绑定「笔记助手」，避免误命中
             if item["code"] in DESIGN_SKILL_CODES:

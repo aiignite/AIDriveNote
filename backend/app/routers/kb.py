@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_not_guest
+from app.auth import get_current_user, require_write_scope
 from app.config import get_settings
 from app.database import get_db
 from app.exceptions import BadRequestException, NotFoundException
@@ -118,7 +118,7 @@ async def list_roots(
 async def create_root(
     body: KbRootCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
     root = await KbService.ensure_root(
         db, user.id, name=body.name.strip() or "知识库", folder_id=body.folderId,
@@ -129,7 +129,7 @@ async def create_root(
 @router.post("/roots/knowledge", response_model=KnowledgeRootOut)
 async def ensure_knowledge_root(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
     """确保知识库根文件夹存在：根级「知识库」文件夹，系统保护、不可删除。"""
     root, folder = await KbService.ensure_knowledge_root(db, user.id)
@@ -145,7 +145,7 @@ async def sync_manifest(
     root_id: uuid.UUID,
     body: KbManifestRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
     """客户端上报文件清单 → 服务端返回需要上传的路径。"""
     root = await KbService.get_root(db, user.id, root_id)
@@ -167,7 +167,7 @@ async def upload_kb_file(
     is_protected: bool = Query(False),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
     root = await KbService.get_root(db, user.id, root_id)
     if root is None:
@@ -175,6 +175,9 @@ async def upload_kb_file(
     data = await file.read()
     if len(data) > MAX_KB_FILE_BYTES:
         raise BadRequestException("文件超过 50MB 限制")
+    from app.services.guest_quota_service import GuestQuotaService
+
+    await GuestQuotaService.ensure_storage(db, user, len(data))
     record = await KbService.upload_file(
         db,
         user.id,
@@ -252,7 +255,7 @@ async def download_kb_file(
 async def convert_to_note(
     file_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(require_write_scope),
 ):
     record = await KbService.get_file(db, user.id, file_id)
     if record is None:

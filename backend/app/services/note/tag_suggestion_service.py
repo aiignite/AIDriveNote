@@ -68,6 +68,8 @@ async def _maybe_llm_rerank(
     note: Note,
     results: list[dict],
     limit: int,
+    *,
+    is_guest: bool = False,
 ) -> list[dict]:
     """可选的模型二次筛选；任何失败都回退启发式结果。"""
     if (
@@ -91,6 +93,7 @@ async def _maybe_llm_rerank(
             user_id=user_id,
             max_tokens=200,
             temperature=0.2,
+            is_guest=is_guest,
         )
         picked = parse_llm_tags(raw, allowed, limit)
         if not picked:
@@ -119,6 +122,7 @@ class TagSuggestionService:
         note: Note,
         *,
         limit: int = 5,
+        is_guest: bool = False,
     ) -> list[dict]:
         text = build_search_text(note.title, note.description, note.content, note.note_type)
         lowered = text.lower()
@@ -140,7 +144,9 @@ class TagSuggestionService:
                     "score": 1.0,
                 })
             if len(results) >= limit:
-                return await _maybe_llm_rerank(db, user_id, note, results, limit)
+                return await _maybe_llm_rerank(
+                    db, user_id, note, results, limit, is_guest=is_guest,
+                )
 
         # 2) 正文高频词作为新标签候选
         tokens = [
@@ -163,4 +169,6 @@ class TagSuggestionService:
             })
             if len(results) >= limit:
                 break
-        return await _maybe_llm_rerank(db, user_id, note, results, limit)
+        return await _maybe_llm_rerank(
+            db, user_id, note, results, limit, is_guest=is_guest,
+        )

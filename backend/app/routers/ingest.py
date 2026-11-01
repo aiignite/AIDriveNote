@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_not_guest, require_write_scope
+from app.auth import get_current_user, require_write_scope
 from app.config import get_settings
 from app.database import get_db
 from app.exceptions import BadRequestException, ForbiddenException, NotFoundException
@@ -47,8 +47,7 @@ class IngestDocumentRequest(CamelRequest):
 async def ingest_document(
     body: IngestDocumentRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     """把一段文本/HTML 落为源文档并异步入队解析、蒸馏。"""
     _ensure_enabled()
@@ -85,8 +84,7 @@ async def upload_document(
     url: Optional[str] = Query(None),
     occurred_at: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
-    _scope: User = Depends(require_write_scope),
+    user: User = Depends(require_write_scope),
 ):
     """上传 PDF/Office/图片等文件，异步解析后进入蒸馏。"""
     _ensure_enabled()
@@ -97,6 +95,9 @@ async def upload_document(
         raise BadRequestException("文件内容为空")
     if len(data) > 50 * 1024 * 1024:
         raise BadRequestException("文件超过 50MB 限制")
+    from app.services.guest_quota_service import GuestQuotaService
+
+    await GuestQuotaService.ensure_storage(db, user, len(data))
     try:
         document, duplicate = await ingest(
             db,
@@ -123,7 +124,7 @@ async def upload_document(
 async def get_ingest_document(
     document_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_not_guest),
+    user: User = Depends(get_current_user),
 ):
     document = await get_document(db, user.id, document_id)
     if document is None:

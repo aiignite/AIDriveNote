@@ -258,3 +258,48 @@ async def test_upload_document_enqueues_knowledge_distill(doc_env, db_session):
     ).scalar_one()
     assert job.stage == "parse"
     assert job.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_guest_can_upload_document_within_quota(doc_env):
+    """匿名账号开放文档上传；配额内成功。"""
+    from app.auth import get_current_user
+    from app.main import app
+
+    client, _user, _other, _tmp = doc_env
+    # 复用 fixture 的登录用户对象，切换为匿名标记即可覆盖配额/门禁分支
+    guest = app.dependency_overrides[get_current_user]()
+    guest.is_guest = True
+    guest.role = "guest"
+    app.dependency_overrides[get_current_user] = lambda: guest
+
+    res = await _upload(
+        client,
+        "guest.docx",
+        _docx_bytes(),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_guest_document_upload_respects_storage_quota(doc_env, monkeypatch):
+    from app.auth import get_current_user
+    from app.config import get_settings
+    from app.main import app
+
+    client, _user, _other, _tmp = doc_env
+    guest = app.dependency_overrides[get_current_user]()
+    guest.is_guest = True
+    guest.role = "guest"
+    app.dependency_overrides[get_current_user] = lambda: guest
+    monkeypatch.setattr(get_settings(), "GUEST_MAX_STORAGE_BYTES", 1)
+
+    res = await _upload(
+        client,
+        "quota.docx",
+        _docx_bytes(),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    assert res.status_code == 400, res.text
+    assert "存储上限" in res.text

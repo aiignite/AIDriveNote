@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.ai import AISkill, PageSkillBinding
 from app.models.guest_event import GuestEvent
+from app.models.kb import KbFile, KbRoot
+from app.models.knowledge import IngestDocument, IngestJob, KnowledgeCard, NoteSource
 from app.models.note.note import Note, NoteFolder, NoteTag
 from app.models.user import User
 from app.services.guest_purge_service import GuestPurgeService
@@ -132,7 +136,8 @@ async def test_purge_refuses_non_guest_user(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_find_offline_guests_respects_idle_window(db_session: AsyncSession):
     now = datetime.now(timezone.utc)
-    stale = await _make_guest(db_session, last_seen_at=now - timedelta(hours=2))
+    stale = await _make_guest(db_session, last_seen_at=now - timedelta(hours=3))
+    recently_active = await _make_guest(db_session, last_seen_at=now - timedelta(hours=1))
     active = await _make_guest(db_session, last_seen_at=now)
     never_seen = await _make_guest(db_session)
     never_seen.last_seen_at = None
@@ -140,8 +145,9 @@ async def test_find_offline_guests_respects_idle_window(db_session: AsyncSession
 
     found = {u.id for u in await GuestPurgeService.find_offline_guests(db_session)}
 
-    assert stale.id in found, "超过 30 分钟未活动的应被选中"
+    assert stale.id in found, "超过 2 小时未活动的应被选中"
     assert never_seen.id in found, "从未收到请求的应被选中"
+    assert recently_active.id not in found, "1 小时前活动过的不应被清除"
     assert active.id not in found, "仍在活动的不应被清除"
     assert real.id not in found, "正式账号永远不应进入清除名单"
 
@@ -339,3 +345,147 @@ async def test_purged_guest_token_rejected(db_session: AsyncSession):
 
     assert res.status_code == 401
     assert get_settings().GUEST_LOGIN_ENABLED is True
+
+
+# ── KB / 知识入库 / RAG / 技能残留 ─────────────────────────────────
+
+
+def _blob_path(sha: str) -> Path:
+    root = Path(__file__).resolve().parents[1] / "uploads" / "documents"
+    return root / sha[:2] / f"{sha}.pdf"
+
+
+@pytest.mark.asyncio
+async def test_purge_deletes_kb_blob_only_after_last_reference(db_session: AsyncSession):
+    """共用内容寻址文件：仍有他人引用时必须保留，最后一个引用消失才删。"""
+    guest_a = await _make_guest(db_session, name="A")
+    guest_b = await _make_guest(db_session, name="B")
+    sha = uuid.uuid4().hex + uuid.uuid4().hex
+    path = _blob_path(sha)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"%PDF-1.4 purge-test")
+
+    try:
+        for user in (guest_a, guest_b):
+            root = KbRoot(user_id=user.id, name="知识库")
+            db_session.add(root)
+            await db_session.flush()
+            db_session.add(KbFile(
+                root_id=root.id,
+                user_id=user.id,
+                path=f"raw/{user.name}.pdf",
+                content_hash=sha,
+                size=18,
+                storage_path=f"documents/{sha[:2]}/{sha}.pdf",
+            ))
+        await db_session.commit()
+
+        await GuestPurgeService.purge_guest(guest_a.id, reason="manual", db=db_session)
+        assert path.exists(), "另一个匿名账号仍引用同一文件，不能删"
+
+        profile_b = await GuestPurgeService._collect(db_session, guest_b.id)
+        assert profile_b and profile_b["document_blobs"], "必须收集到待清理的 KB 原件"
+
+        await GuestPurgeService.purge_guest(guest_b.id, reason="manual", db=db_session)
+        assert (await db_session.execute(
+            select(func.count()).select_from(KbFile).where(KbFile.user_id == guest_b.id)
+        )).scalar() == 0, "KB 行必须已删除"
+        assert not path.exists(), "最后一个引用清除后必须删除磁盘原件"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_purge_deletes_ingest_temp_file_and_source_rows(db_session: AsyncSession):
+    guest = await _make_guest(db_session)
+    note = _add_note(guest, db_session, title="来源笔记")
+    await db_session.flush()
+
+    temp_dir = Path(__file__).resolve().parents[1] / "uploads" / "ingest"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / f"{uuid.uuid4().hex}.pdf"
+    temp_path.write_bytes(b"%PDF-1.4 temp")
+
+    document = IngestDocument(
+        user_id=guest.id,
+        source_type="upload",
+        external_id=f"purge-{uuid.uuid4().hex}",
+        content_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        title="临时来源",
+        raw_meta={"file_path": str(temp_path), "filename": "temp.pdf"},
+    )
+    db_session.add(document)
+    await db_session.flush()
+    card = KnowledgeCard(
+        user_id=guest.id,
+        document_id=document.id,
+        title="知识卡",
+        summary="摘要",
+    )
+    db_session.add(card)
+    await db_session.flush()
+    db_session.add(IngestJob(document_id=document.id, stage="parse"))
+    db_session.add(NoteSource(
+        note_id=note.id, document_id=document.id, card_id=card.id,
+    ))
+    await db_session.commit()
+
+    try:
+        await GuestPurgeService.purge_guest(guest.id, reason="manual", db=db_session)
+        assert not temp_path.exists(), "ingest 临时文件必须被清理"
+        assert (await db_session.execute(
+            select(func.count()).select_from(IngestDocument).where(
+                IngestDocument.id == document.id,
+            )
+        )).scalar() == 0
+        assert (await db_session.execute(
+            select(func.count()).select_from(KnowledgeCard).where(
+                KnowledgeCard.id == card.id,
+            )
+        )).scalar() == 0
+        assert (await db_session.execute(
+            select(func.count()).select_from(IngestJob).where(
+                IngestJob.document_id == document.id,
+            )
+        )).scalar() == 0
+        source_count = (await db_session.execute(
+            select(func.count()).select_from(NoteSource).where(
+                NoteSource.note_id == note.id,
+            )
+        )).scalar()
+        assert source_count == 0
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_purge_deletes_guest_skills_but_keeps_system_skills(db_session: AsyncSession):
+    guest = await _make_guest(db_session)
+    mine = AISkill(
+        user_id=guest.id, code=f"mine_{uuid.uuid4().hex[:8]}",
+        name="我的技能", prompt_template="p",
+    )
+    system = AISkill(
+        user_id=None, code=f"sys_{uuid.uuid4().hex[:8]}",
+        name="系统技能", prompt_template="p", is_builtin=True,
+    )
+    db_session.add_all([mine, system])
+    await db_session.flush()
+    db_session.add(PageSkillBinding(
+        user_id=guest.id, page_name="notes", skill_id=mine.id, weight=50,
+    ))
+    await db_session.commit()
+
+    await GuestPurgeService.purge_guest(guest.id, reason="manual", db=db_session)
+
+    assert (await db_session.execute(
+        select(func.count()).select_from(AISkill).where(AISkill.id == mine.id)
+    )).scalar() == 0
+    assert (await db_session.execute(
+        select(func.count()).select_from(AISkill).where(AISkill.id == system.id)
+    )).scalar() == 1, "系统内置技能不能随匿名账号删除"
+    assert (await db_session.execute(
+        select(func.count()).select_from(PageSkillBinding).where(
+            PageSkillBinding.skill_id == mine.id,
+        )
+    )).scalar() == 0

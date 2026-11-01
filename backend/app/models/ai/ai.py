@@ -5,7 +5,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -163,7 +163,13 @@ class AISkill(Base):
     __tablename__ = "ai_skills"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # NULL = 系统内置/历史全局技能，所有用户只读可见；非 NULL = 用户自定义技能
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    code: Mapped[str] = mapped_column(String(100), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     prompt_template: Mapped[str] = mapped_column(Text, default="")
@@ -184,6 +190,25 @@ class AISkill(Base):
     )
     page_bindings: Mapped[list[PageSkillBinding]] = relationship(
         "PageSkillBinding", back_populates="skill", cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        # 系统技能 code 在系统命名空间内唯一；用户技能按用户隔离 code 命名空间
+        Index(
+            "uq_ai_skills_system_code",
+            "code",
+            unique=True,
+            postgresql_where=text("user_id IS NULL AND is_deleted = false"),
+            sqlite_where=text("user_id IS NULL AND is_deleted = 0"),
+        ),
+        Index(
+            "uq_ai_skills_user_code",
+            "user_id",
+            "code",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL AND is_deleted = false"),
+            sqlite_where=text("user_id IS NOT NULL AND is_deleted = 0"),
+        ),
     )
 
 
@@ -214,6 +239,12 @@ class PageSkillBinding(Base):
     __tablename__ = "ai_page_skill_bindings"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # NULL = 系统默认绑定；非 NULL = 用户自己的覆盖绑定
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
     page_name: Mapped[str] = mapped_column(String(100), nullable=False)
     skill_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("ai_skills.id", ondelete="CASCADE"),
@@ -226,5 +257,21 @@ class PageSkillBinding(Base):
     skill: Mapped[AISkill] = relationship("AISkill", back_populates="page_bindings")
 
     __table_args__ = (
-        UniqueConstraint("page_name", "skill_id", name="uq_ai_page_skill_bindings"),
+        Index(
+            "uq_ai_page_skill_bindings_system",
+            "page_name",
+            "skill_id",
+            unique=True,
+            postgresql_where=text("user_id IS NULL AND is_deleted = false"),
+            sqlite_where=text("user_id IS NULL AND is_deleted = 0"),
+        ),
+        Index(
+            "uq_ai_page_skill_bindings_user",
+            "user_id",
+            "page_name",
+            "skill_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL AND is_deleted = false"),
+            sqlite_where=text("user_id IS NOT NULL AND is_deleted = 0"),
+        ),
     )

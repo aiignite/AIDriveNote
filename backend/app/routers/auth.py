@@ -19,6 +19,7 @@ from app.services.auth_service import AuthService
 from app.services.email_verification_service import EmailVerificationService
 from app.services.guest_event_service import GuestEventService
 from app.services.guest_purge_service import GuestPurgeService
+from app.services.guest_quota_service import GuestQuotaService
 from app.services.guest_service import GuestService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -105,6 +106,7 @@ async def auth_config():
     return {
         "registration_enabled": settings.SELF_REGISTRATION_ENABLED,
         "guest_login_enabled": settings.GUEST_LOGIN_ENABLED,
+        "guest_idle_timeout_minutes": settings.GUEST_IDLE_TIMEOUT_MINUTES,
     }
 
 
@@ -170,6 +172,29 @@ async def guest_logout(
     # 走独立会话清除，避免与当前请求的事务互相干扰
     await GuestPurgeService.purge_guest(user.id, reason="logout")
     return {"ok": True, "purged": True}
+
+
+@router.get("/guest/quota")
+async def guest_quota(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """匿名体验配额与到期时间；正式账号调用返回 400。"""
+    if not getattr(user, "is_guest", False):
+        raise BadRequestException("仅匿名账号可用")
+    summary = await GuestQuotaService.summary(db, user)
+    return {
+        "idle_timeout_minutes": summary.idle_timeout_minutes,
+        "purge_after": summary.purge_after.isoformat() if summary.purge_after else None,
+        "storage_used_bytes": summary.storage_used_bytes,
+        "storage_limit_bytes": summary.storage_limit_bytes,
+        "notes_used": summary.notes_used,
+        "max_notes": summary.max_notes,
+        "skills_used": summary.skills_used,
+        "max_skills": summary.max_skills,
+        "daily_distill_limit": summary.daily_distill_limit,
+        "daily_distill_used": summary.daily_distill_used,
+    }
 
 
 @router.post("/register/request", dependencies=[Depends(_require_registration_enabled)])

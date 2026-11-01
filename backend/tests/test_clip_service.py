@@ -136,3 +136,33 @@ async def test_daily_mode_appends_to_daily_note(db_session, test_user):
 async def test_empty_clip_is_rejected(db_session, test_user):
     with pytest.raises(ValueError):
         await ClipService.create_clip(db_session, test_user.id, text="  ")
+
+
+@pytest.mark.asyncio
+async def test_clip_ingest_respects_knowledge_flag(
+    db_session, test_user, monkeypatch,
+):
+    """ingest=true 不能绕过 KNOWLEDGE_INGEST_ENABLED。"""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.auth import get_current_user
+    from app.config import get_settings
+    from app.database import get_db
+    from app.main import app
+
+    monkeypatch.setattr(get_settings(), "KNOWLEDGE_INGEST_ENABLED", False)
+
+    async def override_get_db():
+        yield db_session
+
+    async def override_user():
+        return test_user
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_user
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test/api/v1",
+    ) as ac:
+        res = await ac.post("/clip", json={"text": "正文", "ingest": True})
+    app.dependency_overrides.clear()
+    assert res.status_code == 403, res.text

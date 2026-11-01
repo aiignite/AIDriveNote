@@ -9,14 +9,18 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
+from app.auth import get_current_user, require_not_guest
 from app.database import get_db
 from app.exceptions import NotFoundException
 from app.models.mcp import McpServer, McpServerTool
 from app.models.user import User
 from app.services.ai.mcp_service import McpError, McpService
 
-router = APIRouter(prefix="/mcp", tags=["MCP"])
+router = APIRouter(
+    prefix="/mcp",
+    tags=["MCP"],
+    dependencies=[Depends(require_not_guest)],
+)
 
 
 class McpServerCreate(BaseModel):
