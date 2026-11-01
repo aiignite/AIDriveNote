@@ -46,6 +46,15 @@ const SOURCE_LABELS: Record<string, string> = {
   kb: '知识库文件',
 };
 
+/** 与后端 KB_DIRS 对齐：批准后归档到「蒸馏产出/<目录>」 */
+const KB_DIR_BY_TYPE: Record<string, string> = {
+  concept: 'concepts',
+  entity: 'entities',
+  topic: 'topics',
+  decision: 'decisions',
+  note: 'topics',
+};
+
 const confidenceClass = (confidence: string) => {
   if (confidence === 'high') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300';
   if (confidence === 'low') return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
@@ -154,7 +163,7 @@ const KnowledgeInboxPage: React.FC = () => {
         title: editTitle.trim() || undefined,
         tags,
       });
-      setNotice(`已生成知识笔记《${result.title}》`);
+      setNotice(`已生成知识笔记《${result.title}》，归档到「蒸馏产出」`);
       await load(false);
     });
   };
@@ -223,7 +232,7 @@ const KnowledgeInboxPage: React.FC = () => {
     void runAction('batch', async () => {
       const result = await knowledgeApi.batchCards(ids, 'approve');
       const ok = result.results.filter((item) => item.ok).length;
-      setNotice(`批量入库完成：成功 ${ok} / ${ids.length}`);
+      setNotice(`批量入库完成：成功 ${ok} / ${ids.length}，已归档到「蒸馏产出」`);
       await load(false);
     });
   };
@@ -499,6 +508,9 @@ const KnowledgeInboxPage: React.FC = () => {
                     </span>
                     <span className="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
                       {selected.extractor === 'llm' ? `模型 ${selected.model || 'LLM'}` : '规则抽取'}
+                    </span>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+                      入库到 蒸馏产出/{KB_DIR_BY_TYPE[selected.knowledgeType] || 'topics'}
                     </span>
                     {selected.source.occurredAt && (
                       <span>{new Date(selected.source.occurredAt).toLocaleString()}</span>
