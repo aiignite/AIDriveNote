@@ -9,13 +9,20 @@ import pytest
 from sqlalchemy import func, select
 
 from app.models.knowledge import IngestDocument, IngestJob, KnowledgeCard, NoteSource
+from app.models.note.note import NoteFolder
 from app.services.knowledge.ingest_service import ingest
 from app.services.knowledge.ingest_worker import _distill_document, _parse_document
-from app.services.knowledge.knowledge_compile_service import build_kb_target, compile_card
+from app.services.knowledge.knowledge_compile_service import (
+    DISTILL_ROOT_NAME,
+    KB_DIRS,
+    build_kb_target,
+    compile_card,
+)
 from app.services.knowledge.knowledge_extract_service import extract_cards, save_cards
 from app.services.knowledge.parsing.base import ParseError
 from app.services.knowledge.parsing.registry import parse_bytes, parse_text
 from app.services.knowledge.rule_extractor import build_rule_card
+from app.services.note.note_service import NoteFolderService
 from app.services.auth_service import AuthService
 
 
@@ -239,6 +246,26 @@ async def test_compile_card_creates_note_with_source_and_tags(db_session, test_u
     ).scalar_one()
     assert source.document_id == document.id
     assert source.role == "primary"
+
+    folder = await NoteFolderService.get_folder(db_session, note.folder_id)
+    assert folder is not None
+    assert folder.name in {directory for directory, _ in KB_DIRS.values()}
+    root_folder = await NoteFolderService.get_folder(db_session, folder.parent_id)
+    assert root_folder is not None
+    assert root_folder.name == DISTILL_ROOT_NAME
+
+    # 再次批准复用同一套归档目录，不产生重复的「蒸馏产出」
+    await compile_card(db_session, test_user.id, cards[1].id, mode="new")
+    root_count = await db_session.scalar(
+        select(func.count())
+        .select_from(NoteFolder)
+        .where(
+            NoteFolder.user_id == test_user.id,
+            NoteFolder.name == DISTILL_ROOT_NAME,
+            NoteFolder.is_deleted == False,  # noqa: E712
+        )
+    )
+    assert root_count == 1
 
 
 def test_build_kb_target_uses_expected_dirs():

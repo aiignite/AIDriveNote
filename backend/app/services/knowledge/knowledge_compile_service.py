@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.knowledge import IngestDocument, KnowledgeCard, NoteSource
 from app.models.note.note import Note, NoteFolder
 from app.services.note.note_enhance_service import NoteTagService
-from app.services.note.note_service import NoteService
+from app.services.note.note_service import NoteFolderService, NoteService
 
 KB_DIRS = {
     "concept": ("concepts", "concept"),
@@ -20,6 +20,9 @@ KB_DIRS = {
     "decision": ("decisions", "decision"),
     "note": ("topics", "topic"),
 }
+
+# 编译产物统一归档到根级目录，避免散落在笔记树根；子目录沿用知识库 wiki 的分层名
+DISTILL_ROOT_NAME = "蒸馏产出"
 
 _ILLEGAL_FILENAME_RE = re.compile(r'[\s\\/:*?"<>|]+')
 
@@ -113,6 +116,46 @@ def render_card_markdown(
 
 def _kb_type(card: KnowledgeCard) -> tuple[str, str]:
     return KB_DIRS.get(card.knowledge_type, KB_DIRS["note"])
+
+
+async def _get_or_create_folder(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    name: str,
+    parent_id: uuid.UUID | None,
+) -> NoteFolder:
+    parent_filter = (
+        NoteFolder.parent_id.is_(None) if parent_id is None else NoteFolder.parent_id == parent_id
+    )
+    existing = (
+        await db.execute(
+            select(NoteFolder)
+            .where(
+                NoteFolder.user_id == user_id,
+                NoteFolder.name == name,
+                NoteFolder.is_deleted == False,  # noqa: E712
+                parent_filter,
+            )
+            .order_by(NoteFolder.created_at)
+            .limit(1)
+        )
+    ).scalars().first()
+    if existing is not None:
+        return existing
+    return await NoteFolderService.create_folder(
+        db, {"name": name, "parent_id": parent_id, "user_id": user_id},
+    )
+
+
+async def ensure_distill_folder(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    knowledge_type: str,
+) -> NoteFolder:
+    """批准后笔记的归档目录：根级「蒸馏产出」+ 按知识类型分的子目录。"""
+    directory, _ = KB_DIRS.get(knowledge_type, KB_DIRS["note"])
+    root = await _get_or_create_folder(db, user_id, DISTILL_ROOT_NAME, None)
+    return await _get_or_create_folder(db, user_id, directory, root.id)
 
 
 def build_kb_target(
@@ -280,6 +323,11 @@ async def compile_card(
         content = render_card_markdown(card, doc, related_titles=related)
         kb_target["mode"] = "new"
         kb_target["wikiBody"] = content
+        target_folder_id = folder_id
+        if target_folder_id is None:
+            target_folder_id = (
+                await ensure_distill_folder(db, user_id, card.knowledge_type)
+            ).id
         note = await NoteService.create_note(
             db,
             {
@@ -287,7 +335,7 @@ async def compile_card(
                 "note_type": "markdown",
                 "content": {"text": content},
                 "description": description,
-                "folder_id": folder_id,
+                "folder_id": target_folder_id,
                 "created_by": user_id,
                 "updated_by": user_id,
             },

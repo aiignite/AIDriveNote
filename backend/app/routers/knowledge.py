@@ -21,7 +21,7 @@ from app.models.user import User
 from app.schemas.camel import CamelRequest
 from app.services.knowledge.ingest_service import enqueue_ingest_job, hash_text, ingest
 from app.services.knowledge.search_service import search_cards
-from app.services.knowledge.knowledge_compile_service import compile_card
+from app.services.knowledge.knowledge_compile_service import compile_card, ensure_distill_folder
 from app.services.knowledge.settings_service import KnowledgeSettingsService
 from app.services.note.link_parser import build_search_text, extract_wiki_links
 from app.services.note.note_enhance_service import NoteTagService
@@ -684,6 +684,7 @@ async def create_entity_page(
         f"## 相关\n- [[{card.title}]]\n\n"
         f"## 来源\n- {doc.url or doc.title or card.title}\n"
     )
+    folder = await ensure_distill_folder(db, user.id, kb_type)
     note = await NoteService.create_note(
         db,
         {
@@ -691,6 +692,7 @@ async def create_entity_page(
             "note_type": "markdown",
             "content": {"text": content},
             "description": description,
+            "folder_id": folder.id,
             "created_by": user.id,
             "updated_by": user.id,
         },
